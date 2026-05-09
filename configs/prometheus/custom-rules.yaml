@@ -1,0 +1,633 @@
+# Prometheus 自定义告警规则配置
+# 企业级云原生运维平台
+# 版本: v1.0.0
+# 最后更新: 2026-05-10
+
+# 说明:
+# 本文件定义了业务指标告警、SLA告警和成本告警规则
+# 通过 Prometheus Operator 的 PrometheusRule CRD 加载
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: custom-alert-rules
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    # =========================================================================
+    # 第一部分: 业务指标告警
+    # =========================================================================
+    - name: business-metrics
+      rules:
+        # ---------------------------------------------------------------
+        # API 请求量告警
+        # ---------------------------------------------------------------
+        # 说明: 监控API请求量，当请求量异常时触发告警
+        # 场景: 流量突增可能表示攻击或业务高峰
+        - alert: HighRequestRate
+          expr: |
+            sum(rate(http_requests_total[5m])) by (service) > 1000
+          for: 5m
+          labels:
+            severity: warning
+            category: business
+          annotations:
+            summary: "API 请求量异常升高"
+            description: "服务 {{ $labels.service }} 的请求量达到 {{ $value | humanize }}/秒，超过阈值 1000/秒"
+            runbook_url: "https://wiki.internal/runbooks/high-request-rate"
+            dashboard_url: "https://grafana.internal/d/business-overview"
+
+        # 说明: 监控请求量骤降，可能表示服务不可用或流量被阻断
+        - alert: LowRequestRate
+          expr: |
+            sum(rate(http_requests_total[5m])) by (service) < 10
+            and
+            sum(rate(http_requests_total[1h] offset 1d)) by (service) > 100
+          for: 10m
+          labels:
+            severity: critical
+            category: business
+          annotations:
+            summary: "API 请求量骤降"
+            description: "服务 {{ $labels.service }} 的请求量从历史平均骤降至 {{ $value | humanize }}/秒"
+            runbook_url: "https://wiki.internal/runbooks/low-request-rate"
+
+        # ---------------------------------------------------------------
+        # 业务转化率告警
+        # ---------------------------------------------------------------
+        # 说明: 监控核心业务转化率，低于阈值时告警
+        - alert: LowConversionRate
+          expr: |
+            (
+              sum(rate(business_conversions_total[5m])) by (product)
+              /
+              sum(rate(business_visits_total[5m])) by (product)
+            ) < 0.02
+          for: 15m
+          labels:
+            severity: warning
+            category: business
+          annotations:
+            summary: "业务转化率低于阈值"
+            description: "产品 {{ $labels.product }} 的转化率仅为 {{ $value | humanizePercentage }}，低于 2% 的目标"
+            runbook_url: "https://wiki.internal/runbooks/low-conversion-rate"
+
+        # ---------------------------------------------------------------
+        # 订单处理告警
+        # ---------------------------------------------------------------
+        # 说明: 监控订单处理延迟
+        - alert: HighOrderProcessingTime
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(order_processing_duration_seconds_bucket[5m])) by (le, service)
+            ) > 30
+          for: 10m
+          labels:
+            severity: warning
+            category: business
+          annotations:
+            summary: "订单处理延迟过高"
+            description: "服务 {{ $labels.service }} 的订单处理 P95 延迟为 {{ $value | humanizeDuration }}，超过 30 秒阈值"
+            runbook_url: "https://wiki.internal/runbooks/high-order-processing-time"
+
+        # 说明: 监控订单处理错误
+        - alert: HighOrderErrorRate
+          expr: |
+            sum(rate(order_processing_errors_total[5m])) by (service, error_type)
+            /
+            sum(rate(order_processing_total[5m])) by (service, error_type)
+            > 0.05
+          for: 5m
+          labels:
+            severity: critical
+            category: business
+          annotations:
+            summary: "订单处理错误率过高"
+            description: "服务 {{ $labels.service }} 的订单处理错误率达 {{ $value | humanizePercentage }}，错误类型: {{ $labels.error_type }}"
+            runbook_url: "https://wiki.internal/runbooks/high-order-error-rate"
+
+        # ---------------------------------------------------------------
+        # 用户注册告警
+        # ---------------------------------------------------------------
+        # 说明: 监控用户注册成功率
+        - alert: LowRegistrationSuccessRate
+          expr: |
+            (
+              sum(rate(user_registrations_successful_total[5m])) by (platform)
+              /
+              sum(rate(user_registrations_attempted_total[5m])) by (platform)
+            ) < 0.9
+          for: 15m
+          labels:
+            severity: warning
+            category: business
+          annotations:
+            summary: "用户注册成功率下降"
+            description: "平台 {{ $labels.platform }} 的注册成功率仅为 {{ $value | humanizePercentage }}，低于 90% 目标"
+            runbook_url: "https://wiki.internal/runbooks/low-registration-success"
+
+        # ---------------------------------------------------------------
+        # 支付处理告警
+        # ---------------------------------------------------------------
+        # 说明: 监控支付成功率，这是关键业务指标
+        - alert: PaymentFailureRateHigh
+          expr: |
+            (
+              sum(rate(payment_errors_total[5m])) by (payment_method)
+              /
+              sum(rate(payment_attempts_total[5m])) by (payment_method)
+            ) > 0.03
+          for: 5m
+          labels:
+            severity: critical
+            category: business
+          annotations:
+            summary: "支付失败率过高"
+            description: "支付方式 {{ $labels.payment_method }} 的失败率达 {{ $value | humanizePercentage }}，超过 3% 阈值"
+            runbook_url: "https://wiki.internal/runbooks/payment-failure-high"
+
+        # ---------------------------------------------------------------
+        # 数据同步告警
+        # ---------------------------------------------------------------
+        # 说明: 监控数据同步延迟
+        - alert: DataSyncLag
+          expr: |
+            data_sync_lag_seconds > 300
+          for: 10m
+          labels:
+            severity: warning
+            category: business
+          annotations:
+            summary: "数据同步延迟"
+            description: "数据同步延迟为 {{ $value | humanizeDuration }}，超过 5 分钟阈值"
+            runbook_url: "https://wiki.internal/runbooks/data-sync-lag"
+
+    # =========================================================================
+    # 第二部分: SLA 告警
+    # =========================================================================
+    - name: sla-metrics
+      rules:
+        # ---------------------------------------------------------------
+        # 可用性 SLA 告警
+        # ---------------------------------------------------------------
+        # 说明: 监控服务可用性，当低于 SLO 目标时告警
+        # SLA 目标: 99.95% (月度)
+        - alert: SLAAvailabilityBelowTarget
+          expr: |
+            (
+              1 - (
+                sum(rate(http_requests_total{status=~"5.."}[30d])) by (service)
+                /
+                sum(rate(http_requests_total[30d])) by (service)
+              )
+            ) < 0.9995
+          for: 1h
+          labels:
+            severity: critical
+            category: sla
+          annotations:
+            summary: "SLA 可用性低于目标"
+            description: "服务 {{ $labels.service }} 的30天可用性为 {{ $value | humanizePercentage }}，低于 99.95% 的 SLO 目标"
+            runbook_url: "https://wiki.internal/runbooks/sla-availability-breach"
+
+        # 说明: 监控可用性趋势，提前预警可能的 SLA 违约
+        - alert: SLAAvailabilityTrendWarning
+          expr: |
+            (
+              1 - (
+                sum(rate(http_requests_total{status=~"5.."}[7d])) by (service)
+                /
+                sum(rate(http_requests_total[7d])) by (service)
+              )
+            ) < 0.9999
+          for: 1h
+          labels:
+            severity: warning
+            category: sla
+          annotations:
+            summary: "SLA 可用性趋势预警"
+            description: "服务 {{ $labels.service }} 的7天可用性为 {{ $value | humanizePercentage }}，接近 99.95% 阈值"
+            runbook_url: "https://wiki.internal/runbooks/sla-availability-trend"
+
+        # ---------------------------------------------------------------
+        # 延迟 SLA 告警
+        # ---------------------------------------------------------------
+        # P99 延迟 SLO: < 500ms
+        - alert: SLALatencyP99Breached
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service)
+            ) > 0.5
+          for: 5m
+          labels:
+            severity: critical
+            category: sla
+          annotations:
+            summary: "P99 延迟 SLA 违约"
+            description: "服务 {{ $labels.service }} 的 P99 延迟为 {{ $value | humanizeDuration }}，超过 500ms SLO"
+            runbook_url: "https://wiki.internal/runbooks/sla-latency-p99"
+
+        # P99.9 延迟 SLO: < 2s
+        - alert: SLALatencyP999Breached
+          expr: |
+            histogram_quantile(0.999,
+              sum(rate(http_request_duration_seconds_bucket[5m])) by (le, service)
+            ) > 2
+          for: 5m
+          labels:
+            severity: critical
+            category: sla
+          annotations:
+            summary: "P99.9 延迟 SLA 违约"
+            description: "服务 {{ $labels.service }} 的 P99.9 延迟为 {{ $value | humanizeDuration }}，超过 2s SLO"
+            runbook_url: "https://wiki.internal/runbooks/sla-latency-p999"
+
+        # ---------------------------------------------------------------
+        # 错误率 SLA 告警
+        # ---------------------------------------------------------------
+        # 错误率 SLO: < 0.1%
+        - alert: SLAErrorRateBreached
+          expr: |
+            (
+              sum(rate(http_requests_total{status=~"5.."}[5m])) by (service)
+              /
+              sum(rate(http_requests_total[5m])) by (service)
+            ) > 0.001
+          for: 5m
+          labels:
+            severity: critical
+            category: sla
+          annotations:
+            summary: "错误率 SLA 违约"
+            description: "服务 {{ $labels.service }} 的错误率为 {{ $value | humanizePercentage }}，超过 0.1% SLO"
+            runbook_url: "https://wiki.internal/runbooks/sla-error-rate"
+
+        # ---------------------------------------------------------------
+        # 数据持久性 SLA 告警
+        # ---------------------------------------------------------------
+        - alert: SLADataDurabilityRisk
+          expr: |
+            (
+              kube_persistentvolume_status_phase{phase="Bound"}
+              /
+              kube_persistentvolume_status_phase{phase=~"Bound|Available|Pending"}
+            ) < 0.99
+          for: 1h
+          labels:
+            severity: warning
+            category: sla
+          annotations:
+            summary: "数据持久性风险"
+            description: "PVC 绑定率降至 {{ $value | humanizePercentage }}，可能存在数据持久性风险"
+            runbook_url: "https://wiki.internal/runbooks/sla-data-durability"
+
+        # ---------------------------------------------------------------
+        # SLA 预算消耗告警
+        # ---------------------------------------------------------------
+        # 说明: 监控 SLA 预算消耗速度
+        - alert: SLABudgetBurnRateHigh
+          expr: |
+            (
+              sum(increase(http_requests_total{status=~"5.."}[1h])) by (service)
+              /
+              sum(increase(http_requests_total[1h])) by (service)
+              /
+              (1 - 0.9995)
+            ) > 14.4
+          for: 5m
+          labels:
+            severity: critical
+            category: sla
+          annotations:
+            summary: "SLA 预算消耗过快"
+            description: "服务 {{ $labels.service }} 的 SLA 预算消耗速度为正常值的 {{ $value | humanize }}倍"
+            runbook_url: "https://wiki.internal/runbooks/sla-budget-burn"
+
+    # =========================================================================
+    # 第三部分: 成本告警
+    # =========================================================================
+    - name: cost-metrics
+      rules:
+        # ---------------------------------------------------------------
+        # 资源使用成本告警
+        # ---------------------------------------------------------------
+        # 说明: 监控 CPU 资源浪费 (Request 远大于实际使用)
+        - alert: CPUResourceWaste
+          expr: |
+            (
+              sum(kube_pod_container_resource_requests{resource="cpu"}) by (namespace)
+              -
+              sum(rate(container_cpu_usage_seconds_total[1h])) by (namespace)
+            )
+            /
+            sum(kube_pod_container_resource_requests{resource="cpu"}) by (namespace)
+            > 0.5
+          for: 24h
+          labels:
+            severity: warning
+            category: cost
+          annotations:
+            summary: "CPU 资源浪费"
+            description: "命名空间 {{ $labels.namespace }} 的 CPU Request 利用率低于 50%，存在资源浪费"
+            runbook_url: "https://wiki.internal/runbooks/cpu-resource-waste"
+
+        # 说明: 监控内存资源浪费
+        - alert: MemoryResourceWaste
+          expr: |
+            (
+              sum(kube_pod_container_resource_requests{resource="memory"}) by (namespace)
+              -
+              sum(container_memory_working_set_bytes) by (namespace)
+            )
+            /
+            sum(kube_pod_container_resource_requests{resource="memory"}) by (namespace)
+            > 0.5
+          for: 24h
+          labels:
+            severity: warning
+            category: cost
+          annotations:
+            summary: "内存资源浪费"
+            description: "命名空间 {{ $labels.namespace }} 的内存 Request 利用率低于 50%，存在资源浪费"
+            runbook_url: "https://wiki.internal/runbooks/memory-resource-waste"
+
+        # ---------------------------------------------------------------
+        # 存储成本告警
+        # ---------------------------------------------------------------
+        # 说明: 监控存储使用增长趋势
+        - alert: StorageCostTrend
+          expr: |
+            predict_linear(
+              kubelet_volume_stats_used_bytes[7d],
+              30 * 24 * 3600
+            )
+            /
+            kubelet_volume_stats_capacity_bytes
+            > 0.9
+          for: 1h
+          labels:
+            severity: warning
+            category: cost
+          annotations:
+            summary: "存储成本趋势预警"
+            description: "PVC {{ $labels.persistentvolumeclaim }} 在命名空间 {{ $labels.namespace }} 预计30天后将达到 90% 容量"
+            runbook_url: "https://wiki.internal/runbooks/storage-cost-trend"
+
+        # 说明: 监控未使用的 PVC
+        - alert: UnusedPVC
+          expr: |
+            kube_persistentvolume_status_phase{phase="Bound"}
+            and on(persistentvolume)
+            kube_persistentvolume_info
+            unless on(persistentvolumeclaim, namespace)
+            kube_pod_spec_volumes_persistentvolumeclaims_info
+          for: 7d
+          labels:
+            severity: info
+            category: cost
+          annotations:
+            summary: "未使用的 PVC"
+            description: "PVC {{ $labels.persistentvolumeclaim }} 在命名空间 {{ $labels.namespace }} 已绑定但未被任何 Pod 使用"
+            runbook_url: "https://wiki.internal/runbooks/unused-pvc"
+
+        # ---------------------------------------------------------------
+        # 节点成本告警
+        # ---------------------------------------------------------------
+        # 说明: 监控节点资源利用率过低
+        - alert: LowNodeUtilization
+          expr: |
+            (
+              sum(rate(container_cpu_usage_total[1h])) by (node)
+              /
+              kube_node_status_allocatable{resource="cpu"}
+            ) < 0.2
+          for: 7d
+          labels:
+            severity: info
+            category: cost
+          annotations:
+            summary: "节点 CPU 利用率过低"
+            description: "节点 {{ $labels.node }} 的 CPU 利用率仅为 {{ $value | humanizePercentage }}，持续7天低于 20%"
+            runbook_url: "https://wiki.internal/runbooks/low-node-utilization"
+
+        # 说明: 监控节点内存利用率过低
+        - alert: LowNodeMemoryUtilization
+          expr: |
+            (
+              sum(container_memory_working_set_bytes) by (node)
+              /
+              kube_node_status_allocatable{resource="memory"}
+            ) < 0.3
+          for: 7d
+          labels:
+            severity: info
+            category: cost
+          annotations:
+            summary: "节点内存利用率过低"
+            description: "节点 {{ $labels.node }} 的内存利用率仅为 {{ $value | humanizePercentage }}，持续7天低于 30%"
+            runbook_url: "https://wiki.internal/runbooks/low-node-memory-utilization"
+
+        # ---------------------------------------------------------------
+        # 弹性伸缩告警
+        # ---------------------------------------------------------------
+        # 说明: 监控 HPA 达到最大副本数
+        - alert: HPAAtMaxReplicas
+          expr: |
+            kube_horizontalpodautoscaler_status_current_replicas
+            ==
+            kube_horizontalpodautoscaler_spec_max_replicas
+          for: 30m
+          labels:
+            severity: warning
+            category: cost
+          annotations:
+            summary: "HPA 达到最大副本数"
+            description: "HPA {{ $labels.horizontalpodautoscaler }} 在命名空间 {{ $labels.namespace }} 已达到最大副本数 {{ $value }}，可能需要调整上限"
+            runbook_url: "https://wiki.internal/runbooks/hpa-max-replicas"
+
+        # 说明: 监控 Pod 频繁重启
+        - alert: HighPodRestartRate
+          expr: |
+            sum(rate(kube_pod_container_status_restarts_total[1h])) by (pod, namespace) > 5
+          for: 1h
+          labels:
+            severity: warning
+            category: cost
+          annotations:
+            summary: "Pod 频繁重启"
+            description: "Pod {{ $labels.pod }} 在命名空间 {{ $labels.namespace }} 在过去1小时内重启了 {{ $value | humanize }}次"
+            runbook_url: "https://wiki.internal/runbooks/high-pod-restart-rate"
+
+        # ---------------------------------------------------------------
+        # 网络成本告警
+        # ---------------------------------------------------------------
+        # 说明: 监控跨区域流量
+        - alert: HighCrossRegionTraffic
+          expr: |
+            sum(rate(container_network_transmit_bytes_total[1h])) by (namespace, pod)
+            > 1073741824  # 1GB
+          for: 1h
+          labels:
+            severity: warning
+            category: cost
+          annotations:
+            summary: "跨区域流量过高"
+            description: "Pod {{ $labels.pod }} 在命名空间 {{ $labels.namespace }} 的出站流量超过 1GB/小时"
+            runbook_url: "https://wiki.internal/runbooks/high-cross-region-traffic"
+
+        # ---------------------------------------------------------------
+        # 许可证成本告警
+        # ---------------------------------------------------------------
+        # 说明: 监控第三方服务使用量
+        - alert: ThirdPartyServiceCostHigh
+          expr: |
+            sum(rate(third_party_api_calls_total[1h])) by (service)
+            > 10000
+          for: 1h
+          labels:
+            severity: warning
+            category: cost
+          annotations:
+            summary: "第三方服务调用量过高"
+            description: "服务 {{ $labels.service }} 的第三方 API 调用量达 {{ $value | humanize }}/小时，可能产生高额费用"
+            runbook_url: "https://wiki.internal/runbooks/third-party-service-cost"
+
+    # =========================================================================
+    # 第四部分: 基础设施告警 (补充)
+    # =========================================================================
+    - name: infrastructure-alerts
+      rules:
+        # ---------------------------------------------------------------
+        # Kubernetes 组件告警
+        # ---------------------------------------------------------------
+        - alert: KubeAPIServerDown
+          expr: |
+            absent(up{job="apiserver"} == 1)
+          for: 5m
+          labels:
+            severity: critical
+            category: infrastructure
+          annotations:
+            summary: "Kubernetes API Server 不可用"
+            description: "Kubernetes API Server 已停止响应超过 5 分钟"
+            runbook_url: "https://wiki.internal/runbooks/kube-apiserver-down"
+
+        - alert: KubeControllerManagerDown
+          expr: |
+            absent(up{job="kube-controller-manager"} == 1)
+          for: 5m
+          labels:
+            severity: critical
+            category: infrastructure
+          annotations:
+            summary: "Kubernetes Controller Manager 不可用"
+            description: "Kubernetes Controller Manager 已停止响应"
+            runbook_url: "https://wiki.internal/runbooks/kube-controller-manager-down"
+
+        - alert: KubeSchedulerDown
+          expr: |
+            absent(up{job="kube-scheduler"} == 1)
+          for: 5m
+          labels:
+            severity: critical
+            category: infrastructure
+          annotations:
+            summary: "Kubernetes Scheduler 不可用"
+            description: "Kubernetes Scheduler 已停止响应"
+            runbook_url: "https://wiki.internal/runbooks/kube-scheduler-down"
+
+        # ---------------------------------------------------------------
+        # 节点告警
+        # ---------------------------------------------------------------
+        - alert: KubeNodeNotReady
+          expr: |
+            kube_node_status_condition{condition="Ready",status="true"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            category: infrastructure
+          annotations:
+            summary: "Kubernetes 节点未就绪"
+            description: "节点 {{ $labels.node }} 未就绪状态已持续 5 分钟"
+            runbook_url: "https://wiki.internal/runbooks/kube-node-not-ready"
+
+        - alert: KubeNodeMemoryPressure
+          expr: |
+            kube_node_status_condition{condition="MemoryPressure",status="true"} == 1
+          for: 5m
+          labels:
+            severity: warning
+            category: infrastructure
+          annotations:
+            summary: "节点内存压力"
+            description: "节点 {{ $labels.node }} 处于内存压力状态"
+            runbook_url: "https://wiki.internal/runbooks/kube-node-memory-pressure"
+
+        - alert: KubeNodeDiskPressure
+          expr: |
+            kube_node_status_condition{condition="DiskPressure",status="true"} == 1
+          for: 5m
+          labels:
+            severity: warning
+            category: infrastructure
+          annotations:
+            summary: "节点磁盘压力"
+            description: "节点 {{ $labels.node }} 处于磁盘压力状态"
+            runbook_url: "https://wiki.internal/runbooks/kube-node-disk-pressure"
+
+        # ---------------------------------------------------------------
+        # 命名空间资源告警
+        # ---------------------------------------------------------------
+        - alert: KubeNamespaceQuotaExceeded
+          expr: |
+            kube_resourcequota{type="used"}
+            /
+            kube_resourcequota{type="hard"}
+            > 0.9
+          for: 10m
+          labels:
+            severity: warning
+            category: infrastructure
+          annotations:
+            summary: "命名空间资源配额即将耗尽"
+            description: "命名空间 {{ $labels.namespace }} 的资源配额 {{ $labels.resource }} 使用率已达 {{ $value | humanizePercentage }}"
+            runbook_url: "https://wiki.internal/runbooks/namespace-quota-exceeded"
+
+        # ---------------------------------------------------------------
+        # PersistentVolume 告警
+        # ---------------------------------------------------------------
+        - alert: KubePersistentVolumeFillingUp
+          expr: |
+            (
+              kubelet_volume_stats_used_bytes
+              /
+              kubelet_volume_stats_capacity_bytes
+            ) > 0.85
+          for: 5m
+          labels:
+            severity: warning
+            category: infrastructure
+          annotations:
+            summary: "持久卷使用率过高"
+            description: "PVC {{ $labels.persistentvolumeclaim }} 在命名空间 {{ $labels.namespace }} 的使用率已达 {{ $value | humanizePercentage }}"
+            runbook_url: "https://wiki.internal/runbooks/pv-filling-up"
+
+        - alert: KubePersistentVolumeFillingUpCritical
+          expr: |
+            (
+              kubelet_volume_stats_used_bytes
+              /
+              kubelet_volume_stats_capacity_bytes
+            ) > 0.95
+          for: 5m
+          labels:
+            severity: critical
+            category: infrastructure
+          annotations:
+            summary: "持久卷即将耗尽"
+            description: "PVC {{ $labels.persistentvolumeclaim }} 在命名空间 {{ $labels.namespace }} 的使用率已达 {{ $value | humanizePercentage }}，请立即扩容或清理"
+            runbook_url: "https://wiki.internal/runbooks/pv-filling-up-critical"

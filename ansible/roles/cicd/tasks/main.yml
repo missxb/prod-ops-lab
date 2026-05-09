@@ -1,0 +1,356 @@
+###############################################################################
+# ansible/roles/cicd/tasks/main.yml - CI/CD Role
+#
+# 功能:
+#   - GitLab 代码仓库部署（Docker Compose）
+#   - Jenkins 持续集成部署（Docker Compose）
+#   - Harbor 容器镜像仓库部署
+#   - 配置 CI/CD 流水线集成
+#   - 配置 Webhook 和触发器
+#   - 配置备份和恢复策略
+#
+# 架构:
+#   Developer --> GitLab (Code) --> Jenkins (Build) --> Harbor (Images) --> K8s
+#
+# 适用节点: masters[0] 或 ci 组
+###############################################################################
+
+# ======================== 前置检查 ========================
+- name: 检查 CI/CD 组件目录
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+  loop:
+    - "{{ gitlab_data_dir }}"
+    - "{{ gitlab_config_dir }}"
+    - "{{ gitlab_log_dir }}"
+    - "{{ jenkins_data_dir }}"
+    - "{{ jenkins_config_dir }}"
+    - "{{ harbor_data_dir }}"
+    - "{{ harbor_config_dir }}"
+    - "{{ harbor_database_dir }}"
+    - "{{ harbor_registry_dir }}"
+    - "{{ backup_dir }}"
+  tags: [cicd, dirs]
+
+# ======================== 部署 GitLab ========================
+- name: 部署 GitLab
+  block:
+    - name: [GitLab] 配置 Omnibus 外部 URL
+      ansible.builtin.lineinfile:
+        path: /etc/environment
+        regexp: '^GITLAB_'
+        line: "GITLAB_OMNIBUS_CONFIG=external_url '{{ gitlab_external_url }}'"
+        create: true
+      tags: [cicd, gitlab, config]
+
+    - name: [GitLab] 生成 gitlab.rb 配置
+      ansible.builtin.template:
+        src: gitlab.rb.j2
+        dest: "{{ gitlab_config_dir }}/gitlab.rb"
+        mode: '0600'
+      tags: [cicd, gitlab, config]
+
+    - name: [GitLab] 创建 docker-compose 文件
+      ansible.builtin.template:
+        src: docker-compose-gitlab.yml.j2
+        dest: "{{ gitlab_config_dir }}/docker-compose.yml"
+        mode: '0644'
+      tags: [cicd, gitlab, docker]
+
+    - name: [GitLab] 启动 GitLab
+      community.docker.docker_compose:
+        project_src: "{{ gitlab_config_dir }}"
+        state: present
+        pull: always
+      register: gitlab_start
+      tags: [cicd, gitlab, service]
+
+    - name: [GitLab] 等待 GitLab 就绪
+      ansible.builtin.uri:
+        url: "http://localhost:{{ gitlab_port }}/-/health"
+        method: GET
+        status_code: 200
+      register: gitlab_health
+      until: gitlab_health.status == 200
+      retries: 60
+      delay: 30
+      ignore_errors: true
+      tags: [cicd, gitlab, verify]
+
+    - name: [GitLab] 获取 Runner 注册令牌
+      ansible.builtin.shell: |
+        docker exec gitlab cat /etc/gitlab/gitlab_runner_token 2>/dev/null || \
+        docker exec gitlab gitlab-rails runner -e production \
+          "puts Gitlab::Settings.runners_token" 2>/dev/null || echo ""
+      register: gitlab_runner_token_result
+      changed_when: false
+      ignore_errors: true
+      tags: [cicd, gitlab, runner]
+
+    - name: [GitLab] 配置备份定时任务
+      ansible.builtin.cron:
+        name: "GitLab backup"
+        minute: "0"
+        hour: "2"
+        job: "docker exec gitlab gitlab-backup create CRON=1 && echo 'GitLab backup completed at $(date)' >> /var/log/gitlab-backup.log"
+        user: root
+      when: gitlab_backup_enabled | bool
+      tags: [cicd, gitlab, backup]
+
+    - name: [GitLab] 配置日志轮转
+      ansible.builtin.copy:
+        content: |
+          {{ gitlab_log_dir }}/*.log {
+              daily
+              rotate 7
+              compress
+              delaycompress
+              missingok
+              notifempty
+              copytruncate
+          }
+        dest: /etc/logrotate.d/gitlab
+        mode: '0644'
+      tags: [cicd, gitlab, logrotate]
+  tags: [cicd, gitlab]
+
+# ======================== 部署 Jenkins ========================
+- name: 部署 Jenkins
+  block:
+    - name: [Jenkins] 创建管理员密码目录
+      ansible.builtin.file:
+        path: "{{ jenkins_data_dir }}/secrets"
+        state: directory
+        mode: '0700'
+      ignore_errors: true
+      tags: [cicd, jenkins, dirs]
+
+    - name: [Jenkins] 创建初始管理员密码
+      ansible.builtin.copy:
+        content: "{{ jenkins_admin_password }}"
+        dest: "{{ jenkins_data_dir }}/secrets/initialAdminPassword"
+        mode: '0600'
+      ignore_errors: true
+      tags: [cicd, jenkins, secrets]
+
+    - name: [Jenkins] 创建 Dockerfile
+      ansible.builtin.template:
+        src: Dockerfile.jenkins.j2
+        dest: "{{ jenkins_config_dir }}/Dockerfile"
+        mode: '0644'
+      tags: [cicd, jenkins, dockerfile]
+
+    - name: [Jenkins] 创建 docker-compose 文件
+      ansible.builtin.template:
+        src: docker-compose-jenkins.yml.j2
+        dest: "{{ jenkins_config_dir }}/docker-compose.yml"
+        mode: '0644'
+      tags: [cicd, jenkins, docker]
+
+    - name: [Jenkins] 启动 Jenkins
+      community.docker.docker_compose:
+        project_src: "{{ jenkins_config_dir }}"
+        state: present
+        pull: always
+      register: jenkins_start
+      tags: [cicd, jenkins, service]
+
+    - name: [Jenkins] 等待 Jenkins 就绪
+      ansible.builtin.uri:
+        url: "http://localhost:{{ jenkins_port }}/login"
+        method: GET
+        status_code: 200
+      register: jenkins_health
+      until: jenkins_health.status == 200
+      retries: 60
+      delay: 15
+      ignore_errors: true
+      tags: [cicd, jenkins, verify]
+
+    - name: [Jenkins] 安装插件
+      ansible.builtin.shell: |
+        for plugin in {{ jenkins_plugins | join(' ') }}; do
+          jenkins-plugin-cli --plugins "$plugin" 2>/dev/null || true
+        done
+      args:
+        chdir: "{{ jenkins_data_dir }}"
+      register: plugins_result
+      changed_when: "'Installed' in plugins_result.stdout or plugins_result.rc == 0"
+      ignore_errors: true
+      tags: [cicd, jenkins, plugins]
+
+    - name: [Jenkins] 生成 Jenkins Pipeline 模板
+      ansible.builtin.template:
+        src: Jenkinsfile.j2
+        dest: "{{ jenkins_data_dir }}/Jenkinsfile"
+        mode: '0644'
+      ignore_errors: true
+      tags: [cicd, jenkins, pipeline]
+
+    - name: [Jenkins] 配置备份定时任务
+      ansible.builtin.cron:
+        name: "Jenkins backup"
+        minute: "0"
+        hour: "3"
+        job: "tar -czf {{ backup_dir }}/jenkins/jenkins-$(date +\\%Y\\%m\\%d).tar.gz {{ jenkins_data_dir }} 2>/dev/null"
+        user: root
+      tags: [cicd, jenkins, backup]
+  tags: [cicd, jenkins]
+
+# ======================== 部署 Harbor ========================
+- name: 部署 Harbor
+  block:
+    - name: [Harbor] 下载 Harbor 离线安装包
+      ansible.builtin.get_url:
+        url: "https://github.com/goharbor/harbor/releases/download/v{{ harbor_version }}/harbor-offline-installer-v{{ harbor_version }}.tgz"
+        dest: "/tmp/harbor-offline-installer-v{{ harbor_version }}.tgz"
+        mode: '0644'
+      tags: [cicd, harbor, download]
+
+    - name: [Harbor] 解压 Harbor 安装包
+      ansible.builtin.unarchive:
+        src: "/tmp/harbor-offline-installer-v{{ harbor_version }}.tgz"
+        dest: /opt/
+        remote_src: true
+        creates: "/opt/harbor-{{ harbor_version }}"
+      tags: [cicd, harbor, install]
+
+    - name: [Harbor] 生成 harbor.yml 配置
+      ansible.builtin.template:
+        src: harbor.yml.j2
+        dest: "/opt/harbor-{{ harbor_version }}/harbor.yml"
+        mode: '0644'
+      tags: [cicd, harbor, config]
+
+    - name: [Harbor] 执行 Harbor 安装脚本
+      ansible.builtin.command: |
+        ./install.sh \
+          --with-trivy \
+          --with-chartmuseum \
+          --with-notary
+      args:
+        chdir: "/opt/harbor-{{ harbor_version }}"
+      register: harbor_install
+      changed_when: "'installed' in harbor_install.stdout or harbor_install.rc == 0"
+      tags: [cicd, harbor, install]
+
+    - name: [Harbor] 等待 Harbor API 就绪
+      ansible.builtin.uri:
+        url: "http://localhost:{{ harbor_http_port }}/api/v2.0/health"
+        method: GET
+        status_code: 200
+      register: harbor_health
+      until: harbor_health.status == 200
+      retries: 30
+      delay: 10
+      ignore_errors: true
+      tags: [cicd, harbor, verify]
+
+    - name: [Harbor] 创建机器人账号
+      ansible.builtin.uri:
+        url: "http://localhost:{{ harbor_http_port }}/api/v2.0/robots"
+        method: POST
+        user: "admin"
+        password: "{{ harbor_admin_password }}"
+        body_format: json
+        body:
+          name: "{{ harbor_robot_account }}"
+          description: "{{ harbor_robot_description }}"
+          duration: 30
+          level: "project"
+          permissions:
+            - namespace: "library"
+              kind: "project"
+              access:
+                - resource: "repository"
+                  action: "pull"
+                - resource: "repository"
+                  action: "push"
+        force_basic_auth: true
+      register: robot_result
+      ignore_errors: true
+      tags: [cicd, harbor, robot]
+
+    - name: [Harbor] 配置 Webhook
+      ansible.builtin.uri:
+        url: "http://localhost:{{ harbor_http_port }}/api/v2.0/systemlevel/webhook/policies"
+        method: POST
+        user: "admin"
+        password: "{{ harbor_admin_password }}"
+        body_format: json
+        body:
+          name: "cicd-trigger"
+          event_types:
+            - "QUOTA_EXCEED"
+            - "QUOTA_WARN"
+            - "REPLICATION"
+            - "TAG_RETENTION"
+            - "SCANNING"
+            - "GC"
+          targets:
+            - type: "http"
+              endpoint: "{{ harbor_webhook_endpoint }}"
+              skip_cert_verify: true
+        force_basic_auth: true
+      when: harbor_webhook_enabled | bool
+      ignore_errors: true
+      tags: [cicd, harbor, webhook]
+
+    - name: [Harbor] 配置备份定时任务
+      ansible.builtin.cron:
+        name: "Harbor backup"
+        minute: "0"
+        hour: "4"
+        job: "tar -czf {{ backup_dir }}/harbor/harbor-$(date +\\%Y\\%m\\%d).tar.gz {{ harbor_data_dir }} /opt/harbor-{{ harbor_version }} 2>/dev/null"
+        user: root
+      tags: [cicd, harbor, backup]
+  tags: [cicd, harbor]
+
+# ======================== 配置 CI/CD 防火墙 ========================
+- name: 配置 CI/CD 防火墙端口
+  community.general.firewalld:
+    port: "{{ item.port }}/{{ item.protocol | default('tcp') }}"
+    permanent: true
+    state: enabled
+    immediate: true
+  loop:
+    - { port: "80", protocol: 'tcp' }
+    - { port: "443", protocol: 'tcp' }
+    - { port: "2222", protocol: 'tcp' }
+    - { port: "8080", protocol: 'tcp' }
+    - { port: "50000", protocol: 'tcp' }
+    - { port: "5005", protocol: 'tcp' }
+  ignore_errors: true
+  tags: [cicd, firewall]
+
+# ======================== 配置镜像仓库信任 ========================
+- name: 配置 Docker 镜像仓库信任
+  block:
+    - name: 创建 Docker 配置目录
+      ansible.builtin.file:
+        path: /etc/docker
+        state: directory
+        mode: '0755'
+      tags: [cicd, docker, trust]
+
+    - name: 配置 insecure-registries
+      ansible.builtin.copy:
+        content: |
+          {
+            "insecure-registries": [
+              "{{ harbor_external_url | regex_replace('https?://', '') | regex_replace(':.*', '') }}:{{ harbor_http_port }}",
+              "localhost:5000"
+            ],
+            "registry-mirrors": [
+              "https://mirror.ccs.tencentyun.com"
+            ]
+          }
+        dest: /etc/docker/daemon.json
+        mode: '0644'
+      notify: restart docker
+      tags: [cicd, docker, config]
+  tags: [cicd, docker]

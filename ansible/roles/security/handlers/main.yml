@@ -1,0 +1,44 @@
+---
+# ansible/roles/security/handlers/main.yml - 安全 Handlers
+
+- name: restart sshd
+  ansible.builtin.systemd:
+    name: sshd
+    state: restarted
+
+- name: reload sshd
+  ansible.builtin.command: systemctl reload sshd
+  changed_when: true
+
+- name: restart firewalld
+  ansible.builtin.systemd:
+    name: firewalld
+    state: restarted
+
+- name: reload firewalld
+  ansible.builtin.command: firewall-cmd --reload
+  changed_when: true
+
+- name: restart auditd
+  ansible.builtin.systemd:
+    name: auditd
+    state: restarted
+
+- name: restart crond
+  ansible.builtin.systemd:
+    name: crond
+    state: restarted
+
+- name: update ca-certificates
+  ansible.builtin.command: update-ca-certificates
+  changed_when: true
+
+- name: restart nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: restarted
+
+- name: reload nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded

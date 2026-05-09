@@ -1,0 +1,25 @@
+---
+# ansible/roles/cicd/handlers/main.yml - CI/CD Handlers
+
+- name: restart gitlab
+  community.docker.docker_compose:
+    project_src: "{{ gitlab_config_dir }}"
+    state: restarted
+
+- name: restart jenkins
+  community.docker.docker_compose:
+    project_src: "{{ jenkins_config_dir }}"
+    state: restarted
+
+- name: restart harbor
+  ansible.builtin.command: "docker-compose restart"
+  args:
+    chdir: "/opt/harbor-{{ harbor_version }}"
+
+- name: restart harbor core
+  ansible.builtin.command: "docker restart harbor-core"
+  changed_when: true
+
+- name: restart harbor registry
+  ansible.builtin.command: "docker restart harbor-registryctl"
+  changed_when: true

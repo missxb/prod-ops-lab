@@ -1,0 +1,620 @@
+# =============================================================================
+# Alertmanager 完整配置
+# 包含: 告警路由、接收者配置、抑制规则、静默规则、分组策略
+# =============================================================================
+
+---
+# Alertmanager ConfigMap - 核心配置文件
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: config
+data:
+  # Alertmanager 主配置文件
+  alertmanager.yml: |
+    # =============================================================================
+    # Alertmanager 主配置
+    # 定义告警路由、接收者、抑制规则等
+    # =============================================================================
+
+    global:
+      # 全局超时配置 - 告警发送超时
+      resolve_timeout: 5m
+
+      # SMTP配置 - 邮件告警发送
+      smtp_smarthost: 'smtp.example.com:587'
+      smtp_from: 'alertmanager@example.com'
+      smtp_auth_username: 'alertmanager@example.com'
+      smtp_auth_password: '${SMTP_PASSWORD}'
+      smtp_require_tls: true
+
+      # HTTP配置 - Webhook等外部集成
+      http_config:
+        follow_redirects: true
+        tls_config:
+          insecure_skip_verify: false
+          ca_file: /etc/alertmanager/certs/ca.crt
+
+      # Slack集成配置
+      slack_api_url: '${SLACK_WEBHOOK_URL}'
+
+      # PagerDuty集成
+      pagerduty_url: 'https://events.pagerduty.com/v2/enqueue'
+
+      # OpsGenie集成
+      opsgenie_api_url: 'https://api.opsgenie.com/'
+      opsgenie_api_key: '${OPSGENIE_API_KEY}'
+
+      # WeChat企业微信集成
+      wechat_api_url: 'https://qyapi.weixin.qq.com/cgi-bin/'
+      wechat_api_secret: '${WECHAT_API_SECRET}'
+      wechat_corp_id: '${WECHAT_CORP_ID}'
+
+    # =============================================================================
+    # 模板配置 - 告警通知模板
+    # =============================================================================
+    templates:
+      - '/etc/alertmanager/templates/*.tmpl'
+
+    # =============================================================================
+    # 抑制规则 - 避免告警风暴
+    # 当高优先级告警触发时，抑制低优先级告警
+    # =============================================================================
+    inhibit_rules:
+      # 当Critical级别告警触发时，抑制同source的Warning告警
+      - source_match:
+          severity: 'critical'
+        target_match:
+          severity: 'warning'
+        equal: ['alertname', 'instance']
+
+      # 当有更高严重级别的告警时，抑制较低级别的相同告警
+      - source_match:
+          severity: 'critical'
+        target_match_re:
+          severity: '^(warning|info)$'
+        equal: ['namespace']
+
+      # 集群级别的告警抑制Pod级别的同源告警
+      - source_match:
+          alertname: 'NodeDown'
+        target_match_re:
+          alertname: '^(PodNotReady|ContainerRestarting)$'
+        equal: ['instance']
+
+      # 当告警处于pending状态时不抑制，只有firing才抑制
+      - source_match:
+          alertstate: 'firing'
+        target_match:
+          alertstate: 'pending'
+        equal: ['alertname']
+
+    # =============================================================================
+    # 路由配置 - 告警分发策略
+    # =============================================================================
+    route:
+      # 默认接收者 - 未匹配任何路由的告警
+      receiver: 'default-notify'
+
+      # 每组告警的最大告警数
+      group_by: ['alertname', 'namespace', 'severity']
+
+      # 第一条匹配的路由即停止匹配
+      group_wait: 30s
+
+      # 同一组告警的发送间隔
+      group_interval: 5m
+
+      # 已发送告警的重复发送间隔
+      repeat_interval: 4h
+
+      # 子路由配置
+      routes:
+        # ================================================================
+        # Critical级别告警 - 立即通知
+        # ================================================================
+        - match:
+            severity: 'critical'
+          receiver: 'critical-notify'
+          group_wait: 10s
+          group_interval: 1m
+          repeat_interval: 30m
+
+          # Critical告警同时发送到多个渠道
+          continue: true
+
+          routes:
+            - match:
+                alertname: 'NodeDown'
+              receiver: 'infra-critical'
+              group_wait: 5s
+
+            - match:
+                alertname: 'PodCrashLooping'
+              receiver: 'app-critical'
+              group_wait: 5s
+
+            - match:
+                alertname: 'DatabaseDown'
+              receiver: 'db-critical'
+              group_wait: 5s
+
+        # ================================================================
+        # Warning级别告警 - 标准通知
+        # ================================================================
+        - match:
+            severity: 'warning'
+          receiver: 'warning-notify'
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+
+          routes:
+            - match:
+                namespace: 'production'
+              receiver: 'production-warning'
+              group_wait: 15s
+              repeat_interval: 2h
+
+            - match:
+                namespace: 'staging'
+              receiver: 'staging-notify'
+              group_wait: 30s
+              repeat_interval: 8h
+
+        # ================================================================
+        # Info级别告警 - 仅邮件通知
+        # ================================================================
+        - match:
+            severity: 'info'
+          receiver: 'info-notify'
+          group_wait: 1m
+          group_interval: 10m
+          repeat_interval: 24h
+
+        # ================================================================
+        # 基于告警名称的路由
+        # ================================================================
+        - match:
+            alertname: 'KubeNodeNotReady'
+          receiver: 'k8s-node-notify'
+          group_wait: 15s
+          repeat_interval: 1h
+
+        - match:
+            alertname: 'KubeDeploymentReplicasMismatch'
+          receiver: 'k8s-deploy-notify'
+          group_wait: 30s
+          repeat_interval: 2h
+
+        - match_re:
+            alertname: '^(MySQL|PostgreSQL|Redis|Mongodb).*$'
+          receiver: 'db-notify'
+          group_wait: 15s
+          group_interval: 2m
+          repeat_interval: 1h
+
+        # ================================================================
+        # 基于命名空间的路由
+        # ================================================================
+        - match:
+            namespace: 'monitoring'
+          receiver: 'monitoring-notify'
+          group_wait: 30s
+          repeat_interval: 6h
+
+    # =============================================================================
+    # 接收者配置 - 通知渠道
+    # =============================================================================
+    receivers:
+      # ----------------------------------------------------------------
+      # 默认通知 - 邮件 + Slack
+      # ----------------------------------------------------------------
+      - name: 'default-notify'
+        email_configs:
+          - to: 'ops-team@example.com'
+            subject: '[ALERT] {{ .GroupLabels.alertname }} - {{ .GroupLabels.severity }}'
+            html: |
+              <h2>Alert Manager Notification</h2>
+              <p><strong>Alert Name:</strong> {{ (index .Alerts 0).Labels.alertname }}</p>
+              <p><strong>Severity:</strong> {{ (index .Alerts 0).Labels.severity }}</p>
+              <p><strong>Namespace:</strong> {{ (index .Alerts 0).Labels.namespace }}</p>
+              <p><strong>Instance:</strong> {{ (index .Alerts 0).Labels.instance }}</p>
+              <p><strong>Description:</strong> {{ (index .Alerts 0).Annotations.description }}</p>
+              <p><strong>Runbook:</strong> <a href="{{ (index .Alerts 0).Annotations.runbook_url }}">{{ (index .Alerts 0).Annotations.runbook_url }}</a></p>
+            headers:
+              Subject: '[{{ .Status | toUpper }}:{{ .Alerts.Firing | len }}] AlertManager - {{ .GroupLabels.alertname }}'
+            send_resolved: true
+        slack_configs:
+          - channel: '#alerts-default'
+            title: '{{ .GroupLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}'
+            send_resolved: true
+            icon_emoji: ':fire:'
+
+      # ----------------------------------------------------------------
+      # Critical告警 - 邮件 + Slack + PagerDuty + 电话
+      # ----------------------------------------------------------------
+      - name: 'critical-notify'
+        email_configs:
+          - to: 'oncall@example.com'
+            subject: '[CRITICAL] {{ .GroupLabels.alertname }} - Immediate Attention Required'
+            send_resolved: true
+        slack_configs:
+          - channel: '#alerts-critical'
+            title: ':rotating_light: CRITICAL: {{ .GroupLabels.alertname }}'
+            text: |
+              {{ range .Alerts }}
+              *Alert:* {{ .Labels.alertname }}
+              *Severity:* {{ .Labels.severity }}
+              *Namespace:* {{ .Labels.namespace }}
+              *Instance:* {{ .Labels.instance }}
+              *Description:* {{ .Annotations.description }}
+              *Runbook:* {{ .Annotations.runbook_url }}
+              {{ end }}
+            send_resolved: true
+            icon_emoji: ':rotating_light:'
+            color: '{{ if eq .Status "firing" }}danger{{ else }}good{{ end }}'
+        pagerduty_configs:
+          - service_key: '${PAGERDUTY_SERVICE_KEY}'
+            severity: '{{ if eq (index .Alerts 0).Labels.severity "critical" }}critical{{ else }}warning{{ end }}'
+            description: '{{ .GroupLabels.alertname }} - {{ .GroupLabels.severity }}'
+            details:
+              firing: '{{ .Alerts.Firing | len }}'
+              resolved: '{{ .Alerts.Resolved | len }}'
+            send_resolved: true
+        wechat_configs:
+          - corp_id: '${WECHAT_CORP_ID}'
+            to_party: '2'
+            agent_id: '${WECHAT_AGENT_ID}'
+            to_user: '@all'
+            message: |
+              告警名称: {{ .GroupLabels.alertname }}
+              告警级别: {{ .GroupLabels.severity }}
+              触发时间: {{ (index .Alerts 0).StartsAt }}
+              告警描述: {{ (index .Alerts 0).Annotations.description }}
+
+      # ----------------------------------------------------------------
+      # Warning告警 - Slack + 邮件
+      # ----------------------------------------------------------------
+      - name: 'warning-notify'
+        slack_configs:
+          - channel: '#alerts-warning'
+            title: ':warning: WARNING: {{ .GroupLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}'
+            send_resolved: true
+            icon_emoji: ':warning:'
+        email_configs:
+          - to: 'ops-team@example.com'
+            subject: '[WARNING] {{ .GroupLabels.alertname }}'
+            send_resolved: true
+
+      # ----------------------------------------------------------------
+      # Info告警 - 仅邮件
+      # ----------------------------------------------------------------
+      - name: 'info-notify'
+        email_configs:
+          - to: 'ops-team@example.com'
+            subject: '[INFO] {{ .GroupLabels.alertname }}'
+            send_resolved: true
+
+      # ----------------------------------------------------------------
+      # 生产环境告警 - Slack + 邮件 + PagerDuty
+      # ----------------------------------------------------------------
+      - name: 'production-warning'
+        slack_configs:
+          - channel: '#alerts-production'
+            title: ':rotating_light: PRODUCTION: {{ .GroupLabels.alertname }}'
+            text: |
+              {{ range .Alerts }}
+              *{{ .Labels.alertname }}*: {{ .Annotations.description }}
+              {{ end }}
+            send_resolved: true
+            icon_emoji: ':rotating_light:'
+        email_configs:
+          - to: 'prod-oncall@example.com'
+            subject: '[PROD WARNING] {{ .GroupLabels.alertname }}'
+            send_resolved: true
+        pagerduty_configs:
+          - service_key: '${PAGERDUTY_PROD_KEY}'
+            severity: warning
+            send_resolved: true
+
+      # ----------------------------------------------------------------
+      # Staging环境告警
+      # ----------------------------------------------------------------
+      - name: 'staging-notify'
+        slack_configs:
+          - channel: '#alerts-staging'
+            title: '[STAGING] {{ .GroupLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}'
+            send_resolved: true
+            icon_emoji: ':construction:'
+        email_configs:
+          - to: 'dev-team@example.com'
+            subject: '[STAGING] {{ .GroupLabels.alertname }}'
+            send_resolved: true
+
+      # ----------------------------------------------------------------
+      # K8s节点告警
+      # ----------------------------------------------------------------
+      - name: 'k8s-node-notify'
+        slack_configs:
+          - channel: '#alerts-k8s-nodes'
+            title: ':desktop_computer: K8s Node: {{ .GroupLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}'
+            send_resolved: true
+        email_configs:
+          - to: 'infra-team@example.com'
+            subject: '[K8S NODE] {{ .GroupLabels.alertname }}'
+            send_resolved: true
+
+      # ----------------------------------------------------------------
+      # K8s Deployment告警
+      # ----------------------------------------------------------------
+      - name: 'k8s-deploy-notify'
+        slack_configs:
+          - channel: '#alerts-k8s-deploy'
+            title: ':rocket: K8s Deployment: {{ .GroupLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}'
+            send_resolved: true
+        email_configs:
+          - to: 'app-team@example.com'
+            subject: '[K8S DEPLOY] {{ .GroupLabels.alertname }}'
+            send_resolved: true
+
+      # ----------------------------------------------------------------
+      # 数据库告警
+      # ----------------------------------------------------------------
+      - name: 'db-notify'
+        slack_configs:
+          - channel: '#alerts-database'
+            title: ':floppy_disk: Database: {{ .GroupLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}'
+            send_resolved: true
+        email_configs:
+          - to: 'dba-team@example.com'
+            subject: '[DATABASE] {{ .GroupLabels.alertname }}'
+            send_resolved: true
+
+      # ----------------------------------------------------------------
+      # 数据库Critical告警
+      # ----------------------------------------------------------------
+      - name: 'db-critical'
+        slack_configs:
+          - channel: '#alerts-database-critical'
+            title: ':rotating_light: CRITICAL Database: {{ .GroupLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}'
+            send_resolved: true
+            color: '{{ if eq .Status "firing" }}danger{{ else }}good{{ end }}'
+        email_configs:
+          - to: 'dba-oncall@example.com'
+            subject: '[DB CRITICAL] {{ .GroupLabels.alertname }}'
+            send_resolved: true
+        pagerduty_configs:
+          - service_key: '${PAGERDUTY_DB_KEY}'
+            severity: critical
+            send_resolved: true
+
+      # ----------------------------------------------------------------
+      # 基础设施Critical告警
+      # ----------------------------------------------------------------
+      - name: 'infra-critical'
+        slack_configs:
+          - channel: '#alerts-infra-critical'
+            title: ':rotating_light: CRITICAL Infrastructure: {{ .GroupLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}'
+            send_resolved: true
+            color: '{{ if eq .Status "firing" }}danger{{ else }}good{{ end }}'
+        email_configs:
+          - to: 'infra-oncall@example.com'
+            subject: '[INFRA CRITICAL] {{ .GroupLabels.alertname }}'
+            send_resolved: true
+        pagerduty_configs:
+          - service_key: '${PAGERDUTY_INFRA_KEY}'
+            severity: critical
+            send_resolved: true
+
+      # ----------------------------------------------------------------
+      # 应用Critical告警
+      # ----------------------------------------------------------------
+      - name: 'app-critical'
+        slack_configs:
+          - channel: '#alerts-app-critical'
+            title: ':rotating_light: CRITICAL Application: {{ .GroupLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}'
+            send_resolved: true
+            color: '{{ if eq .Status "firing" }}danger{{ else }}good{{ end }}'
+        email_configs:
+          - to: 'app-oncall@example.com'
+            subject: '[APP CRITICAL] {{ .GroupLabels.alertname }}'
+            send_resolved: true
+        pagerduty_configs:
+          - service_key: '${PAGERDUTY_APP_KEY}'
+            severity: critical
+            send_resolved: true
+
+      # ----------------------------------------------------------------
+      # 监控自身告警
+      # ----------------------------------------------------------------
+      - name: 'monitoring-notify'
+        slack_configs:
+          - channel: '#alerts-monitoring'
+            title: ':mag: Monitoring Self-Alert: {{ .GroupLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}'
+            send_resolved: true
+        email_configs:
+          - to: 'monitoring-team@example.com'
+            subject: '[MONITORING] {{ .GroupLabels.alertname }}'
+            send_resolved: true
+
+  # 告警通知模板
+  notification.tmpl: |
+    {{ define "slack.default.title" }}
+    [{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ .GroupLabels.SortedPairs.Values | join " " }}
+    {{ end }}
+
+    {{ define "slack.default.content" }}
+    {{ range .Alerts }}
+    *Alert:* {{ .Labels.alertname }}{{ if .Labels.severity }} - `{{ .Labels.severity }}`{{ end }}
+    *Description:* {{ .Annotations.description }}
+    *Details:*
+    {{ range .Labels.SortedPairs }}• *{{ .Name }}:* `{{ .Value }}`
+    {{ end }}
+    {{ end }}
+    {{ end }}
+
+    {{ define "email.default.subject" }}
+    [{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ .GroupLabels.SortedPairs.Values | join " " }}
+    {{ end }}
+
+---
+# Alertmanager 告警规则 (PrometheusRule)
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: alertmanager-rules
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: alertmanager
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    # =========================================================================
+    # Alertmanager自身健康检查规则
+    # =========================================================================
+    - name: alertmanager.health
+      rules:
+        - alert: AlertmanagerDown
+          expr: up{job="alertmanager"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            component: alertmanager
+          annotations:
+            summary: "Alertmanager实例 {{ $labels.instance }} 不可用"
+            description: "Alertmanager实例 {{ $labels.instance }} 已经超过5分钟无法访问。这将导致无法正常发送告警通知。"
+            runbook_url: "https://wiki.example.com/runbooks/alertmanager-down"
+            dashboard_url: "https://grafana.example.com/d/alertmanager-health"
+
+        - alert: AlertmanagerHighMemoryUsage
+          expr: process_resident_memory_bytes{job="alertmanager"} > 100 * 1024 * 1024
+          for: 10m
+          labels:
+            severity: warning
+            component: alertmanager
+          annotations:
+            summary: "Alertmanager实例 {{ $labels.instance }} 内存使用过高"
+            description: "Alertmanager实例 {{ $labels.instance }} 当前内存使用超过100MB，可能存在内存泄漏。"
+            runbook_url: "https://wiki.example.com/runbooks/alertmanager-high-memory"
+
+        - alert: AlertmanagerClusterNotHealthy
+          expr: count(up{job="alertmanager"} == 1) < 2
+          for: 5m
+          labels:
+            severity: critical
+            component: alertmanager
+          annotations:
+            summary: "Alertmanager集群健康节点数不足"
+            description: "Alertmanager集群中健康节点数少于2个，当前只有 {{ $value }} 个节点正常。"
+            runbook_url: "https://wiki.example.com/runbooks/alertmanager-cluster-unhealthy"
+
+        - alert: AlertmanagerNotificationsFailed
+          expr: rate(alertmanager_notifications_failed_total[5m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+            component: alertmanager
+          annotations:
+            summary: "Alertmanager通知发送失败"
+            description: "Alertmanager实例 {{ $labels.instance }} 的通知发送失败率在增加。集成: {{ $labels.integration }}"
+            runbook_url: "https://wiki.example.com/runbooks/alertmanager-notifications-failed"
+
+    # =========================================================================
+    # Prometheus监控规则
+    # =========================================================================
+    - name: prometheus.health
+      rules:
+        - alert: PrometheusDown
+          expr: up{job="prometheus"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            component: prometheus
+          annotations:
+            summary: "Prometheus实例 {{ $labels.instance }} 不可用"
+            description: "Prometheus实例已超过5分钟无法访问，所有监控数据采集将中断。"
+            runbook_url: "https://wiki.example.com/runbooks/prometheus-down"
+
+        - alert: PrometheusHighMemoryUsage
+          expr: process_resident_memory_bytes{job="prometheus"} > 2 * 1024 * 1024 * 1024
+          for: 10m
+          labels:
+            severity: warning
+            component: prometheus
+          annotations:
+            summary: "Prometheus内存使用超过2GB"
+            description: "Prometheus实例 {{ $labels.instance }} 当前内存使用超过2GB。"
+            runbook_url: "https://wiki.example.com/runbooks/prometheus-high-memory"
+
+        - alert: PrometheusTargetDown
+          expr: up == 0 and on(instance) group_left(job) scrape_duration_seconds > 0
+          for: 5m
+          labels:
+            severity: warning
+            component: prometheus
+          annotations:
+            summary: "Prometheus采集目标 {{ $labels.instance }} 不可达"
+            description: "Prometheus无法采集 {{ $labels.instance }} 的指标数据，已超过5分钟。"
+
+---
+# Alertmanager 静默规则 (用于维护窗口)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-silences
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: silences
+data:
+  # 静默规则说明文件 (实际静默通过API或UI管理)
+  silences.md: |
+    # Alertmanager 静默规则管理指南
+
+    ## 常用静默命令
+
+    ### 创建静默规则
+    ```bash
+    # 静默特定命名空间的所有告警 (维护窗口)
+    amtool silence add namespace=production \
+      --comment="生产环境维护窗口 2024-01-15 02:00-04:00 UTC" \
+      --start="2024-01-15T02:00:00Z" \
+      --end="2024-01-15T04:00:00Z"
+
+    # 静默特定告警名称
+    amtool silence add alertname=NodeDown \
+      --comment="已知节点维护" \
+      --start="2024-01-15T02:00:00Z" \
+      --end="2024-01-15T04:00:00Z"
+
+    # 静默特定实例
+    amtool silence add instance=node-03:9100 \
+      --comment="node-03 节点升级"
+    ```
+
+    ### 查看静默规则
+    ```bash
+    amtool silence query
+    amtool silence query namespace=production
+    ```
+
+    ### 取消静默规则
+    ```bash
+    amtool silence expire <silence-id>
+    ```

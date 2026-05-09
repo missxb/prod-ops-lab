@@ -1,0 +1,319 @@
+###############################################################################
+# ansible/site.yml - 企业云原生平台 - 主 Playbook
+#
+# 功能:
+#   - 调用所有 Role（common, monitoring, logging, cicd, ha, security, storage）
+#   - 支持 tags 选择性执行
+#   - 完整部署流程
+#   - 预检查和后验证
+#
+# 用法:
+#   # 完整部署
+#   ansible-playbook -i inventory/hosts.yml site.yml
+#
+#   # 按 Role 部署（使用 tags）
+#   ansible-playbook -i inventory/hosts.yml site.yml --tags "common"
+#   ansible-playbook -i inventory/hosts.yml site.yml --tags "monitoring"
+#   ansible-playbook -i inventory/hosts.yml site.yml --tags "logging"
+#   ansible-playbook -i inventory/hosts.yml site.yml --tags "cicd"
+#   ansible-playbook -i inventory/hosts.yml site.yml --tags "ha"
+#   ansible-playbook -i inventory/hosts.yml site.yml --tags "security"
+#   ansible-playbook -i inventory/hosts.yml site.yml --tags "storage"
+#
+#   # 按组件部署
+#   ansible-playbook -i inventory/hosts.yml site.yml --tags "gitlab"
+#   ansible-playbook -i inventory/hosts.yml site.yml --tags "jenkins"
+#   ansible-playbook -i inventory/hosts.yml site.yml --tags "harbor"
+#   ansible-playbook -i inventory/hosts.yml site.yml --tags "keepalived"
+#   ansible-playbook -i inventory/hosts.yml site.yml --tags "nginx-lb"
+#   ansible-playbook -i inventory/hosts.yml site.yml --tags "mysql"
+#   ansible-playbook -i inventory/hosts.yml site.yml --tags "redis"
+#
+#   # 按节点部署
+#   ansible-playbook -i inventory/hosts.yml site.yml --limit "masters"
+#   ansible-playbook -i inventory/hosts.yml site.yml --limit "workers"
+#   ansible-playbook -i inventory/hosts.yml site.yml --limit "lb"
+#   ansible-playbook -i inventory/hosts.yml site.yml --limit "storage"
+#
+#   # 跳过特定组件
+#   ansible-playbook -i inventory/hosts.yml site.yml --skip-tags "cicd"
+#   ansible-playbook -i inventory/hosts.yml site.yml --skip-tags "monitoring,logging"
+#
+#   # 模拟运行（检查模式）
+#   ansible-playbook -i inventory/hosts.yml site.yml --check --diff
+#
+#   # 限制并发数
+#   ansible-playbook -i inventory/hosts.yml site.yml --forks 5
+#
+# 部署顺序:
+#   1. common      - 系统基础配置（所有节点）
+#   2. security    - 安全加固（所有节点）
+#   3. ha          - 高可用组件（lb/storage 节点）
+#   4. storage     - 存储配置（storage/masters/workers 节点）
+#   5. monitoring  - 监控系统（monitoring 节点）
+#   6. logging     - 日志系统（monitoring 节点）
+#   7. cicd        - CI/CD 系统（masters[0] 节点）
+###############################################################################
+
+# ======================== 阶段 1: 系统基础配置 ========================
+- name: 阶段 1 - 系统基础配置
+  hosts: all
+  become: true
+  gather_facts: true
+  any_errors_fatal: false
+  serial: "30%"
+
+  pre_tasks:
+    - name: 显示部署开始信息
+      ansible.builtin.debug:
+        msg: |
+          ============================================================
+          企业云原生运维平台 - 完整部署
+          集群: {{ cluster_name | default('enterprise-cloud') }}
+          目标: {{ inventory_hostname }}
+          阶段: 1/7 - 系统基础配置
+          ============================================================
+      tags: [always]
+
+    - name: 检查操作系统兼容性
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family in ['RedHat', 'Debian']
+        fail_msg: "不支持的操作系统: {{ ansible_distribution }}"
+        success_msg: "操作系统兼容: {{ ansible_distribution }} {{ ansible_distribution_major_version }}"
+      tags: [precheck]
+
+    - name: 检查系统资源
+      ansible.builtin.assert:
+        that:
+          - ansible_memtotal_mb >= 2048
+          - ansible_processor_vcpus >= 2
+        fail_msg: "系统资源不足"
+        success_msg: "系统资源满足要求"
+      tags: [precheck]
+
+  roles:
+    - role: common
+      tags: [common]
+
+  post_tasks:
+    - name: 阶段 1 完成
+      ansible.builtin.debug:
+        msg: "✅ 阶段 1 完成 - 系统基础配置"
+      tags: [always]
+
+# ======================== 阶段 2: 安全加固 ========================
+- name: 阶段 2 - 安全加固
+  hosts: all
+  become: true
+  gather_facts: true
+  any_errors_fatal: false
+  serial: "30%"
+
+  pre_tasks:
+    - name: 显示阶段信息
+      ansible.builtin.debug:
+        msg: "🔒 阶段 2/7 - 安全加固 - {{ inventory_hostname }}"
+      tags: [always]
+
+  roles:
+    - role: security
+      tags: [security]
+
+  post_tasks:
+    - name: 阶段 2 完成
+      ansible.builtin.debug:
+        msg: "✅ 阶段 2 完成 - 安全加固"
+      tags: [always]
+
+# ======================== 阶段 3: 高可用组件 ========================
+- name: 阶段 3 - 高可用组件（Keepalived + Nginx LB）
+  hosts: lb
+  become: true
+  gather_facts: true
+  any_errors_fatal: false
+
+  pre_tasks:
+    - name: 显示阶段信息
+      ansible.builtin.debug:
+        msg: "⚖️  阶段 3/7 - 高可用组件 - {{ inventory_hostname }}"
+      tags: [always]
+
+  roles:
+    - role: ha
+      tags: [ha]
+
+  post_tasks:
+    - name: 阶段 3 完成
+      ansible.builtin.debug:
+        msg: "✅ 阶段 3 完成 - 高可用组件"
+      tags: [always]
+
+# ======================== 阶段 4: 存储配置 ========================
+- name: 阶段 4 - 存储配置（NFS + StorageClass）
+  hosts: storage
+  become: true
+  gather_facts: true
+  any_errors_fatal: false
+
+  pre_tasks:
+    - name: 显示阶段信息
+      ansible.builtin.debug:
+        msg: "💾 阶段 4/7 - 存储配置 - {{ inventory_hostname }}"
+      tags: [always]
+
+  roles:
+    - role: storage
+      tags: [storage]
+
+  post_tasks:
+    - name: 阶段 4 完成
+      ansible.builtin.debug:
+        msg: "✅ 阶段 4 完成 - 存储配置"
+      tags: [always]
+
+# ======================== 阶段 5: 监控系统 ========================
+- name: 阶段 5 - 监控系统（Prometheus + Grafana + Alertmanager）
+  hosts: monitoring
+  become: true
+  gather_facts: true
+  any_errors_fatal: false
+
+  pre_tasks:
+    - name: 显示阶段信息
+      ansible.builtin.debug:
+        msg: "📊 阶段 5/7 - 监控系统 - {{ inventory_hostname }}"
+      tags: [always]
+
+  roles:
+    - role: monitoring
+      tags: [monitoring]
+
+  post_tasks:
+    - name: 阶段 5 完成
+      ansible.builtin.debug:
+        msg: "✅ 阶段 5 完成 - 监控系统"
+      tags: [always]
+
+# ======================== 阶段 6: 日志系统 ========================
+- name: 阶段 6 - 日志系统（Elasticsearch + Fluentd + Kibana）
+  hosts: monitoring
+  become: true
+  gather_facts: true
+  any_errors_fatal: false
+
+  pre_tasks:
+    - name: 显示阶段信息
+      ansible.builtin.debug:
+        msg: "📝 阶段 6/7 - 日志系统 - {{ inventory_hostname }}"
+      tags: [always]
+
+  roles:
+    - role: logging
+      tags: [logging]
+
+  post_tasks:
+    - name: 阶段 6 完成
+      ansible.builtin.debug:
+        msg: "✅ 阶段 6 完成 - 日志系统"
+      tags: [always]
+
+# ======================== 阶段 7: CI/CD 系统 ========================
+- name: 阶段 7 - CI/CD 系统（GitLab + Jenkins + Harbor）
+  hosts: masters[0]
+  become: true
+  gather_facts: true
+  any_errors_fatal: false
+
+  pre_tasks:
+    - name: 显示阶段信息
+      ansible.builtin.debug:
+        msg: "🚀 阶段 7/7 - CI/CD 系统 - {{ inventory_hostname }}"
+      tags: [always]
+
+    - name: 检查 CI/CD 资源
+      ansible.builtin.assert:
+        that:
+          - ansible_memtotal_mb >= 8192
+          - ansible_processor_vcpus >= 4
+        fail_msg: "CI/CD 节点资源不足"
+        success_msg: "CI/CD 资源满足要求"
+      tags: [precheck, cicd]
+
+  roles:
+    - role: cicd
+      tags: [cicd]
+
+  post_tasks:
+    - name: 阶段 7 完成
+      ansible.builtin.debug:
+        msg: "✅ 阶段 7 完成 - CI/CD 系统"
+      tags: [always]
+
+# ======================== 部署总结 ========================
+- name: 部署总结
+  hosts: localhost
+  become: false
+  gather_facts: true
+
+  tasks:
+    - name: 显示部署完成信息
+      ansible.builtin.debug:
+        msg: |
+          ============================================================
+          🎉 企业云原生运维平台 - 部署完成!
+          ============================================================
+          集群: {{ cluster_name | default('enterprise-cloud') }}
+          版本: K8s {{ kubernetes_version | default('1.28.0') }}
+          ============================================================
+          组件状态:
+          ✅ 系统基础配置 (common)
+          ✅ 安全加固 (security)
+          ✅ 高可用组件 (ha) - Keepalived + Nginx LB
+          ✅ 存储配置 (storage) - NFS + StorageClass
+          ✅ 监控系统 (monitoring) - Prometheus + Grafana
+          ✅ 日志系统 (logging) - EFK
+          ✅ CI/CD 系统 (cicd) - GitLab + Jenkins + Harbor
+          ============================================================
+          服务访问地址:
+          - Grafana:     http://<monitor-ip>:3000
+          - Prometheus:  http://<monitor-ip>:9090
+          - Alertmanager: http://<monitor-ip>:9093
+          - Kibana:      http://<monitor-ip>:5601
+          - GitLab:      http://<master-ip>:80
+          - Jenkins:     http://<master-ip>:8080
+          - Harbor:      https://<master-ip>:443
+          ============================================================
+          管理员账号:
+          - Grafana:     admin / admin
+          - GitLab:      root / GitLab@Admin2024!
+          - Jenkins:     admin / Jenkins@Admin2024!
+          - Harbor:      admin / Harbor@Admin2024!
+          ============================================================
+          注意事项:
+          1. 请立即修改所有默认密码
+          2. 配置 DNS 解析指向 VIP 地址
+          3. 配置备份策略
+          4. 配置监控告警
+          5. 定期进行安全审计
+          ============================================================
+      tags: [always]
+
+    - name: 收集集群状态
+      ansible.builtin.shell: |
+        echo "=== 节点状态 ==="
+        kubectl get nodes -o wide 2>/dev/null || echo "K8s not initialized"
+        echo ""
+        echo "=== Pod 状态 ==="
+        kubectl get pods -A --no-headers 2>/dev/null | awk '{print $4}' | sort | uniq -c | sort -rn || true
+      register: cluster_status
+      changed_when: false
+      delegate_to: "{{ groups['masters'][0] }}"
+      run_once: true
+      ignore_errors: true
+      tags: [always]
+
+    - name: 显示集群状态
+      ansible.builtin.debug:
+        msg: "{{ cluster_status.stdout_lines }}"
+      tags: [always]

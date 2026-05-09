@@ -1,0 +1,41 @@
+---
+# ansible/roles/ha/handlers/main.yml - 高可用 Handlers
+
+- name: restart keepalived
+  ansible.builtin.systemd:
+    name: keepalived
+    state: restarted
+    daemon_reload: true
+
+- name: reload keepalived
+  ansible.builtin.systemd:
+    name: keepalived
+    state: reloaded
+
+- name: restart nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: restarted
+
+- name: reload nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded
+
+- name: restart mysql
+  ansible.builtin.systemd:
+    name: mysqld
+    state: restarted
+    daemon_reload: true
+
+- name: restart redis
+  ansible.builtin.systemd:
+    name: redis
+    state: restarted
+    daemon_reload: true
+
+- name: restart redis-sentinel
+  ansible.builtin.systemd:
+    name: redis-sentinel
+    state: restarted
+    daemon_reload: true

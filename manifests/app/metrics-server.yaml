@@ -1,0 +1,899 @@
+# =============================================================================
+# Metrics Server 完整配置
+# 包含: Metrics Server部署、HPA支持、资源使用监控、API服务注册
+# =============================================================================
+
+---
+# Metrics Server Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kube-system
+  labels:
+    app.kubernetes.io/name: metrics-server
+  annotations:
+    # 避免被kubectl delete误删
+    kubectl.kubernetes.io/last-applied-configuration: ""
+
+---
+# Metrics Server Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metrics-server
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: metrics-server
+    app.kubernetes.io/component: server
+    app.kubernetes.io/version: "0.7.0"
+spec:
+  replicas: 2
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: metrics-server
+      app.kubernetes.io/component: server
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: metrics-server
+        app.kubernetes.io/component: server
+        app.kubernetes.io/version: "0.7.0"
+    spec:
+      # 安全上下文 - 全局
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+
+      # 调度约束 - 高可用部署
+      affinity:
+        # 反亲和 - 避免所有副本运行在同一节点
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: metrics-server
+                    app.kubernetes.io/component: server
+                topologyKey: kubernetes.io/hostname
+
+      serviceAccountName: metrics-server
+      # 允许调度到master节点
+      tolerations:
+        - key: "node-role.kubernetes.io/control-plane"
+          operator: "Exists"
+          effect: "NoSchedule"
+        - key: "node-role.kubernetes.io/master"
+          operator: "Exists"
+          effect: "NoSchedule"
+
+      # 容器终止宽限期
+      terminationGracePeriodSeconds: 30
+
+      containers:
+        # ================================================================
+        # Metrics Server主容器
+        # ================================================================
+        - name: metrics-server
+          image: registry.k8s.io/metrics-server/metrics-server:v0.7.0
+          imagePullPolicy: IfNotPresent
+
+          args:
+            # 指定kubelet使用的证书
+            - --kubelet-insecure-tls=false
+            # kubelet HTTPS端口
+            - --kubelet-port=10250
+            # kubelet API地址 (默认使用节点IP)
+            - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+            # 采集间隔
+            - --metric-resolution=15s
+            # 请求超时
+            - --request-timeout=25s
+            # 启用聚合API
+            - --secure-port=4443
+            # 启用请求日志
+            - --v=2
+            # 启用profiling (生产环境关闭)
+            # - --profiling=true
+            # 最大并发请求
+            - --max-requests-in-flight=400
+            # 是否允许非安全TLS连接
+            - --kubelet-use-node-status-port
+
+          ports:
+            - name: https
+              containerPort: 4443
+              protocol: TCP
+            - name: metrics
+              containerPort: 8443
+              protocol: TCP
+
+          # 环境变量
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+
+          # 资源请求和限制
+          resources:
+            requests:
+              cpu: 100m
+              memory: 200Mi
+            limits:
+              cpu: 300m
+              memory: 400Mi
+
+          # 健康检查
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+            successThreshold: 1
+
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+
+          # 容器安全上下文
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
+
+          # 挂载点
+          volumeMounts:
+            # CA证书 - 用于验证kubelet证书
+            - name: kubelet-ca
+              mountPath: /etc/kubernetes/pki/ca.crt
+              subPath: ca.crt
+              readOnly: true
+            # 自签名证书
+            - name: self-signed-certs
+              mountPath: /certs
+              readOnly: false
+            # 临时目录
+            - name: tmp
+              mountPath: /tmp
+
+        # ================================================================
+        # Nanny Sidecar容器 - 自动调整资源
+        # ================================================================
+        - name: metrics-server-nanny
+          image: registry.k8s.io/prometheus-to-sd:v0.12.0
+          imagePullPolicy: IfNotPresent
+
+          args:
+            - --source=metrics-server:/metrics?port=8443
+            # 目标Prometheus PushGateway
+            # - --sink=prometheus:https://prometheus-pushgateway.monitoring.svc:9091
+            - --v=2
+
+          resources:
+            requests:
+              cpu: 10m
+              memory: 20Mi
+            limits:
+              cpu: 50m
+              memory: 50Mi
+
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+      volumes:
+        # kubelet CA证书
+        - name: kubelet-ca
+          hostPath:
+            path: /etc/kubernetes/pki/ca.crt
+            type: FileOrCreate
+        # 自签名证书目录
+        - name: self-signed-certs
+          emptyDir: {}
+        # 临时文件
+        - name: tmp
+          emptyDir: {}
+
+---
+# Metrics Server Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: metrics-server
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: metrics-server
+    app.kubernetes.io/component: server
+spec:
+  selector:
+    app.kubernetes.io/name: metrics-server
+    app.kubernetes.io/component: server
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+      protocol: TCP
+    - name: metrics
+      port: 8443
+      targetPort: metrics
+      protocol: TCP
+
+---
+# Metrics Server Metrics Service (用于Prometheus采集)
+apiVersion: v1
+kind: Service
+metadata:
+  name: metrics-server-metrics
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: metrics-server
+    app.kubernetes.io/component: metrics
+spec:
+  selector:
+    app.kubernetes.io/name: metrics-server
+    app.kubernetes.io/component: server
+  ports:
+    - name: metrics
+      port: 8443
+      targetPort: metrics
+      protocol: TCP
+
+---
+# Metrics Server ServiceAccount
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: metrics-server
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: metrics-server
+    app.kubernetes.io/component: server
+
+---
+# Metrics Server ClusterRole - 允许读取节点和Pod指标
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: metrics-server
+  labels:
+    app.kubernetes.io/name: metrics-server
+    app.kubernetes.io/component: server
+rules:
+  # 读取节点信息
+  - apiGroups: [""]
+    resources: ["nodes/stats"]
+    verbs: ["get", "list", "watch"]
+  # 读取节点信息
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  # 读取Pod信息
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # 读取Pods/status
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get"]
+  # 读取Namespaces
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+  # 读取Events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  # 读取PersistentVolumes
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch"]
+  # 读取PersistentVolumeClaims
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
+  # 读取Deployments
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  # 读取DaemonSets
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    verbs: ["get", "list", "watch"]
+  # 读取Jobs
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  # 读取HPA
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  # 读取Nodes/proxy (用于访问kubelet API)
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
+  # 读取Nodes/config (用于获取节点配置)
+  - apiGroups: [""]
+    resources: ["nodes/spec"]
+    verbs: ["get"]
+  # 读取Nodes/status
+  - apiGroups: [""]
+    resources: ["nodes/status"]
+    verbs: ["get"]
+  # 读取Services
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
+  # 读取Endpoints
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list", "watch"]
+  # 读取StorageClasses
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+
+---
+# Metrics Server ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: metrics-server
+  labels:
+    app.kubernetes.io/name: metrics-server
+    app.kubernetes.io/component: server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: metrics-server
+subjects:
+  - kind: ServiceAccount
+    name: metrics-server
+    namespace: kube-system
+
+---
+# Metrics Server Role - 用于ConfigMap操作
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: metrics-server-auth-reader
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: metrics-server
+    app.kubernetes.io/component: server
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+    resourceNames: ["extension-apiserver-authentication"]
+
+---
+# Metrics Server RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: metrics-server-auth-reader
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: metrics-server
+    app.kubernetes.io/component: server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: metrics-server-auth-reader
+subjects:
+  - kind: ServiceAccount
+    name: metrics-server
+    namespace: kube-system
+
+---
+# Metrics Server APIService注册
+# 注册 metrics.k8s.io/v1beta1 API
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1beta1.metrics.k8s.io
+  labels:
+    app.kubernetes.io/name: metrics-server
+    app.kubernetes.io/component: apiservice
+spec:
+  service:
+    name: metrics-server
+    namespace: kube-system
+    port: 443
+  group: metrics.k8s.io
+  version: v1beta1
+  insecureSkipTLSVerify: true
+  groupPriorityMinimum: 100
+  versionPriority: 100
+
+---
+# NetworkPolicy - 限制Metrics Server网络访问
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: metrics-server
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: metrics-server
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: metrics-server
+      app.kubernetes.io/component: server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 允许API Server访问Metrics Server
+    - from:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              component: kube-apiserver
+      ports:
+        - protocol: TCP
+          port: 4443
+    # 允许Prometheus采集指标
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8443
+  egress:
+    # 允许访问Kubelet
+    - ports:
+        - protocol: TCP
+          port: 10250
+    # 允许访问API Server
+    - ports:
+        - protocol: TCP
+          port: 443
+    # 允许DNS查询
+    - ports:
+        - protocol: TCP
+          port: 53
+        - protocol: UDP
+          port: 53
+
+---
+# PodDisruptionBudget - 确保滚动更新时至少有一个副本可用
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: metrics-server
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: metrics-server
+    app.kubernetes.io/component: server
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: metrics-server
+      app.kubernetes.io/component: server
+
+---
+# =============================================================================
+# HorizontalPodAutoscaler (HPA) - 示例配置
+# 展示如何基于metrics-server提供的指标进行自动扩缩容
+# =============================================================================
+
+---
+# 基于CPU的HPA - Web应用
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: web-app-hpa
+  namespace: production
+  labels:
+    app.kubernetes.io/name: web-app
+    app.kubernetes.io/component: hpa
+spec:
+  # HPA目标 - 指向Deployment
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web-app
+  # 副本范围
+  minReplicas: 2
+  maxReplicas: 20
+  # 缩容冷却期 - 避免频繁扩缩
+  behavior:
+    # 扩容策略
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 100        # 最多扩容100%
+          periodSeconds: 60
+        - type: Pods
+          value: 4          # 或最多增加4个Pod
+          periodSeconds: 60
+      selectPolicy: Max     # 选择激进策略
+    # 缩容策略
+    scaleDown:
+      stabilizationWindowSeconds: 300    # 5分钟冷却期
+      policies:
+        - type: Percent
+          value: 10         # 每次最多缩容10%
+          periodSeconds: 60
+        - type: Pods
+          value: 1          # 或每次最多减少1个Pod
+          periodSeconds: 60
+      selectPolicy: Min     # 选择保守策略
+  # 指标配置
+  metrics:
+    # CPU使用率指标
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70    # 目标CPU使用率70%
+    # 内存使用率指标
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80    # 目标内存使用率80%
+
+---
+# 基于自定义指标的HPA - API Gateway
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-gateway-hpa
+  namespace: production
+  labels:
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/component: hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-gateway
+  minReplicas: 3
+  maxReplicas: 50
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 30
+        - type: Pods
+          value: 5
+          periodSeconds: 30
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+      selectPolicy: Min
+  metrics:
+    # 基于CPU
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+    # 基于自定义指标 - 每秒请求数
+    - type: Pods
+      pods:
+        metric:
+          name: http_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "1000"    # 每Pod目标1000 RPS
+    # 基于外部指标 - 队列深度
+    - type: External
+      external:
+        metric:
+          name: sqs_queue_length
+          selector:
+            matchLabels:
+              queue: "api-requests"
+        target:
+          type: AverageValue
+          averageValue: "100"     # 队列深度目标100
+
+---
+# 基于多个指标的HPA - 数据处理Worker
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker-hpa
+  namespace: production
+  labels:
+    app.kubernetes.io/name: data-worker
+    app.kubernetes.io/component: hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: data-worker
+  minReplicas: 2
+  maxReplicas: 30
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 3
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 600     # 10分钟冷却
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+  metrics:
+    # CPU使用率
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
+    # 内存使用率
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+    # 自定义指标 - 队列中的任务数
+    - type: Pods
+      pods:
+        metric:
+          name: queue_tasks_pending
+        target:
+          type: AverageValue
+          averageValue: "50"
+
+---
+# =============================================================================
+# PodMonitor - Prometheus监控Metrics Server
+# =============================================================================
+
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: metrics-server
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: metrics-server
+    app.kubernetes.io/component: monitoring
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - kube-system
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: metrics-server
+      app.kubernetes.io/component: server
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+
+---
+# Metrics Server PrometheusRule - 告警规则
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: metrics-server-alerts
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: metrics-server
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    - name: metrics-server
+      rules:
+        # Metrics Server不可用
+        - alert: MetricsServerDown
+          expr: up{job="metrics-server"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            component: metrics-server
+          annotations:
+            summary: "Metrics Server实例不可用"
+            description: "Metrics Server已经停止响应超过5分钟，HPA和kubectl top将无法工作。"
+            runbook_url: "https://wiki.example.com/runbooks/metrics-server-down"
+
+        # Metrics Server高延迟
+        - alert: MetricsServerHighLatency
+          expr: histogram_quantile(0.99, rate(metrics_server_request_duration_seconds_bucket[5m])) > 5
+          for: 10m
+          labels:
+            severity: warning
+            component: metrics-server
+          annotations:
+            summary: "Metrics Server响应延迟过高"
+            description: "Metrics Server P99延迟超过5秒，可能影响HPA决策。"
+            runbook_url: "https://wiki.example.com/runbooks/metrics-server-high-latency"
+
+        # Metrics Server高内存使用
+        - alert: MetricsServerHighMemory
+          expr: container_memory_working_set_bytes{namespace="kube-system",pod=~"metrics-server.*"} > 300 * 1024 * 1024
+          for: 15m
+          labels:
+            severity: warning
+            component: metrics-server
+          annotations:
+            summary: "Metrics Server内存使用过高"
+            description: "Metrics Server Pod {{ $labels.pod }} 内存使用超过300MB。"
+
+        # Metrics Server高CPU使用
+        - alert: MetricsServerHighCPU
+          expr: rate(container_cpu_usage_seconds_total{namespace="kube-system",pod=~"metrics-server.*"}[5m]) > 0.2
+          for: 15m
+          labels:
+            severity: warning
+            component: metrics-server
+          annotations:
+            summary: "Metrics Server CPU使用过高"
+            description: "Metrics Server Pod {{ $labels.pod }} CPU使用率超过200m。"
+
+---
+# =============================================================================
+# 资源使用监控 - 资源配额和限制
+# =============================================================================
+
+---
+# ResourceQuota - 限制命名空间资源使用
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: production-quota
+  namespace: production
+  labels:
+    app.kubernetes.io/name: resource-quota
+    app.kubernetes.io/component: production
+spec:
+  hard:
+    # 计算资源配额
+    requests.cpu: "20"
+    requests.memory: "40Gi"
+    limits.cpu: "40"
+    limits.memory: "80Gi"
+    # 对象数量配额
+    pods: "100"
+    services: "20"
+    persistentvolumeclaims: "50"
+    configmaps: "100"
+    secrets: "100"
+    # 资源类别配额
+    count/deployments.apps: "20"
+    count/statefulsets.apps: "10"
+    count/jobs.batch: "20"
+    count/cronjobs.batch: "10"
+
+---
+# LimitRange - 默认资源限制
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: production-limits
+  namespace: production
+  labels:
+    app.kubernetes.io/name: limit-range
+    app.kubernetes.io/component: production
+spec:
+  limits:
+    # 容器默认限制
+    - type: Container
+      default:
+        cpu: "500m"
+        memory: "512Mi"
+      defaultRequest:
+        cpu: "100m"
+        memory: "128Mi"
+      max:
+        cpu: "4"
+        memory: "8Gi"
+      min:
+        cpu: "50m"
+        memory: "64Mi"
+      maxLimitRequestRatio:
+        cpu: "10"
+        memory: "4"
+
+    # Pod默认限制
+    - type: Pod
+      max:
+        cpu: "8"
+        memory: "16Gi"
+
+---
+# PodDisruptionBudget - 确保生产应用高可用
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: web-app-pdb
+  namespace: production
+  labels:
+    app.kubernetes.io/name: web-app
+    app.kubernetes.io/component: pdb
+spec:
+  minAvailable: 75%
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: web-app
+
+---
+# ClusterRole - 允许所有命名空间使用HPA
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hpa-viewer
+  labels:
+    app.kubernetes.io/name: hpa
+    app.kubernetes.io/component: rbac
+rules:
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]

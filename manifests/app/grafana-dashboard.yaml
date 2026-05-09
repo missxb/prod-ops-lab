@@ -1,0 +1,1042 @@
+# =============================================================================
+# Grafana Dashboard ConfigMap 配置
+# 包含: K8s集群监控Dashboard、应用监控Dashboard、数据库监控Dashboard
+# =============================================================================
+
+---
+# K8s集群监控 Dashboard
+# 监控集群节点、Pod、CPU、内存、磁盘、网络等核心指标
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-k8s-cluster
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: dashboard
+    grafana_dashboard: "1"           # Grafana Sidecar 自动加载带此标签的ConfigMap
+  annotations:
+    k8s-sidecar-target-directory: /tmp/dashboards/k8s-cluster
+    grafana-folder: "Kubernetes"     # Grafana侧边栏分组
+data:
+  k8s-cluster-dashboard.json: |
+    {
+      "annotations": {
+        "list": [
+          {
+            "builtIn": 1,
+            "datasource": "-- Grafana --",
+            "enable": true,
+            "hide": true,
+            "iconColor": "rgba(0, 211, 255, 1)",
+            "name": "Annotations & Alerts",
+            "type": "dashboard"
+          }
+        ]
+      },
+      "description": "Kubernetes Cluster Monitoring Dashboard - 监控集群节点、Pod、CPU、内存、磁盘、网络等核心指标",
+      "editable": true,
+      "gnetId": null,
+      "graphTooltip": 1,
+      "id": null,
+      "uid": "k8s-cluster-monitor",
+      "title": "K8s Cluster Monitoring",
+      "tags": ["kubernetes", "cluster", "monitoring"],
+      "timezone": "browser",
+      "schemaVersion": 36,
+      "version": 1,
+      "refresh": "30s",
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "templating": {
+        "list": [
+          {
+            "name": "datasource",
+            "label": "Prometheus Datasource",
+            "type": "datasource",
+            "query": "prometheus",
+            "current": { "text": "Prometheus", "value": "Prometheus" },
+            "hide": 0,
+            "includeAll": false,
+            "multi": false,
+            "options": [],
+            "refresh": 1,
+            "regex": "",
+            "skipUrlSync": false
+          },
+          {
+            "name": "namespace",
+            "label": "Namespace",
+            "type": "query",
+            "datasource": "${datasource}",
+            "query": "label_values(kube_pod_info, namespace)",
+            "current": { "text": "All", "value": "$__all" },
+            "hide": 0,
+            "includeAll": true,
+            "multi": false,
+            "options": [],
+            "refresh": 1,
+            "regex": "",
+            "sort": 1,
+            "skipUrlSync": false
+          },
+          {
+            "name": "node",
+            "label": "Node",
+            "type": "query",
+            "datasource": "${datasource}",
+            "query": "label_values(kube_node_info, node)",
+            "current": { "text": "All", "value": "$__all" },
+            "hide": 0,
+            "includeAll": true,
+            "multi": false,
+            "options": [],
+            "refresh": 1,
+            "regex": "",
+            "sort": 1,
+            "skipUrlSync": false
+          }
+        ]
+      },
+      "panels": [
+        {
+          "title": "集群概览 - 节点状态",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 4, "x": 0, "y": 0 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 1 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "count(kube_node_info{node=~\"$node\"}) - count(kube_node_status_condition{condition=\"Ready\",status=\"true\"})",
+              "legendFormat": "Not Ready Nodes",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "title": "节点数量",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 4, "x": 4, "y": 0 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "blue", "value": null }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "count(kube_node_info{node=~\"$node\"})",
+              "legendFormat": "Total Nodes",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "title": "Pod 总数",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 4, "x": 8, "y": 0 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 100 },
+                  { "color": "red", "value": 500 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "count(kube_pod_info{namespace=~\"$namespace\"})",
+              "legendFormat": "Total Pods",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "title": "不健康Pod数",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 4, "x": 12, "y": 0 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 1 },
+                  { "color": "red", "value": 5 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "count(kube_pod_status_phase{phase=~\"Failed|Unknown\",namespace=~\"$namespace\"})",
+              "legendFormat": "Unhealthy Pods",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "title": "CPU 使用率 - 全集群",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 0.7 },
+                  { "color": "red", "value": 0.9 }
+                ]
+              },
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "showPoints": "auto",
+                "spanNulls": false
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=~\"$namespace\"}[5m])) / sum(kube_node_status_allocatable{resource=\"cpu\",node=~\"$node\"})",
+              "legendFormat": "Cluster CPU Usage",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=~\"$namespace\"}[5m])) by (namespace) / on() group_left() sum(kube_node_status_allocatable{resource=\"cpu\"})",
+              "legendFormat": "{{namespace}}",
+              "refId": "B"
+            }
+          ]
+        },
+        {
+          "title": "内存 使用率 - 全集群",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 0.7 },
+                  { "color": "red", "value": 0.9 }
+                ]
+              },
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 15,
+                "showPoints": "auto",
+                "spanNulls": false
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(container_memory_working_set_bytes{namespace=~\"$namespace\"}) / sum(kube_node_status_allocatable{resource=\"memory\",node=~\"$node\"})",
+              "legendFormat": "Cluster Memory Usage",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "title": "节点CPU使用率",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "1 - avg(rate(node_cpu_seconds_total{mode=\"idle\",node=~\"$node\"}[5m])) by (node)",
+              "legendFormat": "{{node}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "title": "节点内存使用率",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "1 - (node_memory_MemAvailable_bytes{node=~\"$node\"} / node_memory_MemTotal_bytes{node=~\"$node\"})",
+              "legendFormat": "{{node}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "title": "节点磁盘使用率",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 0.7 },
+                  { "color": "red", "value": 0.85 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "1 - (node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay\",node=~\"$node\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay\",node=~\"$node\"})",
+              "legendFormat": "{{node}} - {{mountpoint}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "title": "网络流量 (接收/发送)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "Bps",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "stacking": { "mode": "none" }
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(container_network_receive_bytes_total{namespace=~\"$namespace\"}[5m]))",
+              "legendFormat": "Receive",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(rate(container_network_transmit_bytes_total{namespace=~\"$namespace\"}[5m]))",
+              "legendFormat": "Transmit",
+              "refId": "B"
+            }
+          ]
+        },
+        {
+          "title": "Pod 重启次数 (Top 10)",
+          "type": "table",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 30 },
+          "datasource": "${datasource}",
+          "targets": [
+            {
+              "expr": "topk(10, increase(kube_pod_container_status_restarts_total{namespace=~\"$namespace\"}[1h]))",
+              "legendFormat": "{{namespace}}/{{pod}}",
+              "refId": "A",
+              "instant": true,
+              "format": "table"
+            }
+          ]
+        }
+      ]
+    }
+
+---
+# 应用监控 Dashboard
+# 监控应用级别的请求量、延迟、错误率、Saturation等RED指标
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-application
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: dashboard
+    grafana_dashboard: "1"
+  annotations:
+    k8s-sidecar-target-directory: /tmp/dashboards/application
+    grafana-folder: "Applications"
+data:
+  application-dashboard.json: |
+    {
+      "annotations": {
+        "list": [
+          {
+            "builtIn": 1,
+            "datasource": "-- Grafana --",
+            "enable": true,
+            "hide": true,
+            "name": "Annotations & Alerts",
+            "type": "dashboard"
+          }
+        ]
+      },
+      "description": "Application Monitoring Dashboard - 监控应用请求量、延迟、错误率、Saturation等RED指标",
+      "editable": true,
+      "uid": "app-monitor",
+      "title": "Application Monitoring (RED)",
+      "tags": ["application", "red", "monitoring"],
+      "timezone": "browser",
+      "schemaVersion": 36,
+      "version": 1,
+      "refresh": "15s",
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "templating": {
+        "list": [
+          {
+            "name": "datasource",
+            "label": "Prometheus",
+            "type": "datasource",
+            "query": "prometheus",
+            "current": { "text": "Prometheus", "value": "Prometheus" },
+            "hide": 0
+          },
+          {
+            "name": "namespace",
+            "label": "Namespace",
+            "type": "query",
+            "datasource": "${datasource}",
+            "query": "label_values(http_requests_total, namespace)",
+            "current": { "text": "All", "value": "$__all" },
+            "includeAll": true,
+            "multi": false,
+            "sort": 1
+          },
+          {
+            "name": "app",
+            "label": "Application",
+            "type": "query",
+            "datasource": "${datasource}",
+            "query": "label_values(http_requests_total{namespace=~\"$namespace\"}, app)",
+            "current": { "text": "All", "value": "$__all" },
+            "includeAll": true,
+            "multi": false,
+            "sort": 1
+          }
+        ]
+      },
+      "panels": [
+        {
+          "title": "Request Rate (RPS)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": { "lineWidth": 2, "fillOpacity": 15 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total{namespace=~\"$namespace\",app=~\"$app\"}[5m])) by (app, namespace)",
+              "legendFormat": "{{namespace}}/{{app}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "title": "Success Rate (%)",
+          "type": "stat",
+          "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "thresholds": {
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "orange", "value": 0.95 },
+                  { "color": "green", "value": 0.99 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "1 - (sum(rate(http_requests_total{namespace=~\"$namespace\",app=~\"$app\",code=~\"5..\"}[5m])) / sum(rate(http_requests_total{namespace=~\"$namespace\",app=~\"$app\"}[5m])))",
+              "legendFormat": "Success Rate",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "title": "P99 Latency (ms)",
+          "type": "stat",
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 500 },
+                  { "color": "red", "value": 1000 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace=~\"$namespace\",app=~\"$app\"}[5m])) by (le)) * 1000",
+              "legendFormat": "P99 Latency",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "title": "Request Latency Distribution",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "custom": { "lineWidth": 2, "fillOpacity": 10 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{namespace=~\"$namespace\",app=~\"$app\"}[5m])) by (le)) * 1000",
+              "legendFormat": "P50",
+              "refId": "A"
+            },
+            {
+              "expr": "histogram_quantile(0.90, sum(rate(http_request_duration_seconds_bucket{namespace=~\"$namespace\",app=~\"$app\"}[5m])) by (le)) * 1000",
+              "legendFormat": "P90",
+              "refId": "B"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{namespace=~\"$namespace\",app=~\"$app\"}[5m])) by (le)) * 1000",
+              "legendFormat": "P95",
+              "refId": "C"
+            },
+            {
+              "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{namespace=~\"$namespace\",app=~\"$app\"}[5m])) by (le)) * 1000",
+              "legendFormat": "P99",
+              "refId": "D"
+            }
+          ]
+        },
+        {
+          "title": "Error Rate by Status Code",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "custom": { "lineWidth": 2, "fillOpacity": 15 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total{namespace=~\"$namespace\",app=~\"$app\",code=~\"5..\"}[5m])) by (code)",
+              "legendFormat": "{{code}} Server Error",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(rate(http_requests_total{namespace=~\"$namespace\",app=~\"$app\",code=~\"4..\"}[5m])) by (code)",
+              "legendFormat": "{{code}} Client Error",
+              "refId": "B"
+            }
+          ]
+        },
+        {
+          "title": "Application CPU Usage",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "millicores",
+              "custom": { "lineWidth": 2, "fillOpacity": 15 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=~\"$namespace\",app=~\"$app\"}[5m])) by (pod) * 1000",
+              "legendFormat": "{{pod}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "title": "Application Memory Usage",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "custom": { "lineWidth": 2, "fillOpacity": 15 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "container_memory_working_set_bytes{namespace=~\"$namespace\",app=~\"$app\"} - container_memory_cached_bytes{namespace=~\"$namespace\",app=~\"$app\"}",
+              "legendFormat": "{{pod}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "title": "Request Rate by Endpoint",
+          "type": "table",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+          "datasource": "${datasource}",
+          "targets": [
+            {
+              "expr": "topk(20, sum(rate(http_requests_total{namespace=~\"$namespace\",app=~\"$app\"}[5m])) by (method, endpoint, code))",
+              "legendFormat": "",
+              "refId": "A",
+              "instant": true,
+              "format": "table"
+            }
+          ]
+        }
+      ]
+    }
+
+---
+# 数据库监控 Dashboard
+# 监控 MySQL/PostgreSQL 等数据库的连接数、查询性能、慢查询、复制状态等
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-database
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: dashboard
+    grafana_dashboard: "1"
+  annotations:
+    k8s-sidecar-target-directory: /tmp/dashboards/database
+    grafana-folder: "Databases"
+data:
+  database-dashboard.json: |
+    {
+      "annotations": {
+        "list": [
+          {
+            "builtIn": 1,
+            "datasource": "-- Grafana --",
+            "enable": true,
+            "hide": true,
+            "name": "Annotations & Alerts",
+            "type": "dashboard"
+          }
+        ]
+      },
+      "description": "Database Monitoring Dashboard - 监控数据库连接数、查询性能、慢查询、复制状态等",
+      "editable": true,
+      "uid": "db-monitor",
+      "title": "Database Monitoring",
+      "tags": ["database", "mysql", "postgresql", "monitoring"],
+      "timezone": "browser",
+      "schemaVersion": 36,
+      "version": 1,
+      "refresh": "30s",
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "templating": {
+        "list": [
+          {
+            "name": "datasource",
+            "label": "Prometheus",
+            "type": "datasource",
+            "query": "prometheus",
+            "current": { "text": "Prometheus", "value": "Prometheus" },
+            "hide": 0
+          },
+          {
+            "name": "db_type",
+            "label": "Database Type",
+            "type": "custom",
+            "query": "mysql,postgresql",
+            "current": { "text": "mysql", "value": "mysql" },
+            "hide": 0
+          },
+          {
+            "name": "namespace",
+            "label": "Namespace",
+            "type": "query",
+            "datasource": "${datasource}",
+            "query": "label_values(mysql_up{namespace!=\"\"}, namespace)",
+            "current": { "text": "All", "value": "$__all" },
+            "includeAll": true,
+            "multi": false,
+            "sort": 1
+          },
+          {
+            "name": "instance",
+            "label": "Instance",
+            "type": "query",
+            "datasource": "${datasource}",
+            "query": "label_values(mysql_up{namespace=~\"$namespace\"}, instance)",
+            "current": { "text": "All", "value": "$__all" },
+            "includeAll": true,
+            "multi": false,
+            "sort": 1
+          }
+        ]
+      },
+      "panels": [
+        {
+          "title": "数据库存活状态",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 4, "x": 0, "y": 0 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } }, "type": "value" }
+              ]
+            }
+          },
+          "targets": [
+            {
+              "expr": "mysql_up{namespace=~\"$namespace\",instance=~\"$instance\"}",
+              "legendFormat": "{{instance}}",
+              "refId": "A",
+              "instant": true
+            }
+          ]
+        },
+        {
+          "title": "当前连接数",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 4, "x": 4, "y": 0 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 100 },
+                  { "color": "red", "value": 200 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "mysql_global_status_threads_connected{namespace=~\"$namespace\",instance=~\"$instance\"}",
+              "legendFormat": "{{instance}} Connected",
+              "refId": "A",
+              "instant": true
+            }
+          ]
+        },
+        {
+          "title": "活动连接数",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 4, "x": 8, "y": 0 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 50 },
+                  { "color": "red", "value": 100 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "mysql_global_status_threads_running{namespace=~\"$namespace\",instance=~\"$instance\"}",
+              "legendFormat": "{{instance}} Active",
+              "refId": "A",
+              "instant": true
+            }
+          ]
+        },
+        {
+          "title": "最大连接数",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 4, "x": 12, "y": 0 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "blue", "value": null }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "mysql_global_variables_max_connections{namespace=~\"$namespace\",instance=~\"$instance\"}",
+              "legendFormat": "{{instance}} Max",
+              "refId": "A",
+              "instant": true
+            }
+          ]
+        },
+        {
+          "title": "查询吞吐量 (QPS)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "custom": { "lineWidth": 2, "fillOpacity": 15 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "rate(mysql_global_status_queries{namespace=~\"$namespace\",instance=~\"$instance\"}[5m])",
+              "legendFormat": "Queries/sec",
+              "refId": "A"
+            },
+            {
+              "expr": "rate(mysql_global_status_questions{namespace=~\"$namespace\",instance=~\"$instance\"}[5m])",
+              "legendFormat": "Questions/sec",
+              "refId": "B"
+            }
+          ]
+        },
+        {
+          "title": "慢查询数量",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 1 },
+                  { "color": "red", "value": 10 }
+                ]
+              },
+              "custom": { "lineWidth": 2, "fillOpacity": 20 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "rate(mysql_global_status_slow_queries{namespace=~\"$namespace\",instance=~\"$instance\"}[5m])",
+              "legendFormat": "Slow Queries/sec",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "title": "Innodb Row Operations",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "custom": { "lineWidth": 2, "fillOpacity": 10 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "rate(mysql_global_status_innodb_row_ops_total{operation=\"read\",namespace=~\"$namespace\",instance=~\"$instance\"}[5m])",
+              "legendFormat": "Reads/sec",
+              "refId": "A"
+            },
+            {
+              "expr": "rate(mysql_global_status_innodb_row_ops_total{operation=\"inserted\",namespace=~\"$namespace\",instance=~\"$instance\"}[5m])",
+              "legendFormat": "Inserts/sec",
+              "refId": "B"
+            },
+            {
+              "expr": "rate(mysql_global_status_innodb_row_ops_total{operation=\"updated\",namespace=~\"$namespace\",instance=~\"$instance\"}[5m])",
+              "legendFormat": "Updates/sec",
+              "refId": "C"
+            },
+            {
+              "expr": "rate(mysql_global_status_innodb_row_ops_total{operation=\"deleted\",namespace=~\"$namespace\",instance=~\"$instance\"}[5m])",
+              "legendFormat": "Deletes/sec",
+              "refId": "D"
+            }
+          ]
+        },
+        {
+          "title": "Innodb Buffer Pool Hit Rate",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "thresholds": {
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "orange", "value": 0.95 },
+                  { "color": "green", "value": 0.99 }
+                ]
+              },
+              "custom": { "lineWidth": 2, "fillOpacity": 10 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "rate(mysql_global_status_innodb_buffer_pool_read_requests{namespace=~\"$namespace\",instance=~\"$instance\"}[5m]) - rate(mysql_global_status_innodb_buffer_pool_reads{namespace=~\"$namespace\",instance=~\"$instance\"}[5m]) / rate(mysql_global_status_innodb_buffer_pool_read_requests{namespace=~\"$namespace\",instance=~\"$instance\"}[5m])",
+              "legendFormat": "Buffer Pool Hit Rate",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "title": "连接使用率",
+          "type": "gauge",
+          "gridPos": { "h": 6, "w": 8, "x": 0, "y": 22 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1,
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "orange", "value": 0.7 },
+                  { "color": "red", "value": 0.9 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            {
+              "expr": "mysql_global_status_threads_connected{namespace=~\"$namespace\",instance=~\"$instance\"} / mysql_global_variables_max_connections{namespace=~\"$namespace\",instance=~\"$instance\"}",
+              "legendFormat": "Connection Usage",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "title": "网络流量",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 16, "x": 8, "y": 22 },
+          "datasource": "${datasource}",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "Bps",
+              "custom": { "lineWidth": 2, "fillOpacity": 10 }
+            }
+          },
+          "targets": [
+            {
+              "expr": "rate(mysql_global_status_bytes_received{namespace=~\"$namespace\",instance=~\"$instance\"}[5m])",
+              "legendFormat": "Bytes Received",
+              "refId": "A"
+            },
+            {
+              "expr": "rate(mysql_global_status_bytes_sent{namespace=~\"$namespace\",instance=~\"$instance\"}[5m])",
+              "legendFormat": "Bytes Sent",
+              "refId": "B"
+            }
+          ]
+        }
+      ]
+    }
+
+---
+# Grafana Sidecar 自动加载 Dashboard 的 RBAC 配置
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana-sidecar
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: sidecar
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: grafana-sidecar
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: sidecar
+rules:
+  # 允许读取所有ConfigMap和Secrets中的Dashboard数据
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list", "watch"]
+  # 允许在集群范围内搜索Dashboard ConfigMap
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: grafana-sidecar
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: sidecar
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: grafana-sidecar
+subjects:
+  - kind: ServiceAccount
+    name: grafana-sidecar
+    namespace: monitoring

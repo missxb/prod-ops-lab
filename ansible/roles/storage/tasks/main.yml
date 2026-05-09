@@ -1,0 +1,435 @@
+###############################################################################
+# ansible/roles/storage/tasks/main.yml - 存储 Role
+#
+# 功能:
+#   - NFS 服务端配置（导出共享目录）
+#   - NFS 客户端挂载配置
+#   - Kubernetes StorageClass 配置
+#   - NFS Subdir External Provisioner 部署
+#   - 备份策略配置（本地 + 远程）
+#   - 存储监控和告警
+#
+# 适用节点: storage 组（NFS 服务端）
+#           masters/workers 组（NFS 客户端 + StorageClass）
+###############################################################################
+
+# ======================== NFS 服务端配置 ========================
+- name: 部署 NFS 服务端
+  block:
+    # --- 安装 NFS 包 ---
+    - name: [NFS] 安装 NFS 服务端
+      ansible.builtin.package:
+        name:
+          - nfs-utils
+          - rpcbind
+        state: present
+        update_cache: true
+      tags: [storage, nfs, packages]
+
+    # --- 创建共享目录 ---
+    - name: [NFS] 创建共享目录
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        mode: '0755'
+        owner: nobody
+        group: nobody
+      loop: "{{ nfs_export_roots }}"
+      tags: [storage, nfs, dirs]
+
+    # --- 配置 NFS 导出 ---
+    - name: [NFS] 生成 /etc/exports 配置
+      ansible.builtin.template:
+        src: exports.j2
+        dest: "{{ nfs_config_dir }}"
+        mode: '0644'
+      notify: exportfs reload
+      tags: [storage, nfs, config]
+
+    # --- 配置 NFS 服务参数 ---
+    - name: [NFS] 配置 NFS 服务参数
+      ansible.builtin.lineinfile:
+        path: /etc/sysconfig/nfs
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^RPCNFSDARGS=', line: 'RPCNFSDARGS="-N 4"' }
+        - { regexp: '^RPCMOUNTD_PORT=', line: 'RPCMOUNTD_PORT={{ nfs_mountd_port }}' }
+        - { regexp: '^STATD_PORT=', line: 'STATD_PORT={{ nfs_statd_port }}' }
+        - { regexp: '^STATD_ARG=', line: 'STATD_ARG="-p {{ nfs_statd_port }}"' }
+      notify: restart nfs-server
+      ignore_errors: true
+      tags: [storage, nfs, config]
+
+    # --- 启动 NFS 服务 ---
+    - name: [NFS] 启动 NFS 服务
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop:
+        - rpcbind
+        - nfs-server
+      tags: [storage, nfs, service]
+
+    # --- 验证 NFS 导出 ---
+    - name: [NFS] 验证导出列表
+      ansible.builtin.command: exportfs -v
+      register: nfs_exports
+      changed_when: false
+      tags: [storage, nfs, verify]
+
+    - name: [NFS] 显示导出信息
+      ansible.builtin.debug:
+        msg: "{{ nfs_exports.stdout_lines }}"
+      tags: [storage, nfs, verify]
+  when: "'storage' in group_names"
+  tags: [storage, nfs]
+
+# ======================== NFS 客户端配置 ========================
+- name: 配置 NFS 客户端
+  block:
+    # --- 安装 NFS 客户端 ---
+    - name: [NFS-Client] 安装 NFS 客户端
+      ansible.builtin.package:
+        name: nfs-utils
+        state: present
+      tags: [storage, nfs_client, packages]
+
+    # --- 创建挂载点 ---
+    - name: [NFS-Client] 创建挂载点
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        mode: '0755'
+      loop: "{{ nfs_export_roots }}"
+      tags: [storage, nfs_client, dirs]
+
+    # --- 挂载 NFS 共享 ---
+    - name: [NFS-Client] 挂载 NFS 共享
+      ansible.posix.mount:
+        path: "{{ item.path }}"
+        src: "{{ nfs_server | default(hostvars[groups['storage'][0]].ansible_host) }}:{{ item.path }}"
+        fstype: nfs
+        opts: "{{ item.options }},hard,timeo=600,retrans=2"
+        state: mounted
+      loop: "{{ nfs_export_roots }}"
+      tags: [storage, nfs_client, mount]
+
+    # --- 配置 fstab 永久挂载 ---
+    - name: [NFS-Client] 配置 fstab
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: "{{ nfs_server | default(hostvars[groups['storage'][0]].ansible_host) }}:{{ item.path }}"
+        line: "{{ nfs_server | default(hostvars[groups['storage'][0]].ansible_host) }}:{{ item.path }}  {{ item.path }}  nfs  {{ item.options }},hard,timeo=600,retrans=2  0  0"
+      loop: "{{ nfs_export_roots }}"
+      tags: [storage, nfs_client, fstab]
+
+    # --- 验证挂载 ---
+    - name: [NFS-Client] 验证 NFS 挂载
+      ansible.builtin.command: df -h | grep nfs
+      register: nfs_mount_status
+      changed_when: false
+      tags: [storage, nfs_client, verify]
+  when: "'masters' in group_names or 'workers' in group_names"
+  tags: [storage, nfs_client]
+
+# ======================== Kubernetes StorageClass 配置 ========================
+- name: 配置 Kubernetes StorageClass
+  block:
+    # --- 创建 NFS Provisioner 命名空间 ---
+    - name: [StorageClass] 创建 NFS Provisioner 命名空间
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ nfs_provisioner_namespace }}"
+      tags: [storage, storageclass, namespace]
+
+    # --- 部署 NFS Subdir External Provisioner ---
+    - name: [StorageClass] 生成 NFS Provisioner 部署清单
+      ansible.builtin.template:
+        src: nfs-provisioner.yml.j2
+        dest: "/tmp/nfs-provisioner.yml"
+        mode: '0644'
+      tags: [storage, storageclass, manifest]
+
+    - name: [StorageClass] 部署 NFS Provisioner
+      kubernetes.core.k8s:
+        state: present
+        src: "/tmp/nfs-provisioner.yml"
+      register: provisioner_deploy
+      tags: [storage, storageclass, deploy]
+
+    # --- 等待 Provisioner 就绪 ---
+    - name: [StorageClass] 等待 NFS Provisioner 就绪
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ nfs_provisioner_name }}"
+        namespace: "{{ nfs_provisioner_namespace }}"
+      register: provisioner_status
+      until: provisioner_status.resources[0].status.readyReplicas | default(0) >= 1
+      retries: 30
+      delay: 10
+      ignore_errors: true
+      tags: [storage, storageclass, verify]
+
+    # --- 创建 StorageClass ---
+    - name: [StorageClass] 生成 StorageClass 清单
+      ansible.builtin.template:
+        src: storageclass.yml.j2
+        dest: "/tmp/storageclass.yml"
+        mode: '0644'
+      tags: [storage, storageclass, manifest]
+
+    - name: [StorageClass] 应用 StorageClass
+      kubernetes.core.k8s:
+        state: present
+        src: "/tmp/storageclass.yml"
+      tags: [storage, storageclass, apply]
+
+    # --- 设置默认 StorageClass ---
+    - name: [StorageClass] 设置默认 StorageClass
+      ansible.builtin.command: |
+        kubectl patch storageclass {{ storageclass_name }} \
+          -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+      changed_when: false
+      ignore_errors: true
+      tags: [storage, storageclass, default]
+  when: "'masters' in group_names"
+  tags: [storage, storageclass]
+
+# ======================== 备份配置 ========================
+- name: 配置备份策略
+  block:
+    # --- 创建备份目录 ---
+    - name: [Backup] 创建备份目录
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ backup_base_dir }}"
+        - "{{ backup_local_dir }}"
+        - "{{ backup_remote_dir }}"
+        - "{{ backup_temp_dir }}"
+        - "{{ backup_base_dir }}/kubernetes"
+        - "{{ backup_base_dir }}/etcd"
+        - "{{ backup_base_dir }}/mysql"
+        - "{{ backup_base_dir }}/redis"
+        - "{{ backup_base_dir }}/config"
+      tags: [storage, backup, dirs]
+
+    # --- 安装备份工具 ---
+    - name: [Backup] 安装备份工具
+      ansible.builtin.package:
+        name:
+          - rsync
+          - tar
+          - gzip
+          - pigz
+          - pv
+        state: present
+      tags: [storage, backup, packages]
+
+    # --- 生成备份脚本 ---
+    - name: [Backup] 生成备份脚本
+      ansible.builtin.template:
+        src: backup.sh.j2
+        dest: /opt/scripts/backup.sh
+        mode: '0750'
+      tags: [storage, backup, script]
+
+    # --- 生成恢复脚本 ---
+    - name: [Backup] 生成恢复脚本
+      ansible.builtin.template:
+        src: restore.sh.j2
+        dest: /opt/scripts/restore.sh
+        mode: '0750'
+      tags: [storage, backup, script]
+
+    # --- 配置备份定时任务 ---
+    - name: [Backup] 配置备份定时任务
+      ansible.builtin.cron:
+        name: "Enterprise Backup"
+        minute: "{{ backup_schedule.split(' ')[0] }}"
+        hour: "{{ backup_schedule.split(' ')[1] }}"
+        day: "{{ backup_schedule.split(' ')[2] }}"
+        month: "{{ backup_schedule.split(' ')[3] }}"
+        weekday: "{{ backup_schedule.split(' ')[4] }}"
+        job: "/opt/scripts/backup.sh 2>&1 | tee -a /var/log/backup.log"
+        user: root
+      when: backup_enabled | bool
+      tags: [storage, backup, cron]
+
+    # --- 配置日志清理 ---
+    - name: [Backup] 配置备份日志清理
+      ansible.builtin.cron:
+        name: "Clean old backups"
+        minute: "30"
+        hour: "3"
+        job: "find {{ backup_base_dir }} -name '*.tar.gz' -mtime +{{ backup_retention_days }} -delete && find /var/log -name 'backup*.log' -mtime +30 -delete"
+        user: root
+      when: backup_enabled | bool
+      tags: [storage, backup, cleanup]
+
+    # --- 远程备份配置 ---
+    - name: [Backup] 配置远程备份（S3）
+      block:
+        - name: [Backup] 安装 AWS CLI
+          ansible.builtin.package:
+            name: awscli
+            state: present
+          ignore_errors: true
+          tags: [storage, backup, s3]
+
+        - name: [Backup] 配置 AWS 凭证
+          ansible.builtin.copy:
+            content: |
+              [default]
+              aws_access_key_id = {{ backup_remote_s3_access_key }}
+              aws_secret_access_key = {{ backup_remote_s3_secret_key }}
+              region = {{ backup_remote_s3_region }}
+            dest: /root/.aws/credentials
+            mode: '0600'
+          when: backup_remote_s3_access_key | length > 0
+          tags: [storage, backup, s3]
+
+        - name: [Backup] 生成远程备份脚本
+          ansible.builtin.template:
+            src: remote-backup.sh.j2
+            dest: /opt/scripts/remote-backup.sh
+            mode: '0750'
+          tags: [storage, backup, s3]
+
+        - name: [Backup] 配置远程备份定时任务
+          ansible.builtin.cron:
+            name: "Remote Backup to S3"
+            minute: "30"
+            hour: "4"
+            job: "/opt/scripts/remote-backup.sh 2>&1 | tee -a /var/log/remote-backup.log"
+            user: root
+          when: backup_remote_enabled | bool
+          tags: [storage, backup, s3_cron]
+      when: backup_remote_enabled | bool and backup_remote_type == "s3"
+      tags: [storage, backup, remote]
+  tags: [storage, backup]
+
+# ======================== 存储监控 ========================
+- name: 配置存储监控
+  block:
+    # --- 磁盘空间检查脚本 ---
+    - name: [Monitor] 生成磁盘空间检查脚本
+      ansible.builtin.copy:
+        content: |
+          #!/bin/bash
+          # 存储空间监控脚本
+          ALERT_THRESHOLD={{ storage_monitor_threshold_percent }}
+          ALERT_EMAIL="{{ storage_monitor_alert_email }}"
+          HOSTNAME=$(hostname)
+
+          echo "=========================================="
+          echo "Storage Monitor Report - ${HOSTNAME}"
+          echo "Date: $(date)"
+          echo "=========================================="
+
+          # 检查所有挂载点
+          df -h | grep -vE '^Filesystem|tmpfs|cdrom' | awk '{print $5 " " $6}' | while read output; do
+            usage=$(echo $output | awk '{print $1}' | sed 's/%//g')
+            mount=$(echo $output | awk '{print $2}')
+
+            if [ $usage -ge $ALERT_THRESHOLD ]; then
+              echo "WARNING: ${mount} is ${usage}% full on ${HOSTNAME}"
+              echo "WARNING: ${mount} is ${usage}% full on ${HOSTNAME}" | mail -s "Storage Alert - ${HOSTNAME}" ${ALERT_EMAIL} 2>/dev/null || true
+            fi
+          done
+
+          echo ""
+          echo "=== Disk Usage Summary ==="
+          df -h | grep -vE '^Filesystem|tmpfs|cdrom'
+          echo ""
+
+          echo "=== NFS Mount Status ==="
+          mount | grep nfs || echo "No NFS mounts found"
+          echo ""
+
+          echo "=== Inode Usage ==="
+          df -i | grep -vE '^Filesystem|tmpfs|cdrom'
+          echo ""
+          echo "=========================================="
+        dest: /opt/scripts/check-storage.sh
+        mode: '0755'
+      tags: [storage, monitor, script]
+
+    # --- 配置存储监控定时任务 ---
+    - name: [Monitor] 配置存储监控定时任务
+      ansible.builtin.cron:
+        name: "Storage Monitor"
+        minute: "0"
+        hour: "*/6"
+        job: "/opt/scripts/check-storage.sh 2>&1 | tee -a /var/log/storage-monitor.log"
+        user: root
+      when: storage_monitor_enabled | bool
+      tags: [storage, monitor, cron]
+
+    # --- 存储清理脚本 ---
+    - name: [Monitor] 生成存储清理脚本
+      ansible.builtin.copy:
+        content: |
+          #!/bin/bash
+          # 存储清理脚本
+          echo "Starting storage cleanup..."
+
+          # 清理旧的备份文件
+          find /data/backup -name "*.tar.gz" -mtime +{{ backup_retention_days }} -delete 2>/dev/null
+          find /data/backup -name "*.sql.gz" -mtime +{{ backup_retention_days }} -delete 2>/dev/null
+
+          # 清理旧的日志
+          find /var/log -name "*.log.*" -mtime +30 -delete 2>/dev/null
+          journalctl --vacuum-time=30d 2>/dev/null
+
+          # 清理 Docker 缓存（如果有）
+          docker system prune -f 2>/dev/null || true
+
+          # 清理临时文件
+          find /tmp -type f -mtime +7 -delete 2>/dev/null
+
+          # 清理包缓存
+          yum clean all 2>/dev/null || apt-get clean 2>/dev/null || true
+
+          echo "Storage cleanup completed at $(date)"
+        dest: /opt/scripts/cleanup-storage.sh
+        mode: '0755'
+      tags: [storage, monitor, cleanup]
+
+    # --- 配置存储清理定时任务 ---
+    - name: [Monitor] 配置存储清理定时任务
+      ansible.builtin.cron:
+        name: "Storage Cleanup"
+        minute: "0"
+        hour: "5"
+        day: "1"
+        job: "/opt/scripts/cleanup-storage.sh 2>&1 | tee -a /var/log/storage-cleanup.log"
+        user: root
+      tags: [storage, monitor, cleanup_cron]
+  tags: [storage, monitor]
+
+# ======================== 配置防火墙 ========================
+- name: 配置存储防火墙端口
+  community.general.firewalld:
+    port: "{{ item.port }}/{{ item.protocol | default('tcp') }}"
+    permanent: true
+    state: enabled
+    immediate: true
+  loop:
+    - { port: "2049", protocol: 'tcp' }
+    - { port: "2049", protocol: 'udp' }
+    - { port: "111", protocol: 'tcp' }
+    - { port: "111", protocol: 'udp' }
+    - { port: "892", protocol: 'tcp' }
+    - { port: "662", protocol: 'tcp' }
+  ignore_errors: true
+  tags: [storage, firewall]

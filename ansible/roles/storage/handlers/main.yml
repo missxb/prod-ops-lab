@@ -1,0 +1,36 @@
+---
+# ansible/roles/storage/handlers/main.yml - 存储 Handlers
+
+- name: restart nfs-server
+  ansible.builtin.systemd:
+    name: nfs-server
+    state: restarted
+
+- name: restart nfs-idb
+  ansible.builtin.systemd:
+    name: nfs-idb
+    state: restarted
+
+- name: restart rpcbind
+  ansible.builtin.systemd:
+    name: rpcbind
+    state: restarted
+
+- name: exportfs reload
+  ansible.builtin.command: exportfs -ra
+  changed_when: true
+
+- name: restart kubernetes-nfs-provisioner
+  ansible.builtin.command: |
+    kubectl rollout restart deployment {{ nfs_provisioner_name }} -n {{ nfs_provisioner_namespace }}
+  changed_when: true
+
+- name: restart mysql
+  ansible.builtin.systemd:
+    name: mysqld
+    state: restarted
+
+- name: restart redis
+  ansible.builtin.systemd:
+    name: redis
+    state: restarted

@@ -1,0 +1,713 @@
+# =============================================================================
+# NGINX Ingress Controller 完整配置
+# 包含: Ingress Controller部署、配置优化、TLS配置、自定义资源
+# =============================================================================
+
+---
+# NGINX Ingress Controller Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingress-nginx
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/part-of: ingress-nginx
+  annotations:
+    # Pod安全策略 - 限制容器权限
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+
+---
+# NGINX Ingress Controller ConfigMap - 核心配置
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ingress-nginx-controller
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/component: controller
+data:
+  # ==========================================================================
+  # 性能优化配置
+  # ==========================================================================
+
+  # Worker进程数 - auto表示使用CPU核心数
+  worker-processes: "auto"
+
+  # 每个Worker的最大连接数
+  worker-connections: "65536"
+
+  # Worker CPU亲和性 - 提升缓存命中率
+  worker-cpu-affinity: "auto"
+
+  # Keep-alive连接超时
+  keep-alive: "75"
+  keep-alive-requests: "1000"
+
+  # Upstream连接配置
+  upstream-keepalive-connections: "320"
+  upstream-keepalive-timeout: "60"
+  upstream-keepalive-requests: "10000"
+
+  # ==========================================================================
+  # 负载均衡配置
+  # ==========================================================================
+
+  # 负载均衡算法: round_robin, least_conn, ip_hash, ewma
+  load-balance: "ewma"
+
+  # 最大连接数限制
+  limit-conn-status-code: "429"
+  limit-whitelist: ""
+
+  # ==========================================================================
+  # SSL/TLS配置
+  # ==========================================================================
+
+  # SSL会话缓存 - 减少SSL握手开销
+  ssl-session-cache: "true"
+  ssl-session-cache-size: "10m"
+  ssl-session-timeout: "10m"
+
+  # SSL会话票据 - TLS 1.3
+  ssl-session-tickets: "false"
+
+  # SSL缓冲区大小
+  ssl-buffer-size: "4k"
+
+  # TLS协议版本 - 仅允许TLS 1.2+
+  ssl-protocols: "TLSv1.2 TLSv1.3"
+
+  # SSL密码套件 - 安全配置
+  ssl-ciphers: "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384"
+  ssl-prefer-server-ciphers: "true"
+
+  # OCSP Stapling - 证书验证优化
+  enable-ocsp: "true"
+
+  # ==========================================================================
+  # 安全头配置
+  # ==========================================================================
+
+  # HSTS (HTTP Strict Transport Security)
+  hsts: "true"
+  hsts-max-age: "31536000"
+  hsts-include-subdomains: "true"
+  hsts-preload: "true"
+
+  # 安全响应头
+  hide-headers: "X-Powered-By,Server"
+  add-headers: "ingress-nginx/custom-headers"
+
+  # ==========================================================================
+  # 性能与压缩
+  # ==========================================================================
+
+  # Gzip压缩
+  use-gzip: "true"
+  gzip-level: "5"
+  gzip-min-length: "256"
+  gzip-types: "application/javascript application/json application/xml text/plain text/css text/xml text/javascript application/x-javascript application/xml+rss image/svg+xml font/opentype"
+
+  # Brotli压缩 (如果支持)
+  enable-brotli: "true"
+  brotli-level: "4"
+
+  # ==========================================================================
+  # 日志配置
+  # ==========================================================================
+
+  # 日志格式
+  log-format-upstream: '$remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" $request_length $request_time [$proxy_upstream_name] [$proxy_alternative_upstream_name] $upstream_addr $upstream_response_length $upstream_response_time $upstream_status $req_id'
+
+  # 访问日志缓冲
+  enable-access-log-for-default-backend: "true"
+
+  # ==========================================================================
+  # 超时配置
+  # ==========================================================================
+
+  # 客户端超时
+  client-header-timeout: "60"
+  client-body-timeout: "60"
+
+  # 代理超时
+  proxy-connect-timeout: "10"
+  proxy-read-timeout: "30"
+  proxy-send-timeout: "30"
+
+  # ==========================================================================
+  # 安全配置
+  # ==========================================================================
+
+  # 限制请求体大小
+  proxy-body-size: "50m"
+
+  # 防止DDoS攻击
+  limit-req-status-code: "429"
+  limit-req-status-code: "503"
+
+  # 禁用server_tokens暴露版本
+  server-tokens: "false"
+
+  # 防止路径遍历攻击
+  use-forwarded-headers: "true"
+  compute-full-forwarded-for: "true"
+  enable-real-ip: "true"
+
+  # ==========================================================================
+  # 其他优化
+  # ==========================================================================
+
+  # 连接复用
+  reuse-port: "true"
+
+  # 模糊匹配
+  use-regex: "true"
+
+  # 全局默认后端
+  default-backend-service: "ingress-nginx/default-http-backend"
+
+---
+# 自定义安全响应头 ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: custom-headers
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/component: headers
+data:
+  # 防止点击劫持
+  X-Frame-Options: "SAMEORIGIN"
+  # 防止MIME类型嗅探
+  X-Content-Type-Options: "nosniff"
+  # XSS保护
+  X-XSS-Protection: "1; mode=block"
+  # 内容安全策略
+  Content-Security-Policy: "default-src 'self' 'unsafe-inline' 'unsafe-eval' https:; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: wss:; frame-ancestors 'self'"
+  # Referrer策略
+  Referrer-Policy: "strict-origin-when-cross-origin"
+  # 权限策略
+  Permissions-Policy: "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+  # 严格的传输安全
+  Strict-Transport-Security: "max-age=31536000; includeSubDomains; preload"
+  # 防止信息泄露
+  X-Permitted-Cross-Domain-Policies: "none"
+  # 跨域策略
+  Cross-Origin-Opener-Policy: "same-origin"
+  Cross-Origin-Embedder-Policy: "require-corp"
+  Cross-Origin-Resource-Policy: "same-origin"
+
+---
+# NGINX Ingress Controller Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingress-nginx-controller
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/version: "1.10.0"
+  annotations:
+    # 滚动更新策略
+    deployment.kubernetes.io/revision: "1"
+spec:
+  replicas: 2
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ingress-nginx
+      app.kubernetes.io/component: controller
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ingress-nginx
+        app.kubernetes.io/component: controller
+        app.kubernetes.io/version: "1.10.0"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "10254"
+        prometheus.io/path: "/metrics"
+    spec:
+      # 调度约束
+      affinity:
+        # 反亲和 - 避免所有副本运行在同一节点
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: ingress-nginx
+                    app.kubernetes.io/component: controller
+                topologyKey: kubernetes.io/hostname
+        # 节点亲和 - 优先调度到worker节点
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: node-role.kubernetes.io/worker
+                    operator: In
+                    values: ["true"]
+
+      # 容忍度 - 允许在master节点调度(高可用场景)
+      tolerations:
+        - key: "node-role.kubernetes.io/master"
+          operator: "Exists"
+          effect: "NoSchedule"
+
+      # 容器终止宽限期
+      terminationGracePeriodSeconds: 300
+
+      serviceAccountName: ingress-nginx-controller
+
+      containers:
+        - name: controller
+          image: registry.k8s.io/ingress-nginx/controller:v1.10.0
+          imagePullPolicy: IfNotPresent
+
+          args:
+            - /nginx-ingress-controller
+            - --configmap=$(POD_NAMESPACE)/ingress-nginx-controller
+            - --publish-service=$(POD_NAMESPACE)/ingress-nginx-controller
+            - --election-id=ingress-controller-leader
+            - --controller-class=k8s.io/ingress-nginx
+            - --ingress-class=nginx
+            - --watch-ingress-without-class=true
+            - --default-ssl-certificate=$(POD_NAMESPACE)/tls-secret
+            - --enable-snippet-annotations=true
+            - --profiling=false
+            - --enable-metrics=true
+            - --metrics-per-host=true
+
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+            - name: https
+              containerPort: 443
+              protocol: TCP
+            - name: metrics
+              containerPort: 10254
+              protocol: TCP
+
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: LD_PRELOAD
+              value: /usr/local/lib/libmimalloc.so
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 90Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+          # 健康检查
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 10254
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 1
+            failureThreshold: 5
+            successThreshold: 1
+
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 10254
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 1
+            failureThreshold: 3
+            successThreshold: 1
+
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 10254
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+
+          # 安全上下文
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 101
+            runAsGroup: 101
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
+
+          volumeMounts:
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+            - name: nginx-run
+              mountPath: /var/run
+            - name: custom-headers
+              mountPath: /etc/nginx/custom-headers
+              readOnly: true
+
+      volumes:
+        - name: nginx-cache
+          emptyDir: {}
+        - name: nginx-run
+          emptyDir: {}
+        - name: custom-headers
+          configMap:
+            name: custom-headers
+
+      # 镜像拉取密钥
+      imagePullSecrets:
+        - name: registry-secret
+
+---
+# NGINX Ingress Controller Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingress-nginx-controller
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/component: controller
+  annotations:
+    # 云厂商SLB配置 (以阿里云为例)
+    # service.beta.kubernetes.io/alibaba-cloud-loadbalancer-spec: "slb.s2.medium"
+    # service.beta.kubernetes.io/alibaba-cloud-loadbalancer-charge-type: "paybytraffic"
+    # service.beta.kubernetes.io/alibaba-cloud-loadbalancer-health-check-flag: "on"
+spec:
+  type: LoadBalancer
+  # 保留客户端真实IP
+  externalTrafficPolicy: Local
+  # 会话亲和性
+  # sessionAffinity: ClientIP
+  # sessionAffinityConfig:
+  #   clientIP:
+  #     timeoutSeconds: 10800
+  selector:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/component: controller
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+      nodePort: 30080
+    - name: https
+      port: 443
+      targetPort: https
+      protocol: TCP
+      nodePort: 30443
+
+---
+# Metrics Service - 用于Prometheus采集
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingress-nginx-controller-metrics
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/part-of: ingress-nginx
+spec:
+  selector:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/component: controller
+  ports:
+    - name: metrics
+      port: 10254
+      targetPort: metrics
+      protocol: TCP
+
+---
+# Default Backend Deployment (处理未匹配的请求)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: default-http-backend
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/component: default-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ingress-nginx
+      app.kubernetes.io/component: default-backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ingress-nginx
+        app.kubernetes.io/component: default-backend
+    spec:
+      containers:
+        - name: default-http-backend
+          image: registry.k8s.io/defaultbackend-amd64:1.5
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: 10m
+              memory: 20Mi
+            limits:
+              cpu: 50m
+              memory: 50Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            allowPrivilegeEscalation: false
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+---
+# Default Backend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: default-http-backend
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/component: default-backend
+spec:
+  selector:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/component: default-backend
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+
+---
+# NetworkPolicy - 限制Ingress Controller网络访问
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingress-nginx-controller
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/component: controller
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ingress-nginx
+      app.kubernetes.io/component: controller
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 允许外部流量访问HTTP/HTTPS
+    - ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+  egress:
+    # 允许访问集群内服务
+    - ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8443
+        - protocol: TCP
+          port: 5000
+        - protocol: TCP
+          port: 9000
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 允许访问DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 53
+        - protocol: UDP
+          port: 53
+
+---
+# PodDisruptionBudget - 确保滚动更新时至少有一个副本可用
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ingress-nginx-controller
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/component: controller
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ingress-nginx
+      app.kubernetes.io/component: controller
+
+---
+# 示例Ingress规则 - Web应用
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-app-ingress
+  namespace: production
+  labels:
+    app.kubernetes.io/name: web-app
+    app.kubernetes.io/component: ingress
+  annotations:
+    # Ingress Class
+    kubernetes.io/ingress.class: nginx
+    # TLS自动签发
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # 速率限制
+    nginx.ingress.kubernetes.io/limit-rps: "50"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+    nginx.ingress.kubernetes.io/limit-connections: "20"
+    # 超时配置
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    # 缓冲配置
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "16k"
+    nginx.ingress.kubernetes.io/proxy-buffers-number: "4"
+    # WebSocket支持
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+    # 重写
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    # CORS配置
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://example.com"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "Content-Type, Authorization, X-Requested-With"
+    # 跨域资源共享
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    # 安全配置
+    nginx.ingress.kubernetes.io/enable-snippet-annotations: "true"
+    # 自定义错误页面
+    nginx.ingress.kubernetes.io/custom-http-errors: "404,502,503,504"
+    nginx.ingress.kubernetes.io/default-backend: "default-http-backend"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - app.example.com
+        - www.example.com
+      secretName: web-app-tls
+  rules:
+    - host: app.example.com
+      http:
+        paths:
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: web-app-api
+                port:
+                  number: 80
+          - path: /(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: web-app-frontend
+                port:
+                  number: 80
+    - host: www.example.com
+      http:
+        paths:
+          - path: /(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: web-app-frontend
+                port:
+                  number: 80
+
+---
+# 示例Ingress规则 - gRPC应用
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grpc-app-ingress
+  namespace: production
+  labels:
+    app.kubernetes.io/name: grpc-app
+    app.kubernetes.io/component: ingress
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # gRPC特殊配置
+    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # gRPC超时
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # gRPC流式传输
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "64k"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - grpc.example.com
+      secretName: grpc-app-tls
+  rules:
+    - host: grpc.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grpc-app
+                port:
+                  number: 50051

@@ -1,0 +1,102 @@
+---
+# ansible/roles/storage/defaults/main.yml - 存储 Role 默认变量
+
+# ======================== NFS 配置 ========================
+nfs_version: "4"
+nfs_port: 2049
+nfs_mountd_port: 892
+nfs_statd_port: 662
+nfs_config_dir: "/etc/exports"
+nfs_data_dir: "/data/nfs"
+nfs_export_roots:
+  - path: "/data/nfs/shared"
+    hosts: "192.168.1.0/24"
+    options: "rw,sync,no_subtree_check,no_root_squash"
+  - path: "/data/nfs/home"
+    hosts: "192.168.1.0/24"
+    options: "rw,sync,no_subtree_check,root_squash"
+  - path: "/data/nfs/logs"
+    hosts: "192.168.1.0/24"
+    options: "rw,sync,no_subtree_check,root_squash"
+  - path: "/data/nfs/backup"
+    hosts: "192.168.1.0/24"
+    options: "rw,sync,no_subtree_check,no_root_squash"
+
+# ======================== StorageClass 配置 ========================
+storageclass_name: "nfs-storage"
+storageclass_provisioner: "nfs-subdir-external-provisioner"
+storageclass_reclaim_policy: "Retain"
+storageclass_volume_binding_mode: "Immediate"
+storageclass_allow_volume_expansion: true
+storageclass_parameters:
+  pathPattern: "${.PVC.namespace}-${.PVC.name}"
+  archiveOnDelete: "true"
+  archiveOnTimeout: "true"
+  deletePolicy: "Delete"
+
+# NFS Provisioner 配置
+nfs_provisioner_namespace: "kube-system"
+nfs_provisioner_name: "nfs-provisioner"
+nfs_provisioner_image: "registry.k8s.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2"
+nfs_provisioner_replicas: 2
+
+# ======================== 备份配置 ========================
+backup_enabled: true
+backup_schedule: "0 2 * * *"
+backup_retention_days: 30
+backup_compress: true
+backup_encrypt: false
+backup_encryption_key: ""
+
+# 备份目录配置
+backup_base_dir: "/data/backup"
+backup_local_dir: "/data/backup/local"
+backup_remote_dir: "/data/backup/remote"
+backup_temp_dir: "/tmp/backup"
+
+# 备份目标配置
+backup_targets:
+  - name: "kubernetes-config"
+    type: "files"
+    source: "/etc/kubernetes"
+    destination: "{{ backup_base_dir }}/kubernetes"
+    enabled: true
+  - name: "etcd-snapshot"
+    type: "command"
+    command: "etcdctl snapshot save {{ backup_base_dir }}/etcd/snapshot-$(date +%Y%m%d-%H%M%S).db --endpoints=https://127.0.0.1:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt --key=/etc/kubernetes/pki/etcd/healthcheck-client.key"
+    destination: "{{ backup_base_dir }}/etcd"
+    enabled: true
+  - name: "mysql-data"
+    type: "command"
+    command: "mysqldump --all-databases --single-transaction --routines --triggers | gzip"
+    destination: "{{ backup_base_dir }}/mysql"
+    enabled: true
+  - name: "redis-data"
+    type: "command"
+    command: "redis-cli BGSAVE && tar -czf - /data/redis/dump.rdb"
+    destination: "{{ backup_base_dir }}/redis"
+    enabled: true
+  - name: "config-files"
+    type: "files"
+    source: "/etc/nginx,/etc/keepalived,/etc/haproxy"
+    destination: "{{ backup_base_dir }}/config"
+    enabled: true
+
+# 远程备份配置（可选）
+backup_remote_enabled: false
+backup_remote_type: "s3"  # s3, nfs, scp
+backup_remote_s3_bucket: "enterprise-backup"
+backup_remote_s3_region: "us-east-1"
+backup_remote_s3_access_key: ""
+backup_remote_s3_secret_key: ""
+backup_remote_nfs_server: ""
+backup_remote_nfs_path: ""
+backup_remote_scp_server: ""
+backup_remote_scp_user: ""
+backup_remote_scp_path: ""
+backup_remote_scp_key: ""
+
+# ======================== 存储监控 ========================
+storage_monitor_enabled: true
+storage_monitor_threshold_percent: 80
+storage_monitor_alert_email: "admin@company.com"

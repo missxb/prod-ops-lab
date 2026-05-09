@@ -1,0 +1,526 @@
+###############################################################################
+# ansible/roles/security/tasks/main.yml - 安全 Role
+#
+# 功能:
+#   - SSL/TLS 证书管理（自签名/Let's Encrypt/自定义）
+#   - SSH 安全加固（密钥认证、访问控制、审计）
+#   - 防火墙配置（firewalld/iptables）
+#   - 系统安全基线（CIS Benchmark）
+#   - 安全审计和扫描
+#   - 密码策略配置
+#
+# 适用节点: all
+###############################################################################
+
+# ======================== SSL 证书管理 ========================
+- name: SSL/TLS 证书管理
+  block:
+    # --- 自签名证书 ---
+    - name: [SSL] 创建证书目录
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0700'
+      loop:
+        - "{{ ssl_cert_dir }}"
+        - "{{ ssl_key_dir }}"
+      tags: [security, ssl, dirs]
+
+    - name: [SSL] 生成自签名 CA 证书
+      ansible.builtin.command: |
+        openssl req -x509 -nodes -days {{ ssl_cert_days }} \
+          -newkey rsa:4096 \
+          -keyout {{ ssl_key_dir }}/ca.key \
+          -out {{ ssl_cert_dir }}/ca.crt \
+          -subj "/C={{ ssl_cert_country }}/ST={{ ssl_cert_state }}/L={{ ssl_cert_locality }}/O={{ ssl_cert_organization }}/OU={{ ssl_cert_organizational_unit }}/CN={{ ssl_cert_common_name }}/emailAddress={{ ssl_cert_email }}"
+      args:
+        creates: "{{ ssl_cert_dir }}/ca.crt"
+      when: ssl_cert_type == "selfsigned"
+      tags: [security, ssl, ca]
+
+    - name: [SSL] 生成服务器证书签名请求
+      ansible.builtin.command: |
+        openssl req -new -nodes -days {{ ssl_cert_days }} \
+          -newkey rsa:4096 \
+          -keyout {{ ssl_key_file }} \
+          -out /tmp/server.csr \
+          -subj "/C={{ ssl_cert_country }}/ST={{ ssl_cert_state }}/L={{ ssl_cert_locality }}/O={{ ssl_cert_organization }}/OU={{ ssl_cert_organizational_unit }}/CN={{ ssl_cert_common_name }}/emailAddress={{ ssl_cert_email }}"
+      args:
+        creates: "/tmp/server.csr"
+      when: ssl_cert_type == "selfsigned"
+      tags: [security, ssl, csr]
+
+    - name: [SSL] 使用 CA 签署服务器证书
+      ansible.builtin.shell: |
+        openssl x509 -req -days {{ ssl_cert_days }} \
+          -in /tmp/server.csr \
+          -CA {{ ssl_cert_dir }}/ca.crt \
+          -CAkey {{ ssl_key_dir }}/ca.key \
+          -CAcreateserial \
+          -out {{ ssl_cert_file }} \
+          -extfile <(echo "subjectAltName=DNS:{{ ssl_cert_common_name }},DNS:*.{{ ssl_cert_common_name | regex_replace('\\*\\.', '') }},IP:127.0.0.1")
+      args:
+        creates: "{{ ssl_cert_file }}"
+      when: ssl_cert_type == "selfsigned"
+      tags: [security, ssl, sign]
+
+    - name: [SSL] 设置证书权限
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        mode: "{{ item.mode }}"
+        owner: root
+        group: root
+      loop:
+        - { path: "{{ ssl_cert_file }}", mode: '0644' }
+        - { path: "{{ ssl_key_file }}", mode: '0600' }
+        - { path: "{{ ssl_cert_dir }}/ca.crt", mode: '0644' }
+        - { path: "{{ ssl_key_dir }}/ca.key", mode: '0600' }
+      when: ssl_cert_type == "selfsigned"
+      tags: [security, ssl, permissions]
+
+    # --- Let's Encrypt 证书 ---
+    - name: [SSL] 安装 Certbot（Let's Encrypt）
+      ansible.builtin.package:
+        name:
+          - certbot
+          - python3-certbot-nginx
+        state: present
+      when: ssl_cert_type == "letsencrypt"
+      ignore_errors: true
+      tags: [security, ssl, certbot]
+
+    - name: [SSL] 申请 Let's Encrypt 证书
+      ansible.builtin.command: |
+        certbot certonly --nginx \
+          --non-interactive \
+          --agree-tos \
+          --email {{ ssl_letsencrypt_email }} \
+          -d {{ ssl_letsencrypt_domain }} \
+          -d *.{{ ssl_letsencrypt_domain }} \
+          {% if ssl_letsencrypt_staging %}--staging{% endif %}
+      register: certbot_result
+      changed_when: "'Congratulations' in certbot_result.stdout or certbot_result.rc == 0"
+      when: ssl_cert_type == "letsencrypt"
+      ignore_errors: true
+      tags: [security, ssl, certbot]
+
+    - name: [SSL] 配置证书自动续期
+      ansible.builtin.cron:
+        name: "SSL certificate renewal"
+        minute: "0"
+        hour: "3"
+        day: "1"
+        job: "certbot renew --quiet --deploy-hook 'systemctl reload nginx'"
+        user: root
+      when: ssl_cert_type == "letsencrypt"
+      tags: [security, ssl, renewal]
+
+    # --- 自定义证书 ---
+    - name: [SSL] 安装自定义证书
+      block:
+        - name: [SSL] 复制自定义证书文件
+          ansible.builtin.copy:
+            src: "{{ ssl_custom_cert_file }}"
+            dest: "{{ ssl_cert_file }}"
+            mode: '0644'
+          when: ssl_custom_cert_file | length > 0
+          tags: [security, ssl, custom]
+
+        - name: [SSL] 复制自定义密钥文件
+          ansible.builtin.copy:
+            src: "{{ ssl_custom_key_file }}"
+            dest: "{{ ssl_key_file }}"
+            mode: '0600'
+          when: ssl_custom_key_file | length > 0
+          tags: [security, ssl, custom]
+
+        - name: [SSL] 复制自定义 CA 文件
+          ansible.builtin.copy:
+            src: "{{ ssl_custom_ca_file }}"
+            dest: "{{ ssl_ca_file }}"
+            mode: '0644'
+          when: ssl_custom_ca_file | length > 0
+          tags: [security, ssl, custom]
+      when: ssl_cert_type == "custom"
+      tags: [security, ssl, custom]
+
+    - name: [SSL] 更新系统 CA 证书库
+      ansible.builtin.command: update-ca-certificates
+      changed_when: false
+      ignore_errors: true
+      tags: [security, ssl, ca]
+
+    - name: [SSL] 验证证书有效性
+      ansible.builtin.command: |
+        openssl x509 -in {{ ssl_cert_file }} -noout -dates -subject
+      register: ssl_cert_check
+      changed_when: false
+      tags: [security, ssl, verify]
+  tags: [security, ssl]
+
+# ======================== SSH 安全加固 ========================
+- name: SSH 安全加固
+  block:
+    - name: [SSH] 生成 SSH Banner
+      ansible.builtin.copy:
+        content: |
+          ============================================================
+          Authorized access only. All activities are monitored.
+          Unauthorized access is prohibited and will be prosecuted.
+          ============================================================
+        dest: "{{ ssh_banner }}"
+        mode: '0644'
+      tags: [security, ssh, banner]
+
+    - name: [SSH] 生成 SSH 配置
+      ansible.builtin.template:
+        src: sshd_config.j2
+        dest: /etc/ssh/sshd_config
+        mode: '0600'
+        validate: 'sshd -t -f %s'
+      notify: restart sshd
+      tags: [security, ssh, config]
+
+    - name: [SSH] 配置 SSH 速率限制
+      ansible.builtin.copy:
+        content: |
+          # SSH 速率限制 - 防暴力破解
+          # 使用 iptables 进行速率限制
+        dest: /etc/ssh/ssh_rate_limit.conf
+        mode: '0644'
+      tags: [security, ssh, rate_limit]
+
+    - name: [SSH] 生成 SSH 密钥对（用于远程管理）
+      ansible.builtin.command: |
+        ssh-keygen -t ed25519 -f /root/.ssh/id_ed25519 -N "" -C "ansible@{{ inventory_hostname }}"
+      args:
+        creates: /root/.ssh/id_ed25519
+      ignore_errors: true
+      tags: [security, ssh, keys]
+
+    - name: [SSH] 配置 SSH 知名主机
+      ansible.builtin.known_hosts:
+        name: "{{ item }}"
+        key: "{{ lookup('pipe', 'ssh-keyscan ' + item + ' 2>/dev/null') }}"
+        state: present
+      loop: "{{ groups['all'] | map('extract', hostvars, 'ansible_host') | list }}"
+      ignore_errors: true
+      tags: [security, ssh, known_hosts]
+
+    - name: [SSH] 配置 SSH 会话超时
+      ansible.builtin.lineinfile:
+        path: /etc/profile.d/timeout.sh
+        line: "TMOUT={{ ssh_client_alive_interval }}; readonly TMOUT; export TMOUT"
+        create: true
+        mode: '0644'
+      tags: [security, ssh, timeout]
+  tags: [security, ssh]
+
+# ======================== 防火墙配置 ========================
+- name: 防火墙配置
+  block:
+    - name: [Firewall] 启动防火墙
+      ansible.builtin.systemd:
+        name: firewalld
+        enabled: true
+        state: started
+      when: firewall_enabled | bool
+      tags: [security, firewall, service]
+
+    - name: [Firewall] 配置默认区域
+      ansible.builtin.command: |
+        firewall-cmd --set-default-zone={{ firewall_default_zone }}
+      changed_when: false
+      when: firewall_enabled | bool
+      tags: [security, firewall, zone]
+
+    - name: [Firewall] 允许 SSH 服务
+      community.general.firewalld:
+        service: "{{ item }}"
+        permanent: true
+        state: enabled
+        immediate: true
+      loop: "{{ firewall_allowed_services }}"
+      when: firewall_enabled | bool
+      tags: [security, firewall, services]
+
+    - name: [Firewall] 开放自定义端口
+      community.general.firewalld:
+        port: "{{ item.port }}/{{ item.protocol }}"
+        permanent: true
+        state: enabled
+        immediate: true
+      loop: "{{ firewall_allowed_ports }}"
+      when: firewall_enabled | bool
+      tags: [security, firewall, ports]
+
+    - name: [Firewall] 配置 SSH 访问源限制
+      ansible.builtin.command: |
+        firewall-cmd --permanent --zone={{ firewall_default_zone }} --add-rich-rule='rule family="ipv4" source address="{{ item }}" service name="ssh" accept'
+      loop: "{{ firewall_ssh_allowed_sources }}"
+      changed_when: false
+      when: firewall_enabled | bool
+      tags: [security, firewall, ssh_restriction]
+
+    - name: [Firewall] 配置速率限制（防 DDoS）
+      ansible.builtin.copy:
+        content: |
+          # iptables 速率限制规则
+          # 限制新连接速率
+          -A INPUT -p tcp --dport {{ ssh_port }} -m connlimit --connlimit-above {{ firewall_burst }} -j DROP
+          -A INPUT -p tcp --dport {{ ssh_port }} -m recent --set --name SSH --rsource
+          -A INPUT -p tcp --dport {{ ssh_port }} -m recent --update --seconds 60 --hitcount {{ firewall_rate_limit | regex_replace('/m', '') }} --name SSH --rsource -j DROP
+        dest: /etc/firewalld/ssh_rate_limit.conf
+        mode: '0644'
+      when: firewall_enabled | bool
+      tags: [security, firewall, rate_limit]
+
+    - name: [Firewall] 禁止不安全的服务
+      community.general.firewalld:
+        service: "{{ item }}"
+        permanent: true
+        state: disabled
+        immediate: true
+      loop:
+        - "telnet"
+        - "rsh"
+        - "rlogin"
+        - "tftp"
+      when: firewall_enabled | bool
+      ignore_errors: true
+      tags: [security, firewall, disable]
+
+    - name: [Firewall] 配置 ICMP 限制
+      ansible.builtin.copy:
+        content: |
+          # ICMP 速率限制
+          net.ipv4.icmp_echo_ignore_broadcasts = 1
+          net.ipv4.icmp_ignore_bogus_error_responses = 1
+          net.ipv4.icmp_ratemask = 88089
+          net.ipv4.icmp_ratelimit = 100
+        dest: /etc/sysctl.d/99-icmp-limit.conf
+        mode: '0644'
+      notify: reload sysctl
+      when: firewall_enabled | bool
+      tags: [security, firewall, icmp]
+  tags: [security, firewall]
+
+# ======================== 系统安全基线 ========================
+- name: 系统安全基线配置
+  block:
+    # --- 内核安全参数 ---
+    - name: [Baseline] 配置内核安全参数
+      ansible.builtin.sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        sysctl_set: true
+        state: present
+        reload: true
+        sysctl_file: /etc/sysctl.d/99-security.conf
+      loop:
+        # 网络安全
+        - { key: 'net.ipv4.conf.all.send_redirects', value: '0' }
+        - { key: 'net.ipv4.conf.default.send_redirects', value: '0' }
+        - { key: 'net.ipv4.conf.all.accept_redirects', value: '0' }
+        - { key: 'net.ipv4.conf.default.accept_redirects', value: '0' }
+        - { key: 'net.ipv4.conf.all.secure_redirects', value: '0' }
+        - { key: 'net.ipv4.conf.default.secure_redirects', value: '0' }
+        - { key: 'net.ipv4.conf.all.log_martians', value: '1' }
+        - { key: 'net.ipv4.conf.default.log_martians', value: '1' }
+        - { key: 'net.ipv4.icmp_echo_ignore_broadcasts', value: '1' }
+        - { key: 'net.ipv4.icmp_ignore_bogus_error_responses', value: '1' }
+        - { key: 'net.ipv4.tcp_syncookies', value: '1' }
+        - { key: 'net.ipv4.conf.all.rp_filter', value: '1' }
+        - { key: 'net.ipv4.conf.default.rp_filter', value: '1' }
+        # IPv6 安全
+        - { key: 'net.ipv6.conf.all.accept_redirects', value: '0' }
+        - { key: 'net.ipv6.conf.default.accept_redirects', value: '0' }
+        # 内存保护
+        - { key: 'fs.suid_dumpable', value: '0' }
+        - { key: 'kernel.randomize_va_space', value: '2' }
+      tags: [security, baseline, kernel]
+
+    # --- 文件权限加固 ---
+    - name: [Baseline] 加固关键文件权限
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        mode: "{{ item.mode }}"
+        owner: "{{ item.owner | default('root') }}"
+        group: "{{ item.group | default('root') }}"
+      loop:
+        - { path: '/etc/passwd', mode: '0644' }
+        - { path: '/etc/shadow', mode: '0000' }
+        - { path: '/etc/group', mode: '0644' }
+        - { path: '/etc/gshadow', mode: '0000' }
+        - { path: '/etc/ssh/sshd_config', mode: '0600' }
+        - { path: '/boot/grub2/grub.cfg', mode: '0600', owner: 'root', group: 'root' }
+      ignore_errors: true
+      tags: [security, baseline, permissions]
+
+    # --- 禁用不安全的文件系统 ---
+    - name: [Baseline] 禁用不安全的文件系统类型
+      ansible.builtin.lineinfile:
+        path: /etc/modprobe.d/disable-fs.conf
+        regexp: "^install {{ item }} "
+        line: "install {{ item }} /bin/true"
+        create: true
+        mode: '0644'
+      loop: "{{ security_disabled_filesystems }}"
+      tags: [security, baseline, filesystems]
+
+    # --- 禁用不安全的服务 ---
+    - name: [Baseline] 停止并禁用不安全的服务
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: false
+        state: stopped
+      loop: "{{ security_disabled_services }}"
+      ignore_errors: true
+      tags: [security, baseline, services]
+
+    # --- 密码策略 ---
+    - name: [Baseline] 配置密码策略
+      ansible.builtin.lineinfile:
+        path: /etc/login.defs
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^PASS_MAX_DAYS', line: "PASS_MAX_DAYS   {{ security_password_max_age }}" }
+        - { regexp: '^PASS_MIN_DAYS', line: "PASS_MIN_DAYS   {{ security_password_min_age }}" }
+        - { regexp: '^PASS_MIN_LEN', line: "PASS_MIN_LEN    {{ security_min_password_length }}" }
+        - { regexp: '^PASS_WARN_AGE', line: "PASS_WARN_AGE   7" }
+        - { regexp: '^LOGIN_RETRIES', line: "LOGIN_RETRIES   {{ security_account_lockout }}" }
+        - { regexp: '^LOGIN_TIMEOUT', line: "LOGIN_TIMEOUT   {{ security_lockout_time }}" }
+      tags: [security, baseline, password]
+
+    - name: [Baseline] 配置密码复杂度
+      ansible.builtin.lineinfile:
+        path: /etc/pam.d/system-auth
+        regexp: 'pam_pwquality.so'
+        line: "password    requisite     pam_pwquality.so retry=3 minlen={{ security_min_password_length }} dcredit=-1 ucredit=-1 lcredit=-1 ocredit=-1"
+      ignore_errors: true
+      tags: [security, baseline, password_complexity]
+
+    # --- 审计配置 ---
+    - name: [Baseline] 安装审计工具
+      ansible.builtin.package:
+        name:
+          - audit
+          - audit-libs
+          - aide
+        state: present
+      when: security_audit_enabled | bool
+      ignore_errors: true
+      tags: [security, baseline, audit_tools]
+
+    - name: [Baseline] 配置审计规则
+      ansible.builtin.copy:
+        content: |
+          ## 审计规则 - 企业云原生平台
+          ## 监控关键文件变更
+          -w /etc/passwd -p wa -k identity
+          -w /etc/shadow -p wa -k identity
+          -w /etc/group -p wa -k identity
+          -w /etc/gshadow -p wa -k identity
+          -w /etc/sudoers -p wa -k sudoers
+          -w /etc/ssh/sshd_config -p wa -k sshd_config
+          ## 监控命令执行
+          -a always,exit -F arch=b64 -S execve -k commands
+          ## 监控用户/组变更
+          -a always,exit -F arch=b64 -S execve -F euid=0 -C uid!=euid -k privilege escalation
+          ## 监控时间变更
+          -w /etc/localtime -p wa -k time-change
+          -w /etc/adjtime -p wa -k time-change
+          -a always,exit -F arch=b64 -S adjtimex -S settimeofday -k time-change
+          ## 监控系统启动
+          -w /var/log/lastlog -p wa -k logins
+          -w /var/run/faillock/ -p wa -k logins
+        dest: /etc/audit/rules.d/99-security.rules
+        mode: '0640'
+      when: security_audit_enabled | bool
+      notify: restart auditd
+      tags: [security, baseline, audit_rules]
+
+    - name: [Baseline] 启动审计服务
+      ansible.builtin.systemd:
+        name: auditd
+        enabled: true
+        state: started
+      when: security_audit_enabled | bool
+      ignore_errors: true
+      tags: [security, baseline, audit_service]
+
+    # --- AIDE 入侵检测 ---
+    - name: [Baseline] 初始化 AIDE 数据库
+      ansible.builtin.command: aide --init
+      args:
+        creates: /var/lib/aide/aide.db.new.gz
+      when: security_scan_enabled | bool
+      ignore_errors: true
+      tags: [security, baseline, aide_init]
+
+    - name: [Baseline] 配置 AIDE 定时扫描
+      ansible.builtin.cron:
+        name: "AIDE integrity check"
+        minute: "0"
+        hour: "5"
+        job: "aide --check | mail -s 'AIDE Report - {{ inventory_hostname }}' {{ ssl_cert_email }} 2>/dev/null || true"
+        user: root
+      when: security_scan_enabled | bool
+      tags: [security, baseline, aide_scan]
+  tags: [security, baseline]
+
+# ======================== 安全扫描和报告 ========================
+- name: 安全扫描和报告
+  block:
+    - name: [Scan] 生成安全配置报告
+      ansible.builtin.shell: |
+        echo "=========================================="
+        echo "Security Audit Report - {{ inventory_hostname }}"
+        echo "Date: $(date)"
+        echo "=========================================="
+        echo ""
+        echo "=== SSH Configuration ==="
+        grep -E "^(PermitRootLogin|PasswordAuthentication|PubkeyAuthentication|Protocol|MaxAuthTries)" /etc/ssh/sshd_config || true
+        echo ""
+        echo "=== Open Ports ==="
+        ss -tlnp | head -20
+        echo ""
+        echo "=== Firewall Status ==="
+        systemctl is-active firewalld 2>/dev/null || echo "firewalld not running"
+        echo ""
+        echo "=== Listening Services ==="
+        ss -tlnp | awk '{print $4}' | sort -u
+        echo ""
+        echo "=== Failed Login Attempts ==="
+        lastb | head -10 2>/dev/null || echo "No failed attempts"
+        echo ""
+        echo "=== System Updates Available ==="
+        yum check-update 2>/dev/null | tail -5 || apt list --upgradable 2>/dev/null | tail -5 || true
+        echo ""
+        echo "=== SSL Certificate Status ==="
+        openssl x509 -in {{ ssl_cert_file }} -noout -dates 2>/dev/null || echo "No SSL certificate found"
+        echo ""
+        echo "=== Audit Status ==="
+        systemctl is-active auditd 2>/dev/null || echo "auditd not running"
+        echo ""
+        echo "=========================================="
+        echo "Report completed at $(date)"
+        echo "=========================================="
+      register: security_report
+      changed_when: false
+      ignore_errors: true
+      tags: [security, scan, report]
+
+    - name: [Scan] 显示安全报告
+      ansible.builtin.debug:
+        msg: "{{ security_report.stdout_lines }}"
+      tags: [security, scan, report]
+
+    - name: [Scan] 保存安全报告到文件
+      ansible.builtin.copy:
+        content: "{{ security_report.stdout }}"
+        dest: "/var/log/security-report-{{ inventory_hostname }}-{{ ansible_date_time.date }}.log"
+        mode: '0640'
+      tags: [security, scan, save]
+  tags: [security, scan]

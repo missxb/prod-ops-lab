@@ -1,0 +1,95 @@
+---
+# ansible/roles/ha/defaults/main.yml - 高可用 Role 默认变量
+
+# ======================== Keepalived 配置 ========================
+keepalived_version: "2.2.8"
+keepalived_interface: "eth0"
+keepalived_router_id: 51
+keepalived_state: "MASTER"
+keepalived_priority: 100
+keepalived_virtual_router_id: 51
+keepalived_auth_pass: "HA@Auth2024!"
+keepalived_vip: "192.168.1.60"
+keepalived_config_dir: "/etc/keepalived"
+keepalived_check_script: "/usr/bin/killall -0 nginx"
+
+# 健康检查间隔（秒）
+keepalived_check_interval: 2
+# 脚本权重调整
+keepalived_weight: -20
+
+# ======================== Nginx 负载均衡配置 ========================
+nginx_version: "1.24.0"
+nginx_worker_processes: "auto"
+nginx_worker_connections: 65535
+nginx_keepalive_timeout: 65
+nginx_client_max_body_size: "100m"
+nginx_listen_port: 80
+nginx_listen_ssl_port: 443
+nginx_config_dir: "/etc/nginx"
+nginx_log_dir: "/var/log/nginx"
+nginx_user: "nginx"
+
+# Nginx 上游服务器（K8s API Server）
+nginx_upstream_servers:
+  - { addr: "192.168.1.101", port: 6443, weight: 1 }
+  - { addr: "192.168.1.102", port: 6443, weight: 1 }
+  - { addr: "192.168.1.103", port: 6443, weight: 1 }
+
+# ======================== MySQL 高可用配置 ========================
+mysql_version: "8.0.36"
+mysql_port: 3306
+mysql_root_password: "MySQL@Root2024!"
+mysql_data_dir: "/data/mysql"
+mysql_config_dir: "/etc/mysql"
+mysql_log_dir: "/var/log/mysql"
+mysql_backup_dir: "/data/backup/mysql"
+mysql_innodb_buffer_pool_size: "4G"
+mysql_max_connections: 1000
+mysql_character_set: "utf8mb4"
+mysql_collation: "utf8mb4_unicode_ci"
+
+# MySQL 主从配置
+mysql_server_id: 1
+mysql_log_bin: "mysql-bin"
+mysql_binlog_format: "ROW"
+mysql_gtid_mode: "ON"
+mysql_sync_binlog: 1
+mysql_innodb_flush_log_at_trx_commit: 1
+
+# 复制用户配置
+mysql_repl_user: "repl_user"
+mysql_repl_password: "Repl@Password2024!"
+mysql_repl_host: "%"
+
+# ======================== Redis Sentinel 配置 ========================
+redis_version: "7.2.4"
+redis_port: 6379
+redis_password: "Redis@Password2024!"
+redis_data_dir: "/data/redis"
+redis_config_dir: "/etc/redis"
+redis_log_dir: "/var/log/redis"
+redis_max_memory: "2gb"
+redis_max_memory_policy: "allkeys-lru"
+redis_save_days: 900
+redis_save_changes: 1
+
+# Redis Sentinel 配置
+redis_sentinel_port: 26379
+redis_sentinel_config_dir: "/etc/redis/sentinel"
+redis_sentinel_data_dir: "/data/redis/sentinel"
+redis_sentinel_monitor: "mymaster"
+redis_sentinel_down_after: 5000
+redis_sentinel_failover_timeout: 10000
+redis_sentinel_parallel_syncs: 1
+
+# Redis 集群节点
+redis_cluster_nodes:
+  - { addr: "192.168.1.71", port: 6379, role: "master" }
+  - { addr: "192.168.1.72", port: 6379, role: "slave" }
+  - { addr: "192.168.1.73", port: 6379, role: "slave" }
+
+redis_sentinel_nodes:
+  - { addr: "192.168.1.71", port: 26379 }
+  - { addr: "192.168.1.72", port: 26379 }
+  - { addr: "192.168.1.73", port: 26379 }

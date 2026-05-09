@@ -1,0 +1,119 @@
+---
+# ansible/roles/security/defaults/main.yml - 安全 Role 默认变量
+
+# ======================== SSL 证书管理 ========================
+ssl_cert_dir: "/etc/ssl/certs"
+ssl_key_dir: "/etc/ssl/private"
+ssl_cert_file: "/etc/ssl/certs/server.crt"
+ssl_key_file: "/etc/ssl/private/server.key"
+ssl_ca_file: "/etc/ssl/certs/ca.crt"
+ssl_chain_file: "/etc/ssl/certs/chain.crt"
+ssl_cert_days: 3650  # 10年
+ssl_cert_type: "selfsigned"  # selfsigned, letsencrypt, custom
+ssl_cert_country: "CN"
+ssl_cert_state: "Beijing"
+ssl_cert_locality: "Beijing"
+ssl_cert_organization: "Enterprise Cloud"
+ssl_cert_organizational_unit: "DevOps"
+ssl_cert_common_name: "*.company.com"
+ssl_cert_email: "admin@company.com"
+
+# Let's Encrypt 配置
+ssl_letsencrypt_email: "admin@company.com"
+ssl_letsencrypt_domain: "company.com"
+ssl_letsencrypt_staging: false
+
+# 自定义证书路径
+ssl_custom_cert_file: ""
+ssl_custom_key_file: ""
+ssl_custom_ca_file: ""
+
+# ======================== SSH 加固 ========================
+ssh_port: 22
+ssh_permit_root_login: "prohibit-password"
+ssh_password_authentication: "no"
+ssh_pubkey_authentication: "yes"
+ssh_x11_forwarding: "no"
+ssh_max_auth_tries: 3
+ssh_client_alive_interval: 300
+ssh_client_alive_count_max: 2
+ssh_allow_agent_forwarding: "no"
+ssh_allow_tcp_forwarding: "no"
+ssh_protocol: 2
+ssh_log_level: "VERBOSE"
+ssh_use_dns: "no"
+ssh_max_sessions: 10
+ssh_login_grace_time: 60
+ssh_banner: "/etc/ssh/banner"
+ssh_allowed_users: "root,devops,deploy"
+ssh_allowed_groups: "wheel,ssh-users"
+
+# SSH 证书认证配置
+ssh_ca_public_key: ""
+ssh_host_certificate: ""
+ssh_host_certificate_key: ""
+
+# ======================== 防火墙配置 ========================
+firewall_enabled: true
+firewall_default_zone: "public"
+firewall_trusted_zone: "trusted"
+
+# 允许的 SSH 来源 IP
+firewall_ssh_allowed_sources:
+  - "192.168.1.0/24"
+  - "10.0.0.0/8"
+
+# 允许的服务
+firewall_allowed_services:
+  - "ssh"
+  - "http"
+  - "https"
+
+# 允许的端口
+firewall_allowed_ports:
+  - { port: "6443", protocol: "tcp", comment: "K8s API Server" }
+  - { port: "2379-2380", protocol: "tcp", comment: "etcd" }
+  - { port: "10250", protocol: "tcp", comment: "Kubelet API" }
+  - { port: "10259", protocol: "tcp", comment: "kube-scheduler" }
+  - { port: "10257", protocol: "tcp", comment: "kube-controller-manager" }
+  - { port: "30000-32767", protocol: "tcp", comment: "NodePort Services" }
+  - { port: "179", protocol: "tcp", comment: "Calico BGP" }
+  - { port: "4789", protocol: "udp", comment: "Calico VXLAN" }
+
+# 速率限制配置
+firewall_rate_limit: "100/m"
+firewall_burst: "200"
+
+# ======================== 安全扫描配置 ========================
+security_scan_enabled: true
+security_audit_enabled: true
+security_cis_benchmark: true
+
+# 禁用的服务
+security_disabled_services:
+  - "avahi-daemon"
+  - "cups"
+  - "dhcpd"
+  - "named"
+  - "rpcbind"
+  - "nfs"
+  - "rpcbind"
+
+# 禁用的文件系统
+security_disabled_filesystems:
+  - "cramfs"
+  - "freevxfs"
+  - "jffs2"
+  - "hfs"
+  - "hfsplus"
+  - "squashfs"
+  - "udf"
+
+# 密码策略
+security_min_password_length: 14
+security_password_complexity: true
+security_password_history: 5
+security_password_max_age: 90
+security_password_min_age: 1
+security_account_lockout: 5
+security_lockout_time: 900  # 15分钟

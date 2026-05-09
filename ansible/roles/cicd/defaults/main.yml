@@ -1,0 +1,95 @@
+---
+# ansible/roles/cicd/defaults/main.yml - CI/CD Role 默认变量
+
+# ======================== GitLab 配置 ========================
+gitlab_version: "16.10.0"
+gitlab_port: 80
+gitlab_ssl_port: 443
+gitlab_ssh_port: 2222
+gitlab_data_dir: "/data/gitlab"
+gitlab_config_dir: "/etc/gitlab"
+gitlab_log_dir: "/var/log/gitlab"
+gitlab_registry_port: 5005
+
+# GitLab 管理员配置
+gitlab_root_password: "GitLab@Admin2024!"
+gitlab_root_email: "admin@company.com"
+gitlab_external_url: "https://gitlab.company.com"
+
+# GitLab 备份配置
+gitlab_backup_enabled: true
+gitlab_backup_schedule: "0 2 * * *"
+gitlab_backup_keep_time: 604800  # 7天
+
+# GitLab SMTP 配置
+gitlab_smtp_enabled: true
+gitlab_smtp_server: "smtp.company.com"
+gitlab_smtp_port: 587
+gitlab_smtp_user: "gitlab@company.com"
+gitlab_smtp_password: "smtp_password"
+gitlab_smtp_domain: "company.com"
+gitlab_smtp_authentication: "login"
+gitlab_smtp_enable_starttls_auto: true
+
+# ======================== Jenkins 配置 ========================
+jenkins_version: "2.440.2"
+jenkins_port: 8080
+jenkins_agent_port: 50000
+jenkins_data_dir: "/data/jenkins"
+jenkins_config_dir: "/etc/jenkins"
+
+# Jenkins 管理员配置
+jenkins_admin_user: "admin"
+jenkins_admin_password: "Jenkins@Admin2024!"
+jenkins_admin_email: "admin@company.com"
+
+# Jenkins 插件
+jenkins_plugins:
+  - git
+  - workflow-aggregator
+  - pipeline-stage-view
+  - docker-workflow
+  - kubernetes
+  - configuration-as-code
+  - job-dsl
+  - credentials-binding
+  - ssh-slaves
+  - matrix-auth
+  - role-strategy
+  - blueocean
+  - pipeline-utility-steps
+
+# Jenkins Kubernetes Agent 配置
+jenkins_k8s_namespace: "jenkins"
+jenkins_k8s_service_account: "jenkins-agent"
+jenkins_k8s_image: "jenkins/inbound-agent:latest"
+
+# ======================== Harbor 配置 ========================
+harbor_version: "2.10.1"
+harbor_port: 443
+harbor_http_port: 80
+harbor_data_dir: "/data/harbor"
+harbor_config_dir: "/etc/harbor"
+harbor_database_dir: "/data/harbor/database"
+harbor_registry_dir: "/data/harbor/registry"
+harbor_chartmuseum_dir: "/data/harbor/chartmuseum"
+
+# Harbor 管理员配置
+harbor_admin_password: "Harbor@Admin2024!"
+harbor_admin_email: "admin@company.com"
+harbor_external_url: "https://harbor.company.com"
+
+# Harbor 仓库配置
+harbor_storage_quota: 50  # GB
+harbor_robot_account: "robot"
+harbor_robot_description: "Automated CI/CD robot account"
+
+# Harbor Webhook 配置
+harbor_webhook_enabled: true
+harbor_webhook_endpoint: "http://jenkins:8080/generic-webhook-trigger/invoke"
+
+# ======================== 通用配置 ========================
+dns_domain: "company.com"
+enable_ssl: false
+enable_backup: true
+backup_dir: "/data/backup/cicd"

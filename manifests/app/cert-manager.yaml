@@ -1,0 +1,673 @@
+# =============================================================================
+# cert-manager 完整配置
+# 包含: ClusterIssuer、Certificate、自动续期、Webhook配置
+# =============================================================================
+
+---
+# cert-manager Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/part-of: cert-manager
+  annotations:
+    # 启用cert-manager webhook的Pod安全策略
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
+
+---
+# cert-manager Helm Values ConfigMap
+# 用于覆盖cert-manager默认配置
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cert-manager-values
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: config
+data:
+  # prometheus-operator ServiceMonitor配置
+  prometheus.enabled: "true"
+  prometheus.servicemonitor.enabled: "true"
+  prometheus.servicemonitor.namespace: "monitoring"
+  prometheus.servicemonitor.additionalLabels.release: "prometheus"
+  prometheus.servicemonitor.interval: "30s"
+  prometheus.servicemonitor.scrapeTimeout: "10s"
+
+---
+# =============================================================================
+# ClusterIssuer 配置
+# =============================================================================
+
+---
+# Let's Encrypt Production ClusterIssuer
+# 使用ACME HTTP-01验证签发生产证书
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: issuer
+spec:
+  acme:
+    # Let's Encrypt 生产环境ACME服务器
+    server: https://acme-v02.api.letsencrypt.org/directory
+    # 注册邮箱 - 证书过期等通知
+    email: admin@example.com
+    # ACME账户私钥
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      # HTTP-01验证 - 通过Ingress自动验证域名所有权
+      - http01:
+          ingress:
+            class: nginx
+            # 可选: 指定特定的Ingress Pod
+            # podTemplate:
+            #   spec:
+            #     nodeSelector:
+            #       kubernetes.io/os: linux
+        # 对所有域名应用此solver
+        selector:
+          dnsZones:
+            - "example.com"
+            - "example.org"
+
+---
+# Let's Encrypt Staging ClusterIssuer
+# 用于测试，避免触发Let's Encrypt速率限制
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: issuer
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: admin@example.com
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - http01:
+          ingress:
+            class: nginx
+        selector:
+          dnsZones:
+            - "example.com"
+            - "example.org"
+
+---
+# Let's Encrypt Production ClusterIssuer (DNS-01验证)
+# 适用于通配符证书或无法使用HTTP-01的场景
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod-dns
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: issuer
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: admin@example.com
+    privateKeySecretRef:
+      name: letsencrypt-prod-dns-account-key
+    solvers:
+      # DNS-01验证 - 通过DNS记录验证域名所有权
+      - dns01:
+          # 云DNS (Google Cloud)
+          cloudDNS:
+            project: my-gcp-project
+            serviceAccountSecretRef:
+              name: clouddns-service-account
+              key: key.json
+          # 可选: 使用Webhook DNS验证器
+          # webhook:
+          #   groupName: acme.example.com
+          #   solverName: cloudflare
+          #   config:
+          #     email: admin@example.com
+          #     APIKeySecretRef:
+          #       name: cloudflare-api-key
+          #       key: api-key
+        selector:
+          dnsZones:
+            - "example.com"
+            - "example.org"
+            - "*.example.com"
+            - "*.example.org"
+
+---
+# Self-Signed ClusterIssuer (用于内部证书)
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-issuer
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: issuer
+spec:
+  selfSigned: {}
+
+---
+# CA ClusterIssuer (用于内部CA签发证书)
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ca-issuer
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: issuer
+spec:
+  ca:
+    secretName: ca-keypair
+
+---
+# =============================================================================
+# Certificate 资源配置
+# =============================================================================
+
+---
+# 主域名证书 - *.example.com + example.com
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-example-com
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: certificate
+spec:
+  # 证书参考的Secret
+  secretName: wildcard-example-com-tls
+  # 是否在Secret不存在时自动创建
+  secretTemplate:
+    labels:
+      app.kubernetes.io/name: cert-manager
+      app.kubernetes.io/component: certificate
+      managed-by: cert-manager
+  # 使用哪个ClusterIssuer签发
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  # 证书主题
+  subject:
+    organizations:
+      - Example Inc
+    organizationalUnits:
+      - IT Department
+    # 通用名称 (第一个SAN)
+    commonName: "*.example.com"
+  # 证书SAN (Subject Alternative Names)
+  dnsNames:
+    - "example.com"
+    - "*.example.com"
+    - "www.example.com"
+    - "api.example.com"
+    - "grafana.example.com"
+    - "prometheus.example.com"
+    - "alertmanager.example.com"
+  # IP地址SAN (可选)
+  ipAddresses:
+    - "10.0.0.1"
+  # 证书有效期 - 90天 (Let's Encrypt默认)
+  duration: 2160h   # 90天
+  # 续期提前时间 - 30天
+  renewBefore: 720h  # 30天
+  # 私钥配置
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    encoding: PKCS1
+    rotationPolicy: Always   # 每次续期都生成新密钥
+  # 证书用途
+  usages:
+    - server auth
+    - digital signature
+    - key encipherment
+  # 是否是CA证书
+  isCA: false
+
+---
+# Ingress Controller证书
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ingress-nginx-tls
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: certificate
+spec:
+  secretName: tls-secret
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - "*.example.com"
+    - "example.com"
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - server auth
+    - digital signature
+    - key encipherment
+
+---
+# API Gateway证书
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: api-gateway-tls
+  namespace: production
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: certificate
+spec:
+  secretName: api-gateway-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - "api.example.com"
+    - "gateway.example.com"
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: RSA
+    size: 2048
+    rotationPolicy: Always
+  usages:
+    - server auth
+    - client auth
+    - digital signature
+    - key encipherment
+
+---
+# 内部服务证书 (使用CA签发)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: internal-service-tls
+  namespace: production
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: certificate
+spec:
+  secretName: internal-service-tls
+  issuerRef:
+    name: ca-issuer
+    kind: ClusterIssuer
+  commonName: "internal-service.production.svc.cluster.local"
+  dnsNames:
+    - "internal-service"
+    - "internal-service.production"
+    - "internal-service.production.svc"
+    - "internal-service.production.svc.cluster.local"
+  ipAddresses:
+    - "10.96.0.100"
+  duration: 8760h    # 1年
+  renewBefore: 720h  # 30天
+  privateKey:
+    algorithm: RSA
+    size: 2048
+    rotationPolicy: OnDemand
+  usages:
+    - server auth
+    - client auth
+    - digital signature
+    - key encipherment
+
+---
+# =============================================================================
+# CertificateRequest 资源 (手动申请证书)
+# =============================================================================
+
+# 示例: 手动创建CertificateRequest (通常由Certificate控制器自动创建)
+# apiVersion: cert-manager.io/v1
+# kind: CertificateRequest
+# metadata:
+#   name: manual-cert-request
+#   namespace: production
+# spec:
+#   # PEM编码的CSR
+#   csr: |
+#     -----BEGIN CERTIFICATE REQUEST-----
+#     ... (base64 encoded CSR) ...
+#     -----END CERTIFICATE REQUEST-----
+#   # 使用的issuer
+#   issuerRef:
+#     name: letsencrypt-prod
+#     kind: ClusterIssuer
+#   # 用途
+#   usages:
+#     - server auth
+
+---
+# =============================================================================
+# 发布证书到外部密钥管理系统 (如HashiCorp Vault)
+# =============================================================================
+
+# Vault Issuer配置示例 (需要安装vault-secrets-webhook)
+# apiVersion: cert-manager.io/v1
+# kind: Issuer
+# metadata:
+#   name: vault-issuer
+#   namespace: production
+# spec:
+#   vault:
+#     path: pki/sign/example-dot-com
+#     server: https://vault.example.com
+#     auth:
+#       kubernetes:
+#         mountPath: kubernetes
+#         role: cert-manager
+#         serviceAccountRef:
+#           name: cert-manager
+
+---
+# =============================================================================
+# ServiceMonitor - Prometheus监控cert-manager
+# =============================================================================
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cert-manager
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: monitoring
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cert-manager
+  namespaceSelector:
+    matchNames:
+      - cert-manager
+  endpoints:
+    - port: http-metrics
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+
+---
+# cert-manager PrometheusRule - 告警规则
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cert-manager-alerts
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: cert-manager
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    - name: cert-manager
+      rules:
+        # 证书即将过期告警
+        - alert: CertificateExpiringSoon
+          expr: certmanager_certificate_expiration_timestamp_seconds - time() < 30 * 24 * 3600
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "证书即将过期: {{ $labels.name }}"
+            description: "证书 {{ $labels.name }} 将在30天内过期，过期时间: {{ $value | humanUnixTimestamp }}"
+            runbook_url: "https://wiki.example.com/runbooks/certificate-expiring"
+
+        # 证书即将过期告警 (7天内)
+        - alert: CertificateExpiringCritical
+          expr: certmanager_certificate_expiration_timestamp_seconds - time() < 7 * 24 * 3600
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            summary: "证书即将过期: {{ $labels.name }}"
+            description: "证书 {{ $labels.name }} 将在7天内过期！"
+            runbook_url: "https://wiki.example.com/runbooks/certificate-expiring-critical"
+
+        # 证书签发失败
+        - alert: CertificateRequestFailed
+          expr: increase(certmanager_certificaterequest_status_condition{condition="False"}[5m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "证书签发失败: {{ $labels.name }}"
+            description: "证书请求 {{ $labels.name }} 签发失败: {{ $value }}"
+
+        # cert-manager Pod异常
+        - alert: CertManagerPodNotReady
+          expr: kube_pod_status_ready{namespace="cert-manager",condition="true"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "cert-manager Pod未就绪"
+            description: "cert-manager命名空间中的Pod {{ $labels.pod }} 未就绪。"
+
+        # ACME账户注册失败
+        - alert: AcmeAccountRegistrationFailed
+          expr: certmanager_acme_client_request_duration_seconds_count{status_code="error"} > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "ACME账户注册失败"
+            description: "ACME账户注册/更新失败，可能影响证书签发。"
+
+---
+# cert-manager RBAC - 允许所有命名空间创建Certificate
+# (通常由Helm chart自动创建，此处为手动配置示例)
+
+---
+# cert-manager Deployment (Helm安装后的参考配置)
+# 实际部署建议使用Helm Chart
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/version: "v1.14.0"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cert-manager
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cert-manager
+        app.kubernetes.io/component: controller
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9402"
+    spec:
+      serviceAccountName: cert-manager
+      containers:
+        - name: cert-manager
+          image: quay.io/jetstack/cert-manager-controller:v1.14.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --v=2
+            - --cluster-resource-namespace=$(POD_NAMESPACE)
+            - --leader-elect=true
+            - --metrics-listen-addr=0.0.0.0:9402
+            - --webhook-host=0.0.0.0
+            - --webhook-secure-port=10250
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: metrics
+              containerPort: 9402
+              protocol: TCP
+            - name: webhook
+              containerPort: 10250
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9402
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9402
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            allowPrivilegeEscalation: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+
+---
+# cert-manager Webhook Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cert-manager-webhook
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: webhook
+    app.kubernetes.io/version: "v1.14.0"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cert-manager
+      app.kubernetes.io/component: webhook
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cert-manager
+        app.kubernetes.io/component: webhook
+    spec:
+      serviceAccountName: cert-manager-webhook
+      containers:
+        - name: webhook
+          image: quay.io/jetstack/cert-manager-webhook:v1.14.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --v=2
+            - --secure-port=10250
+            - --healthz-port=6080
+            - --metrics-listen-addr=0.0.0.0:9402
+          ports:
+            - name: https
+              containerPort: 10250
+              protocol: TCP
+            - name: metrics
+              containerPort: 9402
+              protocol: TCP
+            - name: healthz
+              containerPort: 6080
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 6080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 6080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+---
+# cert-manager CAINjector Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cert-manager-cainjector
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: cainjector
+    app.kubernetes.io/version: "v1.14.0"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cert-manager
+      app.kubernetes.io/component: cainjector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cert-manager
+        app.kubernetes.io/component: cainjector
+    spec:
+      serviceAccountName: cert-manager-cainjector
+      containers:
+        - name: cainjector
+          image: quay.io/jetstack/cert-manager-cainjector:v1.14.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --v=2
+            - --leader-elect=true
+            - --metrics-listen-addr=0.0.0.0:9402
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9402
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9402
+            initialDelaySeconds: 5
+            periodSeconds: 5

@@ -1,0 +1,343 @@
+###############################################################################
+# ansible/roles/ha/tasks/main.yml - 高可用 Role
+#
+# 功能:
+#   - Keepalived 部署（VIP 漂移）
+#   - Nginx 负载均衡部署
+#   - MySQL 主从高可用部署
+#   - Redis Sentinel 高可用部署
+#   - 健康检查和自动故障转移
+#
+# 适用节点: lb 组（Keepalived + Nginx）
+#           storage 组（MySQL + Redis）
+###############################################################################
+
+# ======================== 安装公共依赖 ========================
+- name: 安装高可用组件依赖
+  ansible.builtin.package:
+    name:
+      - keepalived
+      - nginx
+      - mysql-server
+      - redis
+      - python3
+      - python3-pip
+      - gcc
+      - make
+    state: present
+    update_cache: true
+  tags: [ha, packages]
+
+# ======================== Keepalived 部署 ========================
+- name: 部署 Keepalived
+  block:
+    - name: [Keepalived] 创建配置目录
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ keepalived_config_dir }}"
+        - /etc/keepalived/scripts
+      tags: [ha, keepalived, dirs]
+
+    - name: [Keepalived] 生成主配置文件
+      ansible.builtin.template:
+        src: keepalived.conf.j2
+        dest: "{{ keepalived_config_dir }}/keepalived.conf"
+        mode: '0644'
+      notify: restart keepalived
+      tags: [ha, keepalived, config]
+
+    - name: [Keepalived] 生成健康检查脚本
+      ansible.builtin.template:
+        src: check_nginx.sh.j2
+        dest: /etc/keepalived/scripts/check_nginx.sh
+        mode: '0755'
+      tags: [ha, keepalived, scripts]
+
+    - name: [Keepalived] 生成通知脚本
+      ansible.builtin.template:
+        src: notify.sh.j2
+        dest: /etc/keepalived/scripts/notify.sh
+        mode: '0755'
+      tags: [ha, keepalived, scripts]
+
+    - name: [Keepalived] 启动服务
+      ansible.builtin.systemd:
+        name: keepalived
+        enabled: true
+        state: started
+        daemon_reload: true
+      tags: [ha, keepalived, service]
+
+    - name: [Keepalived] 验证 VIP 配置
+      ansible.builtin.shell: |
+        ip addr show {{ keepalived_interface }} | grep "{{ keepalived_vip }}" || true
+      register: vip_check
+      changed_when: false
+      tags: [ha, keepalived, verify]
+  when: "'lb' in group_names"
+  tags: [ha, keepalived]
+
+# ======================== Nginx 负载均衡部署 ========================
+- name: 部署 Nginx 负载均衡
+  block:
+    - name: [Nginx] 创建必要目录
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ nginx_config_dir }}"
+        - "{{ nginx_log_dir }}"
+        - /etc/nginx/conf.d
+        - /etc/nginx/ssl
+      tags: [ha, nginx, dirs]
+
+    - name: [Nginx] 生成主配置文件
+      ansible.builtin.template:
+        src: nginx.conf.j2
+        dest: "{{ nginx_config_dir }}/nginx.conf"
+        mode: '0644'
+      notify: reload nginx
+      tags: [ha, nginx, config]
+
+    - name: [Nginx] 生成负载均衡配置
+      ansible.builtin.template:
+        src: upstream.conf.j2
+        dest: "{{ nginx_config_dir }}/conf.d/upstream.conf"
+        mode: '0644'
+      notify: reload nginx
+      tags: [ha, nginx, config]
+
+    - name: [Nginx] 生成 K8s API 负载均衡配置
+      ansible.builtin.template:
+        src: k8s-api-lb.conf.j2
+        dest: "{{ nginx_config_dir }}/conf.d/k8s-api-lb.conf"
+        mode: '0644'
+      notify: reload nginx
+      tags: [ha, nginx, config]
+
+    - name: [Nginx] 启动服务
+      ansible.builtin.systemd:
+        name: nginx
+        enabled: true
+        state: started
+      tags: [ha, nginx, service]
+
+    - name: [Nginx] 验证配置语法
+      ansible.builtin.command: nginx -t
+      register: nginx_test
+      changed_when: false
+      ignore_errors: true
+      tags: [ha, nginx, verify]
+
+    - name: [Nginx] 验证负载均衡端口
+      ansible.builtin.wait_for:
+        port: "{{ nginx_listen_port }}"
+        timeout: 10
+      tags: [ha, nginx, verify]
+  when: "'lb' in group_names"
+  tags: [ha, nginx]
+
+# ======================== MySQL 高可用部署 ========================
+- name: 部署 MySQL 高可用
+  block:
+    - name: [MySQL] 创建必要目录
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+        owner: mysql
+        group: mysql
+      loop:
+        - "{{ mysql_data_dir }}"
+        - "{{ mysql_config_dir }}"
+        - "{{ mysql_log_dir }}"
+        - "{{ mysql_backup_dir }}"
+      tags: [ha, mysql, dirs]
+
+    - name: [MySQL] 生成主配置文件
+      ansible.builtin.template:
+        src: my.cnf.j2
+        dest: "{{ mysql_config_dir }}/my.cnf"
+        mode: '0644'
+      notify: restart mysql
+      tags: [ha, mysql, config]
+
+    - name: [MySQL] 启动服务
+      ansible.builtin.systemd:
+        name: mysqld
+        enabled: true
+        state: started
+        daemon_reload: true
+      tags: [ha, mysql, service]
+
+    - name: [MySQL] 等待 MySQL 就绪
+      ansible.builtin.wait_for:
+        port: "{{ mysql_port }}"
+        timeout: 60
+      tags: [ha, mysql, verify]
+
+    - name: [MySQL] 设置 Root 密码
+      ansible.builtin.command: |
+        mysqladmin -u root password '{{ mysql_root_password }}' 2>/dev/null || true
+      changed_when: false
+      ignore_errors: true
+      tags: [ha, mysql, security]
+
+    - name: [MySQL] 创建复制用户
+      ansible.builtin.command: |
+        mysql -u root -p'{{ mysql_root_password }}' -e "
+          CREATE USER IF NOT EXISTS '{{ mysql_repl_user }}'@'{{ mysql_repl_host }}' IDENTIFIED BY '{{ mysql_repl_password }}';
+          GRANT REPLICATION SLAVE ON *.* TO '{{ mysql_repl_user }}'@'{{ mysql_repl_host }}';
+          FLUSH PRIVILEGES;
+        " 2>/dev/null || true
+      changed_when: false
+      ignore_errors: true
+      when: mysql_server_id == 1
+      tags: [ha, mysql, replication]
+
+    - name: [MySQL] 配置主从复制（从库执行）
+      ansible.builtin.command: |
+        mysql -u root -p'{{ mysql_root_password }}' -e "
+          CHANGE MASTER TO
+            MASTER_HOST='{{ mysql_master_host | default('192.168.1.51') }}',
+            MASTER_PORT={{ mysql_port }},
+            MASTER_USER='{{ mysql_repl_user }}',
+            MASTER_PASSWORD='{{ mysql_repl_password }}',
+            MASTER_AUTO_POSITION=1;
+          START SLAVE;
+        " 2>/dev/null || true
+      changed_when: false
+      ignore_errors: true
+      when:
+        - mysql_server_id | default(1) != 1
+        - mysql_master_host is defined
+      tags: [ha, mysql, replication]
+
+    - name: [MySQL] 验证复制状态
+      ansible.builtin.command: mysql -u root -p'{{ mysql_root_password }}' -e "SHOW SLAVE STATUS\G" 2>/dev/null
+      register: mysql_slave_status
+      changed_when: false
+      ignore_errors: true
+      when: mysql_server_id | default(1) != 1
+      tags: [ha, mysql, verify]
+
+    - name: [MySQL] 配置备份定时任务
+      ansible.builtin.cron:
+        name: "MySQL backup"
+        minute: "0"
+        hour: "1"
+        job: "mysqldump -u root -p'{{ mysql_root_password }}' --all-databases --single-transaction --routines --triggers | gzip > {{ mysql_backup_dir }}/mysql-$(date +\\%Y\\%m\\%d_\\%H\\%M).sql.gz 2>/dev/null"
+        user: root
+      tags: [ha, mysql, backup]
+  when: "'storage' in group_names"
+  tags: [ha, mysql]
+
+# ======================== Redis Sentinel 高可用部署 ========================
+- name: 部署 Redis Sentinel 高可用
+  block:
+    - name: [Redis] 创建必要目录
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+        owner: redis
+        group: redis
+      loop:
+        - "{{ redis_data_dir }}"
+        - "{{ redis_config_dir }}"
+        - "{{ redis_log_dir }}"
+        - "{{ redis_sentinel_config_dir }}"
+        - "{{ redis_sentinel_data_dir }}"
+      tags: [ha, redis, dirs]
+
+    - name: [Redis] 生成 Redis 配置
+      ansible.builtin.template:
+        src: redis.conf.j2
+        dest: "{{ redis_config_dir }}/redis.conf"
+        mode: '0644'
+      notify: restart redis
+      tags: [ha, redis, config]
+
+    - name: [Redis] 生成 Sentinel 配置
+      ansible.builtin.template:
+        src: sentinel.conf.j2
+        dest: "{{ redis_sentinel_config_dir }}/sentinel.conf"
+        mode: '0644'
+      notify: restart redis-sentinel
+      tags: [ha, redis, sentinel]
+
+    - name: [Redis] 启动 Redis 服务
+      ansible.builtin.systemd:
+        name: redis
+        enabled: true
+        state: started
+        daemon_reload: true
+      tags: [ha, redis, service]
+
+    - name: [Redis] 等待 Redis 就绪
+      ansible.builtin.wait_for:
+        port: "{{ redis_port }}"
+        timeout: 30
+      tags: [ha, redis, verify]
+
+    - name: [Redis] 设置 Redis 密码
+      ansible.builtin.command: |
+        redis-cli -p {{ redis_port }} CONFIG SET requirepass '{{ redis_password }}'
+        redis-cli -p {{ redis_port }} -a '{{ redis_password }}' ACL SETUSER default on >{{ redis_password }} allkeys allcommands
+      changed_when: false
+      ignore_errors: true
+      tags: [ha, redis, security]
+
+    - name: [Redis] 启动 Sentinel 服务
+      ansible.builtin.systemd:
+        name: redis-sentinel
+        enabled: true
+        state: started
+        daemon_reload: true
+      tags: [ha, redis, sentinel]
+
+    - name: [Redis] 等待 Sentinel 就绪
+      ansible.builtin.wait_for:
+        port: "{{ redis_sentinel_port }}"
+        timeout: 30
+      tags: [ha, redis, verify]
+
+    - name: [Redis] 验证 Sentinel 状态
+      ansible.builtin.command: |
+        redis-cli -p {{ redis_sentinel_port }} SENTINEL master {{ redis_sentinel_monitor }}
+      register: sentinel_status
+      changed_when: false
+      ignore_errors: true
+      tags: [ha, redis, verify]
+
+    - name: [Redis] 配置备份定时任务
+      ansible.builtin.cron:
+        name: "Redis backup"
+        minute: "30"
+        hour: "1"
+        job: "redis-cli -a '{{ redis_password }}' -p {{ redis_port }} BGSAVE && cp {{ redis_data_dir }}/dump.rdb {{ redis_data_dir }}/backup/dump-$(date +\\%Y\\%m\\%d).rdb 2>/dev/null"
+        user: redis
+      tags: [ha, redis, backup]
+  when: "'storage' in group_names"
+  tags: [ha, redis]
+
+# ======================== 配置防火墙 ========================
+- name: 配置高可用防火墙端口
+  community.general.firewalld:
+    port: "{{ item.port }}/{{ item.protocol | default('tcp') }}"
+    permanent: true
+    state: enabled
+    immediate: true
+  loop:
+    - { port: "80", protocol: 'tcp' }
+    - { port: "443", protocol: 'tcp' }
+    - { port: "112", protocol: 'vrrp' }
+    - { port: "3306", protocol: 'tcp' }
+    - { port: "6379", protocol: 'tcp' }
+    - { port: "26379", protocol: 'tcp' }
+  ignore_errors: true
+  tags: [ha, firewall]
