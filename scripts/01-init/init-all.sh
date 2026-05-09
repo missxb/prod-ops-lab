@@ -5,8 +5,9 @@
 # 适用系统: CentOS 7/8, Rocky Linux 8/9
 # 依赖条件: root权限
 # 作者: 运维平台团队
-# 版本: 1.0.0
+# 版本: 1.1.0
 # 创建日期: 2026-05-09
+# 更新日期: 2026-05-09
 #
 # 使用方法:
 #   ./init-all.sh                          # 执行所有初始化任务
@@ -17,6 +18,23 @@
 #   ./init-all.sh --list                   # 列出所有可用任务
 #   ./init-all.sh --help                   # 显示帮助信息
 #
+# 功能说明:
+#   1. 设置主机名 (01-hostname.sh)
+#   2. SSH免密配置 (02-ssh.sh)
+#   3. NTP时间同步 (03-ntp.sh)
+#   4. 内核参数优化 (04-kernel.sh)
+#   5. Docker/containerd安装 (05-docker.sh)
+#   6. NFS服务端配置 (06-nfs.sh)
+#
+# 特性:
+#   - 支持选择性执行 (指定/跳过任务)
+#   - 支持干运行模式 (预览不执行)
+#   - 支持详细输出模式
+#   - 任务失败自动停止
+#   - 完整的日志记录
+#
+# 日志文件: logs/01-init/init-all_YYYYMMDD_HHMMSS.log
+@@
 # 任务列表:
 #   1 - 设置主机名
 #   2 - SSH免密配置
@@ -218,6 +236,9 @@ parse_args() {
 }
 
 # ========================= 任务执行函数 =========================
+
+# 判断是否应该执行指定任务
+# 检查任务是否在执行列表中，且不在跳过列表中
 should_execute_task() {
     local task_num=$1
 
@@ -242,6 +263,10 @@ should_execute_task() {
     return 1
 }
 
+# 执行单个任务
+# 参数: $1=任务编号
+# 支持干运行模式和详细输出模式
+# 任务执行超时时间: 无限制 (由子脚本控制)
 execute_task() {
     local task_num=$1
     local script_name="${TASKS[$task_num]}"

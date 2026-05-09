@@ -8,6 +8,9 @@
 
 set -euo pipefail
 
+# 错误处理
+trap 'log ERROR "安全加固脚本异常退出 (行号: $LINENO)"' ERR
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIGS_DIR="$(dirname "$SCRIPT_DIR")/configs/kubernetes"
 LOG_FILE="/var/log/security-hardening-$(date +%Y%m%d-%H%M%S).log"
@@ -41,6 +44,11 @@ log() {
 
 #-------------------------------------------------------------------------------
 # Pre-flight Checks
+#-------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------
+# Pre-flight Checks
+# 功能: 检查root权限、必要工具、K8s连通性
+# 返回: 无（失败则exit 1）
 #-------------------------------------------------------------------------------
 preflight_checks() {
     log STEP "Running pre-flight checks..."
@@ -100,37 +108,58 @@ show_menu() {
 #-------------------------------------------------------------------------------
 # Deploy Modules
 #-------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------
+# Deploy SSL/TLS Certificate Management
+# 功能: 部署SSL证书管理（cert-manager + 自签名证书）
+# 脚本: 01-ssl-certs.sh
+#-------------------------------------------------------------------------------
 deploy_ssl() {
     log STEP "Deploying SSL/TLS Certificate Management..."
     bash "${SCRIPT_DIR}/01-ssl-certs.sh" 2>&1 | tee -a "$LOG_FILE"
 }
 
+# Deploy SSH Security Hardening
+# 功能: 加固SSH配置（禁用密码、密钥认证、fail2ban）
+# 脚本: 02-ssh-hardening.sh
 deploy_ssh() {
     log STEP "Deploying SSH Security Hardening..."
     bash "${SCRIPT_DIR}/02-ssh-hardening.sh" 2>&1 | tee -a "$LOG_FILE"
 }
 
+# Deploy Firewall Rules & Policies
+# 功能: 配置防火墙规则（支持firewalld/iptables/ufw）
+# 脚本: 03-firewall-rules.sh
 deploy_firewall() {
     log STEP "Deploying Firewall Rules..."
     bash "${SCRIPT_DIR}/03-firewall-rules.sh" 2>&1 | tee -a "$LOG_FILE"
 }
 
+# Deploy Container Security Scanning
+# 功能: 安装Trivy、配置OPA策略、创建扫描CronJob
+# 脚本: 04-container-scan.sh
 deploy_container_scan() {
     log STEP "Deploying Container Security Scanning..."
     bash "${SCRIPT_DIR}/04-container-scan.sh" 2>&1 | tee -a "$LOG_FILE"
 }
 
+# Deploy Kubernetes RBAC Configuration
+# 功能: 配置K8s RBAC角色（admin/readonly/developer/devops）
+# 脚本: 05-k8s-rbac.sh
 deploy_k8s_rbac() {
     log STEP "Deploying Kubernetes RBAC..."
     bash "${SCRIPT_DIR}/05-k8s-rbac.sh" 2>&1 | tee -a "$LOG_FILE"
 }
 
+# Deploy Network Policies
+# 功能: 应用K8s网络策略
 deploy_network_policy() {
     log STEP "Deploying Network Policies..."
     kubectl apply -f "${CONFIGS_DIR}/network-policy.yaml" 2>&1 | tee -a "$LOG_FILE"
     log INFO "Network policies applied"
 }
 
+# Deploy Pod Security Policies
+# 功能: 应用K8s Pod安全策略
 deploy_pod_security() {
     log STEP "Deploying Pod Security Policies..."
     kubectl apply -f "${CONFIGS_DIR}/pod-security.yaml" 2>&1 | tee -a "$LOG_FILE"

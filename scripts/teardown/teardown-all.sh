@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-###############################################################################
+##############################################################################
 # teardown-all.sh - 全阶段回滚脚本
 # Enterprise Cloud Native Platform
 # 功能: 按逆序执行所有阶段回滚 (阶段10 → 阶段1)
-# 安全: 多级确认 + 彩色日志 + 完整回滚报告
-###############################################################################
+# 安全: 多级确认 + 彩色日志 + 完整回滚报告 + 干运行 + 状态快照
+##############################################################################
 set -euo pipefail
 
 # ========================= 全局变量 =========================
@@ -50,6 +50,9 @@ declare -A PHASE_RESULTS=()
 SUCCESS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
+
+# 加载共享库
+source "$SCRIPT_DIR/../lib/common.sh"
 
 # ========================= 颜色定义 =========================
 RED='\033[0;31m'
@@ -218,7 +221,7 @@ generate_report() {
     echo "回滚信息:" >> "$REPORT_FILE"
     echo "  开始时间: $(date -d @$START_TIME '+%Y-%m-%d %H:%M:%S')" >> "$REPORT_FILE"
     echo "  结束时间: $(date '+%Y-%m-%d %H:%M:%S')" >> "$REPORT_FILE"
-    echo "  总耗时:   ${total_duration}秒" >> "$REPORT_FILE"
+    echo "  总耗时:   $(common_format_duration $total_duration)" >> "$REPORT_FILE"
     echo "  操作主机: $(hostname)" >> "$REPORT_FILE"
     echo "  日志文件: $LOG_FILE" >> "$REPORT_FILE"
     echo "" >> "$REPORT_FILE"

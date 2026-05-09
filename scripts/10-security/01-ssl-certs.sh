@@ -7,6 +7,9 @@
 
 set -euo pipefail
 
+# 错误处理
+trap 'log ERROR "SSL证书脚本异常退出 (行号: $LINENO)"' ERR
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CERT_DIR="/etc/ssl/enterprise"
 K8S_CERT_DIR="/root/enterprise-cloud-native-platform/certs"
@@ -36,6 +39,12 @@ log() {
 
 #-------------------------------------------------------------------------------
 # Install cert-manager
+#-------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------
+# Install cert-manager
+# 功能: 通过Helm或kubectl安装cert-manager到K8s集群
+# 前置条件: kubectl可用、集群可达
+# 等待: deployment/cert-manager和webhook就绪
 #-------------------------------------------------------------------------------
 install_cert_manager() {
     log INFO "Installing cert-manager..."
@@ -68,6 +77,11 @@ install_cert_manager() {
 
 #-------------------------------------------------------------------------------
 # Create Let's Encrypt Cluster Issuer
+#-------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------
+# Create Let's Encrypt Cluster Issuer
+# 功能: 创建Let's Encrypt生产环境和测试环境的ClusterIssuer
+# 名称: letsencrypt-prod, letsencrypt-staging
 #-------------------------------------------------------------------------------
 create_cluster_issuer() {
     log INFO "Creating Let's Encrypt Cluster Issuer..."
@@ -109,6 +123,12 @@ EOF
 
 #-------------------------------------------------------------------------------
 # Generate Self-Signed Certificates (for internal use)
+#-------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------
+# Generate Self-Signed Certificates
+# 功能: 生成自签名CA和服务器证书（4096位RSA，SHA512）
+# 参数: $1=domain（默认: enterprise.local）
+# 生成: ca.key, ca.crt, server.key, server.crt, server.p12
 #-------------------------------------------------------------------------------
 generate_self_signed() {
     local domain=${1:-"enterprise.local"}
@@ -175,6 +195,11 @@ EOF
 
 #-------------------------------------------------------------------------------
 # Create Kubernetes TLS Secrets
+#-------------------------------------------------------------------------------
+#-------------------------------------------------------------------------------
+# Create Kubernetes TLS Secrets
+# 功能: 创建K8s TLS Secret和CA ConfigMap
+# 参数: $1=domain, $2=namespace
 #-------------------------------------------------------------------------------
 create_k8s_secrets() {
     local domain=${1:-"enterprise.local"}

@@ -1,42 +1,75 @@
-# GitLab Helm Chart Values - Enterprise Cloud Native Platform
-# Chart: https://gitlab.com/gitlab-org/charts/gitlab
-# Version: 7.x+
+# =============================================================================
+# GitLab Helm Chart Values - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: GitLab代码仓库配置
+# 图表: https://gitlab.com/gitlab-org/charts/gitlab
+# 版本: 7.x+
+# 部署: helm install gitlab gitlab/gitlab -f gitlab-values.yaml -n gitlab
+# 验证: kubectl get pods -n gitlab
+# =============================================================================
 
+# =============================================================================
+# 全局配置
+# =============================================================================
 global:
-  # Domain configuration
+  # =========================================================================
+  # 域名配置
+  # =========================================================================
   hosts:
+    # GitLab主域名
     domain: gitlab.example.com
+    # HTTPS配置
     https: true
+    # 外部IP (用于LoadBalancer)
     externalIP: ""
-  # Ingress configuration
+
+  # =========================================================================
+  # Ingress配置
+  # =========================================================================
   ingress:
+    # 使用cert-manager自动管理TLS证书
     configureCertmanager: true
+    # Ingress Class
     class: nginx
+    # TLS Secret名称
     tls:
       secretName: gitlab-tls-secret
+    # Ingress注解
     annotations:
+      # 上传文件大小限制
       nginx.ingress.kubernetes.io/proxy-body-size: "250m"
+      # 代理超时
       nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
       nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
-  # CAS (Container Registry) host
+
+  # =========================================================================
+  # 应用配置
+  # =========================================================================
   appConfig:
+    # 禁用使用统计
     enableUsagePing: false
+    # 允许创建组
     default_can_create_group: true
+    # 允许用户名修改
     username_changing_enabled: true
-    # Email settings
+    # 邮件配置
     email_enabled: true
     email_from: gitlab@example.com
     email_display_name: "GitLab Enterprise"
-  # Pages domain
+
+  # =========================================================================
+  # 可选功能
+  # =========================================================================
+  # GitLab Pages
   pages:
     enabled: false
-  # Kubernetes domain
+  # Kubernetes Agent
   kas:
     enabled: false
 
-# ============================================================
-# NGINX Ingress Controller (GitLab bundled)
-# ============================================================
+# =============================================================================
+# NGINX Ingress Controller (GitLab内置)
+# =============================================================================
 nginx-ingress:
   enabled: true
   controller:
@@ -48,12 +81,13 @@ nginx-ingress:
       limits:
         cpu: 500m
         memory: 512Mi
+    # Prometheus指标
     metrics:
       enabled: true
 
-# ============================================================
-# Cert-Manager (for TLS)
-# ============================================================
+# =============================================================================
+# Cert-Manager (TLS证书管理)
+# =============================================================================
 certmanager:
   install: true
   installCRDs: true
@@ -62,9 +96,9 @@ certmanager:
       cpu: 50m
       memory: 128Mi
 
-# ============================================================
-# PostgreSQL
-# ============================================================
+# =============================================================================
+# PostgreSQL 数据库
+# =============================================================================
 postgresql:
   install: true
   persistence:
@@ -79,9 +113,9 @@ postgresql:
       cpu: "1"
       memory: 1Gi
 
-# ============================================================
-# Redis
-# ============================================================
+# =============================================================================
+# Redis 缓存
+# =============================================================================
 redis:
   install: true
   persistence:
@@ -96,14 +130,15 @@ redis:
       cpu: 500m
       memory: 512Mi
 
-# ============================================================
-# Gitaly
-# ============================================================
+# =============================================================================
+# Gitaly (Git仓库管理)
+# =============================================================================
 gitaly:
+  # Gitaly副本数 (HA模式)
   replicaCount: 2
   persistence:
     enabled: true
-    size: 200Gi
+    size: 200Gi  # 根据代码库大小调整
     storageClass: "standard"
   resources:
     requests:
@@ -113,9 +148,9 @@ gitaly:
       cpu: "2"
       memory: 4Gi
 
-# ============================================================
-# GitLab Shell
-# ============================================================
+# =============================================================================
+# GitLab Shell (SSH访问)
+# =============================================================================
 gitlab-shell:
   minReplicas: 2
   maxReplicas: 4
@@ -127,9 +162,9 @@ gitlab-shell:
       cpu: 500m
       memory: 512Mi
 
-# ============================================================
-# GitLab Sidekiq (background jobs)
-# ============================================================
+# =============================================================================
+# Sidekiq (后台任务处理)
+# =============================================================================
 sidekiq:
   minReplicas: 2
   maxReplicas: 6
@@ -141,9 +176,9 @@ sidekiq:
       cpu: "2"
       memory: 4Gi
 
-# ============================================================
-# GitLab Webservice (Puma)
-# ============================================================
+# =============================================================================
+# Webservice (Puma Web服务器)
+# =============================================================================
 webservice:
   minReplicas: 2
   maxReplicas: 8
@@ -155,9 +190,9 @@ webservice:
       cpu: "2"
       memory: 4Gi
 
-# ============================================================
-# GitLab Toolbox (Migrations)
-# ============================================================
+# =============================================================================
+# Toolbox (数据库迁移)
+# =============================================================================
 toolbox:
   resources:
     requests:
@@ -167,9 +202,9 @@ toolbox:
       cpu: 500m
       memory: 1Gi
 
-# ============================================================
-# Container Registry
-# ============================================================
+# =============================================================================
+# Container Registry (容器镜像仓库)
+# =============================================================================
 registry:
   enabled: true
   replicas: 2
@@ -178,7 +213,7 @@ registry:
     maxReplicas: 5
   persistence:
     enabled: true
-    size: 200Gi
+    size: 200Gi  # 根据镜像数量调整
     storageClass: "standard"
   resources:
     requests:
@@ -189,12 +224,14 @@ registry:
       memory: 2Gi
   ingress:
     annotations:
+      # 不限制上传大小
       nginx.ingress.kubernetes.io/proxy-body-size: "0"
+      # 镜像拉取超时
       nginx.ingress.kubernetes.io/proxy-read-timeout: "900"
 
-# ============================================================
-# Prometheus Monitoring
-# ============================================================
+# =============================================================================
+# Prometheus 监控
+# =============================================================================
 prometheus:
   install: true
   persistence:
@@ -208,12 +245,12 @@ prometheus:
       cpu: "1"
       memory: 2Gi
 
-# ============================================================
-# GitLab Runner
-# ============================================================
+# =============================================================================
+# GitLab Runner (CI/CD执行器)
+# =============================================================================
 gitlab-runner:
   install: true
-  replicas: 2
+  replicas: 2  # HA模式
   resources:
     requests:
       cpu: 100m
@@ -221,28 +258,75 @@ gitlab-runner:
     limits:
       cpu: 500m
       memory: 512Mi
+  # Runner配置
   runners:
     config: |
       [[runners]]
         [runners.kubernetes]
+          # Agent命名空间
           namespace = "gitlab-runner"
+          # 默认镜像
           image = "ubuntu:22.04"
+          # 任务超时 (秒)
           poll_timeout = 600
+          # 资源限制
           cpu_request = "500m"
           memory_request = "1Gi"
           cpu_limit = "2"
           memory_limit = "4Gi"
+          # Service容器资源
           service_cpu_request = "100m"
           service_memory_request = "256Mi"
+          # Helper容器资源
           helper_cpu_request = "100m"
           helper_memory_request = "256Mi"
         [runners.cache]
+          # 缓存类型 (S3兼容)
           Type = "s3"
           Shared = true
 
-# ============================================================
+# =============================================================================
 # Service Account
-# ============================================================
+# =============================================================================
 serviceAccount:
   create: true
   enabled: true
+
+# =============================================================================
+# GitLab部署验证
+# =============================================================================
+# 安装GitLab:
+#   helm install gitlab gitlab/gitlab -f gitlab-values.yaml -n gitlab --create-namespace
+#
+# 查看Pod状态:
+#   kubectl get pods -n gitlab
+#
+# 获取初始密码:
+#   kubectl get secret -n gitlab gitlab-gitlab-initial-root-password -o jsonpath="{.data.password}" | base64 --decode
+#
+# 访问GitLab:
+#   https://gitlab.example.com
+#   用户名: root
+#   密码: (上面获取的密码)
+#
+# 查看日志:
+#   kubectl logs -n gitlab -l app=webservice -f
+#
+# 创建项目:
+#   1. 登录GitLab
+#   2. 点击New Project
+#   3. 选择Blank Project
+#   4. 输入项目名称
+#   5. 点击Create Project
+#
+# 配置CI/CD:
+#   1. 在项目根目录创建 .gitlab-ci.yml
+#   2. 提交代码触发Pipeline
+#   3. 查看Pipeline状态
+#
+# Runner注册:
+#   1. 获取Runner Token:
+#      kubectl get secret -n gitlab gitlab-runner-secret -o jsonpath="{.data.runner-registration-token}" | base64 --decode
+#   2. 注册Runner:
+#      kubectl exec -n gitlab-runner -it <runner-pod> -- gitlab-runner register
+# =============================================================================

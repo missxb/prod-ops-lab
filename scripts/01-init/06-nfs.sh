@@ -5,8 +5,33 @@
 # 适用系统: CentOS 7/8, Rocky Linux 8/9
 # 依赖条件: root权限, 网络连接
 # 作者: 运维平台团队
-# 版本: 1.0.0
+# 版本: 1.1.0
 # 创建日期: 2026-05-09
+# 更新日期: 2026-05-09
+#
+# 使用方法:
+#   ./06-nfs.sh                                    # 使用默认配置
+#   NFS_EXPORT_BASE=/data/nfs ./06-nfs.sh          # 自定义导出目录
+#   NFS_SUBNET=192.168.0.0/16 ./06-nfs.sh         # 自定义允许网段
+#
+# 功能说明:
+#   1. 安装NFS服务软件包
+#   2. 创建NFS导出目录结构
+#   3. 配置/etc/exports导出表
+#   4. 配置NFS防火墙规则
+#   5. 优化NFS内核参数
+#   6. 启动NFS服务
+#   7. 验证NFS配置
+#
+# NFS导出目录结构:
+#   /data/nfs/shared       - 共享存储
+#   /data/nfs/registry     - 镜像仓库
+#   /data/nfs/mysql        - MySQL数据
+#   /data/nfs/postgres     - PostgreSQL数据
+#   /data/nfs/redis        - Redis数据
+#   /data/nfs/elasticsearch - Elasticsearch数据
+#   /data/nfs/minio        - MinIO对象存储
+#   /data/nfs/jenkins      - Jenkins数据
 ###############################################################################
 set -euo pipefail
 umask 077
@@ -83,6 +108,10 @@ detect_os() {
 }
 
 # ========================= NFS配置函数 =========================
+
+# 安装NFS服务软件包
+# CentOS 7需要nfs-utils和rpcbind
+# CentOS 8+只需要nfs-utils
 install_nfs() {
     log_step "安装NFS服务"
 
@@ -117,6 +146,9 @@ install_nfs() {
     fi
 }
 
+# 创建NFS导出目录结构
+# 为不同的应用创建独立的子目录
+# 设置适当的权限 (777 + nobody:nobody)
 create_export_dirs() {
     log_step "创建NFS导出目录"
 
@@ -138,6 +170,9 @@ create_export_dirs() {
     log_success "NFS导出目录已创建: ${NFS_EXPORT_BASE}"
 }
 
+# 配置NFS导出表 (/etc/exports)
+# 设置网段限制和导出选项
+# 支持增量更新 (移除旧配置，添加新配置)
 configure_exports() {
     log_step "配置NFS导出表"
 
@@ -207,6 +242,9 @@ SYSCTL_EOF
     log_success "NFS内核参数已配置"
 }
 
+# 启动NFS服务
+# 启动rpcbind和nfs-server服务
+# 刷新NFS导出表
 start_nfs() {
     log_step "启动NFS服务"
 
@@ -243,6 +281,8 @@ start_nfs() {
     log_success "NFS导出已刷新"
 }
 
+# 验证NFS配置
+# 显示导出列表、目录权限、挂载信息、服务状态
 verify_nfs() {
     log_step "验证NFS配置"
 

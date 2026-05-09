@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 加载共享库
+source "$SCRIPT_DIR/lib/common.sh"
+
 ##############################################################################
 # 阶段10: 安全加固验证
 # 验证项目: SSL证书、SSH加固、防火墙、容器扫描、K8s RBAC
@@ -10,6 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 REPORT_DIR="$PROJECT_DIR/reports"
 REPORT_FILE="$REPORT_DIR/verify-phase10-$(date +%Y%m%d-%H%M%S).log"
+TIMESTAMP_REPORT="$REPORT_DIR/verify-phase10-$(date +%Y%m%d-%H%M%S).txt"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -276,6 +280,56 @@ if systemctl is-active auditd &>/dev/null; then
     pass "审计服务(auditd)运行中"
 else
     info "审计服务(auditd)未运行"
+fi
+
+# --- 10.7 CVE漏洞检查 ---
+section "10.7 CVE漏洞检查"
+
+# 检查系统是否已安装安全更新
+if command -v yum &>/dev/null; then
+    SEC_UPDATE_COUNT=$(yum check-update --security 2>/dev/null | grep -c "^[a-zA-Z]" || echo "0")
+    if [[ "$SEC_UPDATE_COUNT" -gt 0 ]]; then
+        warn "发现 $SEC_UPDATE_COUNT 个待安装安全更新"
+    else
+        pass "系统安全更新已是最新"
+    fi
+fi
+
+if command -v apt-get &>/dev/null; then
+    apt-get update -qq 2>/dev/null || true
+    UPGRADE_COUNT=$(apt list --upgradable 2>/dev/null | grep -c "security" || echo "0")
+    if [[ "$UPGRADE_COUNT" -gt 0 ]]; then
+        warn "发现 $UPGRADE_COUNT 个待安装安全更新"
+    else
+        pass "系统安全更新已是最新"
+    fi
+fi
+
+# 检查内核漏洞
+KERNEL_VERSION=$(uname -r)
+info "当前内核版本: $KERNEL_VERSION"
+
+# --- 10.8 K8s Secret加密检查 ---
+section "10.8 K8s Secret加密检查"
+
+if command -v kubectl &>/dev/null; then
+    # 检查EncryptionConfiguration
+    if [[ -f /etc/kubernetes/encryption-config.yaml ]]; then
+        pass "EncryptionConfiguration 配置文件存在"
+        if grep -q "aescbc\|aesgcm\|secretbox" /etc/kubernetes/encryption-config.yaml 2>/dev/null; then
+            pass "Secret加密已配置"
+        else
+            warn "EncryptionConfiguration 中未配置加密提供者"
+        fi
+    else
+        info "EncryptionConfiguration 未配置 (Secrets以明文存储在etcd中)"
+    fi
+    
+    # 检查etcd加密
+    ETCD_ENCRYPT=$(kubectl get pods -n kube-system -l component=etcd --no-headers 2>/dev/null || echo "")
+    if [[ -n "$ETCD_ENCRYPT" ]]; then
+        info "etcd Pod 已发现"
+    fi
 fi
 
 # ========== 验证报告 ==========

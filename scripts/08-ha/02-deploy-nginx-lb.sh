@@ -7,6 +7,9 @@
 
 set -euo pipefail
 
+# 错误处理
+trap 'log_error "Nginx LB部署脚本异常退出 (行号: $LINENO)"' ERR
+
 # 颜色输出
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -18,6 +21,25 @@ log_info()  { echo -e "${GREEN}[INFO]${NC} $(date '+%H:%M:%S') $*"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $(date '+%H:%M:%S') $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $(date '+%H:%M:%S') $*"; }
 log_step()  { echo -e "${CYAN}[STEP]${NC} $(date '+%H:%M:%S') $*"; }
+
+# ==================== 用法说明 ====================
+usage() {
+    cat << EOF
+用法: $(basename "$0") [options]
+
+功能: 部署Nginx作为7层负载均衡器
+
+环境变量:
+  K8S_API_SERVERS   K8s API服务器列表（逗号分隔）
+  APP_SERVERS        应用服务器列表（逗号分隔）
+  LB_ADDRESS         监听地址（默认: 0.0.0.0）
+  LB_PORT            HTTP端口（默认: 80）
+  LB_SSL_PORT        HTTPS端口（默认: 443）
+
+示例:
+  K8S_API_SERVERS=10.0.0.1:6443,10.0.0.2:6443 $(basename "$0")
+EOF
+}
 
 # ==================== 配置变量 ====================
 NGINX_VERSION="${NGINX_VERSION:-1.24.0}"

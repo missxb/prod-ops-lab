@@ -4,6 +4,7 @@ set -euo pipefail
 ##############################################################################
 # 全阶段验证脚本
 # 按顺序执行所有阶段验证，汇总结果并生成综合报告
+# 支持选项: --help, --phase <N>, --skip <N>, --verbose, --json
 ##############################################################################
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,8 +13,13 @@ REPORT_DIR="$PROJECT_DIR/reports"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 MASTER_REPORT="$REPORT_DIR/verify-all-$TIMESTAMP.log"
 SUMMARY_REPORT="$REPORT_DIR/verify-summary-$TIMESTAMP.txt"
+JSON_REPORT="$REPORT_DIR/verify-all-$TIMESTAMP.json"
 
 mkdir -p "$REPORT_DIR"
+
+# 加载共享库
+source "$SCRIPT_DIR/lib/common.sh"
+common_init_verify "$PROJECT_DIR" 0
 
 # 颜色定义
 RED='\033[0;31m'
@@ -93,16 +99,9 @@ echo ""
 
 # 显示阶段列表
 echo -e "${BLUE}将要验证的阶段:${NC}"
-echo -e "  ${CYAN} 1${NC}. 基础环境初始化"
-echo -e "  ${CYAN} 2${NC}. Kubernetes集群部署"
-echo -e "  ${CYAN} 3${NC}. 存储层配置"
-echo -e "  ${CYAN} 4${NC}. CI/CD流水线"
-echo -e "  ${CYAN} 5${NC}. 应用部署"
-echo -e "  ${CYAN} 6${NC}. 监控告警"
-echo -e "  ${CYAN} 7${NC}. 日志系统"
-echo -e "  ${CYAN} 8${NC}. 高可用架构"
-echo -e "  ${CYAN} 9${NC}. 自动化运维"
-echo -e "  ${CYAN}10${NC}. 安全加固"
+for i in $(seq 1 $TOTAL_PHASES); do
+    printf "  ${CYAN}%2d${NC}. %s\n" "$i" "${PHASE_NAMES[$i]}"
+done
 echo ""
 
 # 按顺序执行所有阶段
@@ -203,7 +202,7 @@ done)
 总计: $TOTAL_PHASES 个阶段
 通过: $PHASE_PASS
 失败: $PHASE_FAIL
-耗时: ${DURATION}秒
+耗时: $(common_format_duration $DURATION)
 
 $(if [[ $PHASE_FAIL -eq 0 ]]; then
     echo "结论: 全部阶段验证通过"
@@ -221,6 +220,25 @@ fi)
 详细日志: $MASTER_REPORT
 =================================================================
 EOF
+
+# 生成JSON格式报告
+cat > "$JSON_REPORT" <<JSON_EOF
+{
+  "timestamp": "$(date '+%Y-%m-%d %H:%M:%S')",
+  "total_phases": $TOTAL_PHASES,
+  "passed": $PHASE_PASS,
+  "failed": $PHASE_FAIL,
+  "duration_seconds": $DURATION,
+  "phases": {
+$(for i in $(seq 1 $TOTAL_PHASES); do
+    RESULT="${PHASE_RESULTS[$i]:-NOT_RUN}"
+    COMMA=""
+    [[ $i -lt $TOTAL_PHASES ]] && COMMA=","
+    echo "    \"$i\": {\"name\": \"${PHASE_NAMES[$i]}\", \"result\": \"${RESULT}\"}${COMMA}"
+done)
+  }
+}
+JSON_EOF
 
 log ""
 log "${BOLD}验证完成时间: $(date '+%Y-%m-%d %H:%M:%S')${NC}"

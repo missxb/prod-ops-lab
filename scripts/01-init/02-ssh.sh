@@ -5,8 +5,24 @@
 # 适用系统: CentOS 7/8, Rocky Linux 8/9
 # 依赖条件: root权限, sshpass(可选)
 # 作者: 运维平台团队
-# 版本: 1.0.0
+# 版本: 1.1.0
 # 创建日期: 2026-05-09
+# 更新日期: 2026-05-09
+#
+# 使用方法:
+#   ./02-ssh.sh                                  # 配置本机SSH
+#   SSH_USER=admin SSH_PORT=2222 ./02-ssh.sh     # 自定义SSH参数
+#
+# 功能说明:
+#   1. 生成SSH密钥对 (RSA 4096位)
+#   2. 配置SSH安全加固 (禁用密码登录等)
+#   3. 部署公钥到集群节点 (从hosts.conf读取)
+#   4. 配置全局SSH选项
+#
+# hosts.conf格式 (逗号分隔):
+#   host,port,user,password
+#   192.168.1.11,22,root,password123
+#   192.168.1.12,22,root,password456
 ###############################################################################
 set -euo pipefail
 umask 077
@@ -84,6 +100,10 @@ detect_os() {
 }
 
 # ========================= SSH配置函数 =========================
+
+# 生成SSH密钥对 (RSA 4096位)
+# 如果密钥已存在则验证其有效性，无效则重新生成
+# 密钥用于集群节点间免密通信
 generate_ssh_key() {
     log_step "检查并生成SSH密钥"
 
@@ -108,6 +128,9 @@ generate_ssh_key() {
     fi
 }
 
+# 配置SSH安全加固
+# 包括: 禁用密码登录、限制认证次数、设置超时等
+# 这些配置对于生产环境的安全性至关重要
 configure_ssh_security() {
     log_step "配置SSH安全加固"
 
@@ -161,6 +184,11 @@ configure_ssh_security() {
     fi
 }
 
+# 部署公钥到目标节点
+# 参数: $1=目标主机, $2=端口(默认22), $3=用户名(默认root), $4=密码(可选)
+# 支持两种方式:
+#   1. 已配置免密则跳过
+#   2. 使用sshpass+密码部署
 deploy_key_to_node() {
     local target_host="$1"
     local target_port="${2:-22}"

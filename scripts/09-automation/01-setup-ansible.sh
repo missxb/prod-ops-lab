@@ -11,6 +11,9 @@
 ###############################################################################
 set -euo pipefail
 
+# 错误处理
+trap 'log_error "Ansible安装脚本异常退出 (行号: $LINENO)"' ERR
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../" && pwd)"
 ANSIBLE_DIR="${PROJECT_ROOT}/ansible"
@@ -32,6 +35,10 @@ log_warn()    { echo -e "${YELLOW}[WARN]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*"; 
 log_error()   { echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*" >&2; }
 
 # ========================= Ansible 安装 =========================
+# ========================= Ansible 安装 =========================
+# 功能: 通过pip/yum/apt安装Ansible
+# 支持: pip3 > pip > yum > apt-get
+# 返回: 无（失败则exit 1）
 install_ansible() {
     log_info "安装 Ansible..."
     
@@ -71,6 +78,10 @@ install_ansible() {
 }
 
 # ========================= Ansible 配置 =========================
+# ========================= Ansible 配置 =========================
+# 功能: 生成ansible.cfg全局配置
+# 配置: $ANSIBLE_DIR/ansible.cfg
+# 配置项: inventory、SSH连接、权限提升、缓存等
 configure_ansible() {
     log_info "配置 Ansible..."
     
@@ -137,6 +148,10 @@ EOF
 }
 
 # ========================= SSH 免密配置 =========================
+# ========================= SSH 免密配置 =========================
+# 功能: 生成SSH密钥对、配置SSH客户端、设置known_hosts
+# 密钥: ~/.ssh/id_rsa (RSA 4096)
+# 配置: ~/.ssh/config (连接复用、压缩)
 setup_ssh() {
     log_info "配置 SSH 免密登录..."
     
@@ -189,6 +204,10 @@ EOF
 }
 
 # ========================= 分发公钥 =========================
+# ========================= 分发公钥 =========================
+# 功能: 从inventory提取主机列表，自动分发SSH公钥
+# 前置条件: inventory/hosts.yml存在
+# 返回: 0=成功, 1=部分失败
 distribute_keys() {
     log_info "分发 SSH 公钥到各节点..."
     
@@ -226,6 +245,9 @@ distribute_keys() {
 }
 
 # ========================= 安装额外工具 =========================
+# ========================= 安装额外工具 =========================
+# 功能: 安装运维常用工具: python3, jq, curl, wget, net-tools等
+# 同时安装Python Ansible依赖
 install_tools() {
     log_info "安装额外运维工具..."
     
@@ -257,6 +279,9 @@ install_tools() {
 }
 
 # ========================= 验证连通性 =========================
+# ========================= 验证连通性 =========================
+# 功能: 使用ansible ping模块验证所有主机连通性
+# 返回: 0=全部可达, 1=部分不可达
 verify_connectivity() {
     log_info "验证 Ansible 连通性..."
     

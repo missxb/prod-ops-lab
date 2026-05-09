@@ -2,6 +2,26 @@
 #==============================================================================
 # 01-deploy-gitlab.sh - Deploy GitLab CE with Helm
 # Enterprise Cloud Native Platform - Phase 4
+#
+# Description:
+#   Deploys GitLab Community Edition using Helm chart with TLS,
+#   persistent storage, ingress configuration, and secrets.
+#
+# Usage:
+#   ./01-deploy-gitlab.sh [deploy|verify|credentials|delete]
+#
+#   deploy      - Full GitLab deployment (default)
+#   verify      - Verify GitLab is running
+#   credentials - Show GitLab login credentials
+#   delete      - Remove GitLab deployment
+#
+# Environment Variables:
+#   DOMAIN  - Base domain for GitLab (default: example.com)
+#
+# Examples:
+#   ./01-deploy-gitlab.sh
+#   DOMAIN=corp.example.com ./01-deploy-gitlab.sh deploy
+#   ./01-deploy-gitlab.sh credentials
 #==============================================================================
 set -euo pipefail
 
@@ -28,17 +48,25 @@ log_info()  { echo -e "${GREEN}${LOG_PREFIX} [INFO] $(date '+%H:%M:%S') $*${NC}"
 log_warn()  { echo -e "${YELLOW}${LOG_PREFIX} [WARN] $(date '+%H:%M:%S') $*${NC}"; }
 log_error() { echo -e "${RED}${LOG_PREFIX} [ERROR] $(date '+%H:%M:%S') $*${NC}"; }
 
-# Check prerequisites
+# check_prereqs - 检查必需工具和 Helm 仓库
 check_prereqs() {
     log_info "Checking prerequisites..."
     
     for cmd in kubectl helm openssl; do
         if ! command -v "${cmd}" &>/dev/null; then
             log_error "Required command not found: ${cmd}"
+            log_error "Please install ${cmd} before running this script"
             exit 1
         fi
     done
     
+    # 验证 Kubernetes 集群连接
+    if ! kubectl cluster-info &>/dev/null; then
+        log_error "Cannot connect to Kubernetes cluster"
+        exit 1
+    fi
+    
+    # 检查并添加 GitLab Helm 仓库
     if ! helm repo list 2>/dev/null | grep -q gitlab; then
         log_info "Adding GitLab Helm repository..."
         helm repo add gitlab "${CHART_REPO}" --force-update
@@ -48,7 +76,8 @@ check_prereqs() {
     log_info "Prerequisites satisfied"
 }
 
-# Create namespace with labels
+# create_namespace - 创建 GitLab 命名空间并设置标签
+# 应用 purpose=source-control, team=devops, environment=production 标签
 create_namespace() {
     log_info "Creating namespace: ${NAMESPACE}"
     
@@ -60,19 +89,35 @@ create_namespace() {
         environment=production \
         app.kubernetes.io/managed-by=helm \
         --overwrite
+    
+    # 验证命名空间创建成功
+    if kubectl get namespace "${NAMESPACE}" &>/dev/null; then
+        log_info "Namespace ${NAMESPACE} verified"
+    else
+        log_error "Failed to create namespace ${NAMESPACE}"
+        exit 1
+    fi
 }
 
-# Create secrets
+# create_secrets - 创建 GitLab 所需的所有 Kubernetes Secrets
+# 包括: root 密码, Rails secrets, SSH host key
 create_secrets() {
     log_info "Creating secrets..."
     
-    # Initial root password
+    # 创建初始 root 密码 Secret
+    local root_password
+    root_password=$(openssl rand -base64 24 | tr -d '=+/' || true)
+    if [[ -z "${root_password}" ]]; then
+        log_error "Failed to generate root password"
+        exit 1
+    fi
+    
     kubectl create secret generic gitlab-initial-root-password \
-        --from-literal=password="$(openssl rand -base64 24 | tr -d '=+/')" \
+        --from-literal=password="${root_password}" \
         -n "${NAMESPACE}" \
         --dry-run=client -o yaml | kubectl apply -f -
     
-    # Rails secrets
+    # 创建 Rails secrets
     kubectl create secret generic gitlab-rails-secret \
         --from-literal=base="$(openssl rand -hex 64)" \
         --from-literal=otp_key_base="$(openssl rand -hex 64)" \
@@ -81,26 +126,33 @@ create_secrets() {
         -n "${NAMESPACE}" \
         --dry-run=client -o yaml | kubectl apply -f -
     
-    # SSH host key
+    # 创建 SSH host key
     local key_dir="/tmp/gitlab-ssh-keys"
     mkdir -p "${key_dir}"
-    ssh-keygen -t rsa -b 4096 -f "${key_dir}/ssh-host-key" -N "" -q 2>/dev/null || true
+    if ! ssh-keygen -t rsa -b 4096 -f "${key_dir}/ssh-host-key" -N "" -q 2>/dev/null; then
+        log_warn "Failed to generate SSH key, using existing or default"
+    fi
     
-    kubectl create secret generic gitlab-gitlab-shell-host-keys \
-        --from-file=ssh-host-key="${key_dir}/ssh-host-key" \
-        -n "${NAMESPACE}" \
-        --dry-run=client -o yaml | kubectl apply -f -
+    if [[ -f "${key_dir}/ssh-host-key" ]]; then
+        kubectl create secret generic gitlab-gitlab-shell-host-keys \
+            --from-file=ssh-host-key="${key_dir}/ssh-host-key" \
+            -n "${NAMESPACE}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+        rm -rf "${key_dir}"
+    fi
     
-    rm -rf "${key_dir}"
-    
-    log_info "Secrets created"
+    # 验证 Secrets 创建成功
+    local secret_count
+    secret_count=$(kubectl get secrets -n "${NAMESPACE}" --no-headers 2>/dev/null | wc -l)
+    log_info "Secrets created (${secret_count} total in namespace)"
 }
 
-# Create storage classes if needed
+# setup_storage - 检查并配置存储类
+# 如果 standard 存储类不存在，则创建一个本地存储的 StorageClass
 setup_storage() {
     log_info "Setting up storage..."
     
-    # Check if default storage class exists
+    # 检查是否已有 default storage class
     if ! kubectl get storageclass standard &>/dev/null; then
         log_warn "No 'standard' storage class found. Creating one..."
         cat <<'EOF' | kubectl apply -f -
@@ -113,16 +165,32 @@ metadata:
 provisioner: kubernetes.io/no-provisioner
 volumeBindingMode: WaitForFirstConsumer
 EOF
+        # 验证 StorageClass 创建成功
+        if kubectl get storageclass standard &>/dev/null; then
+            log_info "StorageClass 'standard' created successfully"
+        else
+            log_warn "Failed to create StorageClass, continuing with existing storage"
+        fi
+    else
+        log_info "StorageClass 'standard' already exists"
     fi
     
     log_info "Storage configured"
 }
 
-# Deploy GitLab
+# deploy_gitlab - 使用 Helm 安装/升级 GitLab CE
+# 使用 --atomic 标志确保部署失败时自动回滚
 deploy_gitlab() {
     log_info "Deploying GitLab CE..."
     
-    helm upgrade --install "${RELEASE_NAME}" gitlab/gitlab \
+    # 验证 values 文件存在
+    if [[ ! -f "${VALUES_FILE}" ]]; then
+        log_error "Values file not found: ${VALUES_FILE}"
+        log_error "Please create the values file before deploying"
+        exit 1
+    fi
+    
+    if helm upgrade --install "${RELEASE_NAME}" gitlab/gitlab \
         --namespace "${NAMESPACE}" \
         --values "${VALUES_FILE}" \
         --set global.hosts.domain="${DOMAIN}" \
@@ -130,35 +198,48 @@ deploy_gitlab() {
         --set certmanager.installCRDs=false \
         --timeout 15m \
         --wait \
-        --atomic
-    
-    log_info "GitLab Helm release deployed successfully"
+        --atomic; then
+        log_info "GitLab Helm release deployed successfully"
+    else
+        log_error "GitLab Helm release deployment failed"
+        log_error "Check 'helm history ${RELEASE_NAME} -n ${NAMESPACE}' for details"
+        exit 1
+    fi
 }
 
-# Wait for readiness
+# wait_for_ready - 等待所有 GitLab 组件 Pod 就绪
+# 逐个检查 webservice, sidekiq, toolbox, gitaly, gitlab-shell, registry 组件
 wait_for_ready() {
     log_info "Waiting for GitLab components to be ready..."
     
     local components=("webservice" "sidekiq" "toolbox" "gitaly" "gitlab-shell" "registry")
     local timeout=900
+    local ready_count=0
     
     for component in "${components[@]}"; do
-        log_info "Waiting for ${component}..."
-        kubectl wait --for=condition=ready pod \
+        log_info "Waiting for ${component} (timeout: ${timeout}s)..."
+        if kubectl wait --for=condition=ready pod \
             -l "app=${component}" \
             -n "${NAMESPACE}" \
-            --timeout="${timeout}s" 2>/dev/null || \
-        kubectl wait --for=condition=ready pod \
+            --timeout="${timeout}s" 2>/dev/null; then
+            log_info "${component} is ready"
+            ((ready_count++))
+        elif kubectl wait --for=condition=ready pod \
             -l "app.kubernetes.io/name=${component}" \
             -n "${NAMESPACE}" \
-            --timeout="${timeout}s" 2>/dev/null || \
-            log_warn "Timeout waiting for ${component}"
+            --timeout="${timeout}s" 2>/dev/null; then
+            log_info "${component} is ready"
+            ((ready_count++))
+        else
+            log_warn "Timeout waiting for ${component} (may still be starting)"
+        fi
     done
     
-    log_info "Component readiness check complete"
+    log_info "Component readiness: ${ready_count}/${#components[@]} ready"
 }
 
-# Configure Ingress
+# configure_ingress - 配置 GitLab Ingress 规则
+# 设置 HTTPS 重定向、代理超时、TLS 终止
 configure_ingress() {
     log_info "Configuring ingress..."
     
@@ -218,34 +299,59 @@ spec:
                   number: 9000
 EOF
     
-    log_info "Ingress configured for ${gitlab_host}"
+    # 验证 Ingress 创建成功
+    if kubectl get ingress gitlab-ingress -n "${NAMESPACE}" &>/dev/null; then
+        log_info "Ingress configured for ${gitlab_host}"
+    else
+        log_warn "Ingress configuration may not have been applied"
+    fi
 }
 
-# Verify deployment
+# verify_deployment - 验证 GitLab 部署状态
+# 检查 Pod、Service、PVC、Ingress 和最近事件
 verify_deployment() {
     log_info "Verifying GitLab deployment..."
     
-    # Check pods
+    local issues=0
+    
+    # 检查 Pods 状态
     log_info "--- Pods ---"
     kubectl get pods -n "${NAMESPACE}" -o wide
     
-    # Check services
+    # 检查是否有异常 Pod
+    local not_running
+    not_running=$(kubectl get pods -n "${NAMESPACE}" --no-headers 2>/dev/null | grep -cv "Running\|Completed" || true)
+    if [[ "${not_running}" -gt 0 ]]; then
+        log_warn "${not_running} pods are not in Running state"
+        ((issues++))
+    fi
+    
+    # 检查 Services
     log_info "--- Services ---"
     kubectl get svc -n "${NAMESPACE}" -o wide
     
-    # Check PVCs
+    # 检查 PVC 状态
     log_info "--- Persistent Volume Claims ---"
     kubectl get pvc -n "${NAMESPACE}" -o wide
+    local pending_pvc
+    pending_pvc=$(kubectl get pvc -n "${NAMESPACE}" --no-headers 2>/dev/null | grep -c "Pending" || true)
+    if [[ "${pending_pvc}" -gt 0 ]]; then
+        log_warn "${pending_pvc} PVCs are in Pending state"
+    fi
     
-    # Check ingress
+    # 检查 Ingress
     log_info "--- Ingress ---"
     kubectl get ingress -n "${NAMESPACE}" -o wide
     
-    # Check events for errors
-    log_info "--- Recent Events ---"
-    kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' | tail -20
+    # 检查最近事件中的错误
+    log_info "--- Recent Events (last 20) ---"
+    kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>/dev/null | tail -20
     
-    log_info "Verification complete"
+    if [[ "${issues}" -eq 0 ]]; then
+        log_info "Verification complete - no issues detected"
+    else
+        log_warn "Verification complete - ${issues} issues detected"
+    fi
 }
 
 # Get initial credentials

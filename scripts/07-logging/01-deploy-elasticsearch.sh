@@ -1,24 +1,45 @@
 #!/usr/bin/env bash
 ###############################################################################
 # 部署 Elasticsearch 3节点集群
-# JVM 2G堆内存，持久化存储，生产级配置
+#
+# 功能:
+#   - 创建 StorageClass 和 PersistentVolume (3x50Gi)
+#   - 部署 ConfigMap (ES配置 + JVM选项 + 启动脚本)
+#   - 部署 StatefulSet (3节点集群，生产级配置)
+#   - 创建 Service (Headless + Client)
+#   - 配置 NetworkPolicy (安全隔离)
+#   - 创建 Secret (凭证管理)
+#
+# JVM 配置:
+#   - 堆内存: 2G (Xms2g / Xmx2g)
+#   - GC: G1GC
+#   - 内存锁定: 启用
+#
+# 使用示例:
+#   ./01-deploy-elasticsearch.sh              # 部署到默认命名空间
+#   ./01-deploy-elasticsearch.sh -n logging   # 指定命名空间
+#
+# 配置文件:
+#   configs/elk/elasticsearch.yaml            (ES 配置)
 ###############################################################################
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# ===== 颜色与日志函数 =====
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-log_info()  { echo -e "${BLUE}[INFO]${NC}  $(date '+%Y-%m-%d %H:%M:%S') $*"; }
-log_ok()    { echo -e "${GREEN}[OK]${NC}    $(date '+%Y-%m-%d %H:%M:%S') $*"; }
-log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $(date '+%Y-%m-%d %H:%M:%S') $*"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*"; }
+log_info()  { echo -e "${BLUE}[INFO]${NC}  $(date '+%Y-%m-%d %H:%M:%S') [ES] $*"; }
+log_ok()    { echo -e "${GREEN}[OK]${NC}    $(date '+%Y-%m-%d %H:%M:%S') [ES] $*"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $(date '+%Y-%m-%d %H:%M:%S') [ES] $*"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') [ES] $*"; }
 
+# ===== 参数解析 =====
 NAMESPACE="logging"
 
 while [[ $# -gt 0 ]]; do
@@ -28,9 +49,26 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# ===== 前置检查 =====
+log_info "检查 Elasticsearch 部署前置条件..."
+
+# 验证命名空间
+if ! kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+    log_error "命名空间 $NAMESPACE 不存在"
+    exit 1
+fi
+log_ok "命名空间 $NAMESPACE 存在"
+
+# 验证 ES 配置文件
+ES_CONFIG="$PROJECT_ROOT/configs/elk/elasticsearch.yaml"
+if [[ ! -f "$ES_CONFIG" ]]; then
+    log_warn "ES 配置文件不存在: $ES_CONFIG，将使用默认配置"
+fi
+
 log_info "部署 Elasticsearch 到命名空间: $NAMESPACE"
 
-# 创建 StorageClass (如不存在)
+# ===== 创建 StorageClass =====
+log_info "创建 Elasticsearch StorageClass..."
 cat <<'SC' | kubectl apply -f -
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
@@ -41,7 +79,8 @@ volumeBindingMode: WaitForFirstConsumer
 reclaimPolicy: Retain
 SC
 
-# 创建 PV 用于 Elasticsearch 持久化存储
+# ===== 创建 PersistentVolume =====
+log_info "创建 Elasticsearch PersistentVolume (3x50Gi)..."
 cat <<'PV' | kubectl apply -f -
 apiVersion: v1
 kind: PersistentVolume
@@ -89,13 +128,19 @@ spec:
     type: DirectoryOrCreate
 PV
 
-# ConfigMap: Elasticsearch 配置
-kubectl create configmap elasticsearch-config \
-    --from-file=elasticsearch.yml="$PROJECT_ROOT/configs/elk/elasticsearch.yaml" \
-    --namespace="$NAMESPACE" \
-    --dry-run=client -o yaml | kubectl apply -f -
+# ===== 创建 ConfigMap: ES 配置 =====
+log_info "创建 Elasticsearch ConfigMap..."
+if [[ -f "$ES_CONFIG" ]]; then
+    kubectl create configmap elasticsearch-config \
+        --from-file=elasticsearch.yml="$ES_CONFIG" \
+        --namespace="$NAMESPACE" \
+        --dry-run=client -o yaml | kubectl apply -f -
+else
+    log_warn "跳过 ES 配置 ConfigMap (配置文件不存在)"
+fi
 
-# ConfigMap: JVM 配置
+# ===== 创建 ConfigMap: JVM 配置 =====
+log_info "创建 Elasticsearch JVM ConfigMap..."
 cat <<'JVM' | kubectl apply -f -
 apiVersion: v1
 kind: ConfigMap
@@ -117,7 +162,8 @@ data:
     -XX:G1HeapRegionSize=4m
 JVM
 
-# ConfigMap: 节点启动脚本
+# ===== 创建 ConfigMap: 启动脚本 =====
+log_info "创建 Elasticsearch 启动脚本 ConfigMap..."
 cat <<'INITSCRIPT' | kubectl apply -f -
 apiVersion: v1
 kind: ConfigMap
@@ -134,7 +180,8 @@ data:
     chown -R 1000:1000 /usr/share/elasticsearch/data
 INITSCRIPT
 
-# 部署 Elasticsearch StatefulSet
+# ===== 部署 Elasticsearch StatefulSet =====
+log_info "部署 Elasticsearch StatefulSet (3节点)..."
 cat <<'MANIFEST' | kubectl apply -f -
 apiVersion: apps/v1
 kind: StatefulSet
@@ -267,7 +314,8 @@ spec:
           storage: 50Gi
 MANIFEST
 
-# 创建 Elasticsearch Service
+# ===== 创建 Service =====
+log_info "创建 Elasticsearch Service..."
 cat <<'SVC' | kubectl apply -f -
 apiVersion: v1
 kind: Service
@@ -305,7 +353,8 @@ spec:
     app: elasticsearch
 SVC
 
-# 创建 NetworkPolicy
+# ===== 创建 NetworkPolicy =====
+log_info "配置 Elasticsearch NetworkPolicy..."
 cat <<'NETPOL' | kubectl apply -f -
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -339,10 +388,36 @@ spec:
   - {}  # 允许所有出站 (集群内部DNS等)
 NETPOL
 
-# 创建 Secret 用于凭证
+# ===== 创建 Secret =====
+log_info "创建 Elasticsearch 凭证 Secret..."
 kubectl create secret generic elasticsearch-credentials \
     --namespace="$NAMESPACE" \
     --from-literal=password="$(openssl rand -base64 24)" \
     --dry-run=client -o yaml | kubectl apply -f -
+
+# ===== 验证部署 =====
+log_info "验证 Elasticsearch 部署..."
+
+# 检查 StatefulSet
+if kubectl get statefulset elasticsearch -n "$NAMESPACE" >/dev/null 2>&1; then
+    log_ok "Elasticsearch StatefulSet 已创建"
+else
+    log_error "Elasticsearch StatefulSet 创建失败"
+    exit 1
+fi
+
+# 检查 Service
+if kubectl get service elasticsearch -n "$NAMESPACE" >/dev/null 2>&1; then
+    log_ok "Elasticsearch Service 已创建"
+else
+    log_warn "Elasticsearch Service 不存在"
+fi
+
+# 检查 Secret
+if kubectl get secret elasticsearch-credentials -n "$NAMESPACE" >/dev/null 2>&1; then
+    log_ok "Elasticsearch Secret 已创建"
+else
+    log_warn "Elasticsearch Secret 不存在"
+fi
 
 log_ok "Elasticsearch 部署完成"

@@ -9,6 +9,9 @@
 ###############################################################################
 set -euo pipefail
 
+# 错误处理
+trap 'log_error "自动化运维脚本异常退出 (行号: $LINENO)"; release_lock 2>/dev/null || true' ERR
+
 # ========================= 全局变量 =========================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../" && pwd)"
@@ -117,6 +120,9 @@ preflight_check() {
 }
 
 # ========================= 任务调度 =========================
+# ========================= 任务调度 =========================
+# cmd_setup: 初始化Ansible环境
+# 功能: 安装Ansible、配置SSH免密、验证连通性
 cmd_setup() {
     log_info "========== 执行 Ansible 环境初始化 =========="
     bash "${SCRIPT_DIR}/01-setup-ansible.sh" 2>&1 | tee -a "${LOG_DIR}/setup_${DATE}.log"
@@ -129,6 +135,8 @@ cmd_setup() {
     fi
 }
 
+# cmd_deploy: 执行Ansible自动化部署
+# 参数: $1=tags(过滤条件), $2=limit(目标主机)
 cmd_deploy() {
     log_info "========== 执行自动化部署 =========="
     
@@ -153,6 +161,8 @@ cmd_deploy() {
     fi
 }
 
+# cmd_health: 执行健康巡检
+# 功能: 检查CPU/内存/磁盘/网络、K8s状态、服务状态
 cmd_health() {
     log_info "========== 执行健康巡检 =========="
     bash "${SCRIPT_DIR}/02-health-check.sh" 2>&1 | tee -a "${LOG_DIR}/health_${DATE}.log"
@@ -165,6 +175,8 @@ cmd_health() {
     fi
 }
 
+# cmd_clean: 执行日志清理
+# 功能: 清理系统日志、Docker日志、K8s Pod日志、临时文件
 cmd_clean() {
     log_info "========== 执行日志清理 =========="
     bash "${SCRIPT_DIR}/03-log-cleanup.sh" 2>&1 | tee -a "${LOG_DIR}/cleanup_${DATE}.log"
@@ -176,6 +188,8 @@ cmd_clean() {
     fi
 }
 
+# cmd_backup: 执行备份与完整性校验
+# 功能: etcd备份、K8s资源导出、配置文件备份、SHA256校验
 cmd_backup() {
     log_info "========== 执行备份与校验 =========="
     bash "${SCRIPT_DIR}/04-backup-verify.sh" 2>&1 | tee -a "${LOG_DIR}/backup_${DATE}.log"
@@ -188,6 +202,8 @@ cmd_backup() {
     fi
 }
 
+# cmd_full: 执行完整运维流程
+# 功能: 巡检 -> 备份 -> 清理
 cmd_full() {
     log_info "========== 执行完整运维流程 =========="
     local start_time=${SECONDS}

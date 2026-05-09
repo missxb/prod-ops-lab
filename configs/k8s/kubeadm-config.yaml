@@ -1,35 +1,106 @@
 ###############################################################################
-# kubeadm-config.yaml - Kubernetes 集群配置模板
-# 使用前替换 __VARIABLE__ 占位符
-# deploy-kubeadm.sh 会自动替换这些变量
+# kubeadm-config.yaml - Kubernetes 集群初始化配置模板
+# 项目: 企业级云原生运维平台
+# 功能: K8s集群初始化配置，包含kubeadm、kubelet、kube-proxy三部分
+# 使用: deploy-kubeadm.sh 会自动替换 __VARIABLE__ 占位符
+# 验证: kubeadm config validate --config kubeadm-config.yaml
 ###############################################################################
 
 ---
+# =============================================================================
+# InitConfiguration - 初始化配置
+# 描述: 第一个控制平面节点的初始化参数
+# =============================================================================
 apiVersion: kubeadm.k8s.io/v1beta3
 kind: InitConfiguration
 localAPIEndpoint:
+  # 广播地址: 对外提供服务的IP地址
+  # 生产环境建议使用负载均衡器IP或VIP
+  # 替换为: 实际节点IP或LB VIP地址
   advertiseAddress: __HOST_IP__
+  # API Server端口
+  # 标准端口: 6443 (HTTPS)
   bindPort: 6443
+
 nodeRegistration:
+  # 容器运行时接口
+  # containerd (推荐): unix:///var/run/containerd/containerd.sock
+  # CRI-O: unix:///var/run/crio/crio.sock
   criSocket: unix:///var/run/containerd/containerd.sock
+  # 镜像拉取策略
+  # IfNotPresent: 本地有则不拉取 (推荐生产环境)
+  # Always: 总是拉取最新 (开发环境)
+  # Never: 从不拉取 (离线环境)
   imagePullPolicy: IfNotPresent
+  # 初始污点配置 (防止普通Pod调度到控制平面)
   taints:
     - effect: NoSchedule
       key: node-role.kubernetes.io/control-plane
 
+# =============================================================================
+# 云提供商配置 (可选)
+# =============================================================================
+# apiServer:
+#   extraArgs:
+#     # 云提供商配置 (用于云环境自动发现节点信息)
+#     cloud-provider: aws    # aws / gce / azure / vsphere / external
+#     # 云提供商配置路径
+#     cloud-config: /etc/kubernetes/cloud-config
+#   extraVolumes:
+#     - name: cloud-config
+#       hostPath: /etc/kubernetes/cloud-config
+#       mountPath: /etc/kubernetes/cloud-config
+#       pathType: File
+
 ---
+# =============================================================================
+# ClusterConfiguration - 集群配置
+# 描述: Kubernetes集群的全局配置
+# =============================================================================
 apiVersion: kubeadm.k8s.io/v1beta3
 kind: ClusterConfiguration
+# 集群名称 (用于标识和监控)
 clusterName: __CLUSTER_NAME__
+# Kubernetes版本
+# 推荐: 使用最新的稳定版本 (v1.28.x / v1.29.x)
 kubernetesVersion: __K8S_VERSION__
+# 控制平面端点 (HA模式下必须是负载均衡器地址)
+# 格式: <IP>:<PORT> 或 <FQDN>:<PORT>
+# 单节点: 使用节点IP
+# 多节点: 使用VIP或LB地址
 controlPlaneEndpoint: "__HOST_IP__:6443"
+
+# =============================================================================
+# 网络配置
+# =============================================================================
 networking:
+  # Pod网络CIDR
+  # 不能与Service CIDR重叠
+  # 推荐: 10.244.0.0/16 (Flannel) 或 192.168.0.0/16 (Calico)
   podSubnet: __POD_CIDR__
+  # Service网络CIDR
+  # 集群内部服务通信使用的网络
+  # 推荐: 10.96.0.0/12 或 10.245.0.0/16
   serviceSubnet: __SERVICE_CIDR__
+  # 集群DNS域名
+  # 用于服务发现: <service>.<namespace>.<dnsDomain>
   dnsDomain: cluster.local
 
+# =============================================================================
+# API Server 配置
+# =============================================================================
 apiServer:
+  # 额外启动参数
   extraArgs:
+    # 准入控制器插件列表
+    # 生产环境必须启用的插件:
+    #   - NamespaceLifecycle: 防止在已删除的命名空间中创建资源
+    #   - LimitRanger: 执行资源配额限制
+    #   - ServiceAccount: 自动创建ServiceAccount
+    #   - DefaultStorageClass: 设置默认存储类
+    #   - MutatingAdmissionWebhook: 变更准入钩子
+    #   - ValidatingAdmissionWebhook: 验证准入钩子
+    #   - ResourceQuota: 执行资源配额
     enable-admission-plugins: >-
       NamespaceLifecycle,
       LimitRanger,
@@ -39,34 +110,69 @@ apiServer:
       MutatingAdmissionWebhook,
       ValidatingAdmissionWebhook,
       ResourceQuota
+
+    # 审计日志配置
+    # 记录所有API请求，用于安全审计
     audit-log-path: /var/log/kubernetes/audit/audit.log
+    # 审计日志保留天数
     audit-log-maxage: "30"
+    # 审计日志最大备份数
     audit-log-maxbackup: "10"
+    # 审计日志单文件最大大小 (MB)
     audit-log-maxsize: "100"
+
+    # 性能优化
+    # 禁用profiling (生产环境建议)
     profiling: "false"
+    # 请求超时时间 (秒)
     request-timeout: "300s"
+    # ServiceAccount令牌验证
     service-account-lookup: "true"
+
+    # TLS安全配置
+    # TLS最低版本 (1.2+)
     tls-min-version: VersionTLS12
+    # 支持的密码套件 (安全且高性能)
     tls-cipher-suites: >-
       TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
       TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
       TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
       TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+
+  # 额外挂载卷
   extraVolumes:
+    # 审计日志目录
     - name: audit-log
       hostPath: /var/log/kubernetes/audit
       mountPath: /var/log/kubernetes/audit
       pathType: DirectoryOrCreate
+
+  # 控制平面超时时间
+  # 初始化时等待所有控制平面组件就绪的最大时间
   timeoutForControlPlane: 5m0s
 
+# =============================================================================
+# Controller Manager 配置
+# =============================================================================
 controllerManager:
   extraArgs:
+    # HPA (Horizontal Pod Autoscaler) 配置
+    # Pod水平扩展同步间隔 (秒)
     horizontal-pod-autoscaler-sync-period: "15s"
+    # 缩容稳定期 (秒) - 避免频繁缩容
     horizontal-pod-autoscaler-downscale-stabilization: "2m0s"
+    # 就绪探针初始延迟 (秒)
     horizontal-pod-autoscaler-initial-readiness-delay: "30s"
+
+    # 垃圾回收配置
+    # 终止Pod垃圾回收阈值 (保留的Pod数量)
     terminated-pod-gc-threshold: "100"
+
+    # 性能优化
     profiling: "false"
+    # 使用ServiceAccount凭证 (安全最佳实践)
     use-service-account-credentials: "true"
+
   extraVolumes:
     - name: kubeconfig
       hostPath: /etc/kubernetes/controller-manager.conf
@@ -74,59 +180,141 @@ controllerManager:
       pathType: File
       readOnly: true
 
+# =============================================================================
+# Scheduler 配置
+# =============================================================================
 scheduler:
   extraArgs:
     profiling: "false"
 
+# =============================================================================
+# CoreDNS 配置
+# =============================================================================
 dns:
+  # CoreDNS镜像仓库
   imageRepository: registry.k8s.io/coredns
 
+# =============================================================================
+# etcd 配置
+# =============================================================================
 etcd:
   local:
+    # 数据目录
     dataDir: /var/lib/etcd
     extraArgs:
+      # 后端存储配额 (字节)
+      # 默认1GB，大集群建议4-8GB
+      # 计算: 节点数 * 1GB
       quota-backend-bytes: "8589934592"  # 8GB
+      # 自动压缩保留期 (小时)
+      # 超过此时间的历史数据自动压缩
       auto-compaction-retention: "8"
+      # 快照阈值 (每N次事务创建快照)
       snapshot-count: "10000"
 
+# 镜像仓库 (国内镜像可加速部署)
+# 推荐: registry.k8s.io (官方) 或 mirror.ccs.tencentyun.com
 imageRepository: registry.k8s.io
+
 ---
+# =============================================================================
+# KubeletConfiguration - Kubelet 配置
+# =============================================================================
 apiVersion: kubelet.config.k8s.io/v1beta1
 kind: KubeletConfiguration
+# 容器运行时驱动 (推荐systemd)
 cgroupDriver: systemd
+# 容器运行时端点
 containerRuntimeEndpoint: unix:///var/run/containerd/containerd.sock
+# 内存不足时是否关闭kubelet
 failSwapOn: true
+# 并行拉取镜像 (提高启动速度)
 serializeImagePulls: false
+# 只读端口 (禁用提高安全性)
 readOnlyPort: 0
+# 集群DNS服务地址
 clusterDNS:
   - 10.96.0.10
+# 集群域名
 clusterDomain: cluster.local
+# 每节点最大Pod数 (根据资源调整)
+# 默认: 110
+# 小型节点: 30-60
+# 大型节点: 200-250
 maxPods: 110
+# DNS解析配置
 resolvConf: /run/systemd/resolve/resolv.conf
+# 运行时请求超时 (分钟)
 runtimeRequestTimeout: "15m"
+# API事件记录QPS
 eventRecordQPS: 5
+# API事件突发量
 eventBurst: 10
+# 健康检查绑定地址
 healthzBindAddress: 0.0.0.0
+# 健康检查端口
 healthzPort: 10248
+# 自动轮换证书
 rotateCertificates: true
+# TLS引导
 serverTLSBootstrap: true
 
 ---
+# =============================================================================
+# KubeProxyConfiguration - Kube Proxy 配置
+# =============================================================================
 apiVersion: kubeproxy.config.k8s.io/v1alpha1
 kind: KubeProxyConfiguration
+# 代理模式
+# iptables: 传统模式，性能一般 (默认)
+# ipvs: 高性能模式，支持多种调度算法 (推荐)
 mode: ipvs
 ipvs:
+  # 负载均衡算法
+  # rr: 轮询 (默认)
+  # lc: 最少连接
+  # dh: 目标哈希
+  # sh: 源地址哈希
+  # sed: 最短期望延迟
   scheduler: rr
+  # 排除的CIDR列表 (如外部LB地址)
   excludeCIDRs: []
+  # 启用严格ARP (MetalLB等LB方案需要)
   strictARP: true
+# 指标端口 (Prometheus监控)
 metricsBindAddress: 0.0.0.0:10249
+# 连接追踪配置
 conntrack:
+  # 每核心最大追踪条目
   maxPerCore: 32768
+  # 最小追踪条目数
   min: 131072
+  # TCP等待关闭超时
   tcpCloseWaitTimeout: 1h0m0s
+  # TCP已建立超时
   tcpEstablishedTimeout: 24h0m0s
+# iptables配置
 iptables:
   masqueradeAll: false
   masqueradeBit: 14
   minSyncPeriod: 0s
   syncPeriod: 30s
+
+###############################################################################
+# 配置验证命令
+# =============================================================================
+# 验证配置文件语法:
+#   kubeadm config validate --config kubeadm-config.yaml
+#
+# 查看当前集群配置:
+#   kubeadm config view
+#
+# 打印当前默认配置:
+#   kubeadm config print init-defaults
+#
+# 初始化集群:
+#   kubeadm init --config kubeadm-config.yaml --upload-certs
+#
+# 加入节点:
+#   kubeadm join <control-plane-ip>:6443 --token <token> --discovery-token-ca-cert-hash <hash>
+###############################################################################

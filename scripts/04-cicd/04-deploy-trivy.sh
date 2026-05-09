@@ -2,6 +2,21 @@
 #==============================================================================
 # 04-deploy-trivy.sh - Deploy Trivy Security Scanner
 # Enterprise Cloud Native Platform - Phase 4
+#
+# Description:
+#   Deploys Trivy vulnerability scanner server, Trivy Operator for continuous
+#   scanning, and Jenkins integration for automated security scanning.
+#
+# Usage:
+#   ./04-deploy-trivy.sh [deploy|verify|delete]
+#
+#   deploy  - Full Trivy deployment (default)
+#   verify  - Verify Trivy server is running
+#   delete  - Remove Trivy deployment
+#
+# Examples:
+#   ./04-deploy-trivy.sh
+#   ./04-deploy-trivy.sh verify
 #==============================================================================
 set -euo pipefail
 
@@ -25,18 +40,25 @@ log_info()  { echo -e "${GREEN}${LOG_PREFIX} [INFO] $(date '+%H:%M:%S') $*${NC}"
 log_warn()  { echo -e "${YELLOW}${LOG_PREFIX} [WARN] $(date '+%H:%M:%S') $*${NC}"; }
 log_error() { echo -e "${RED}${LOG_PREFIX} [ERROR] $(date '+%H:%M:%S') $*${NC}"; }
 
-# Check prerequisites
+# check_prereqs - 检查必需工具和 Helm 仓库
 check_prereqs() {
     log_info "Checking prerequisites..."
     
     for cmd in kubectl helm; do
         if ! command -v "${cmd}" &>/dev/null; then
             log_error "Required command not found: ${cmd}"
+            log_error "Please install ${cmd} before running this script"
             exit 1
         fi
     done
     
-    # Add Aqua Security Helm repo
+    # 验证 Kubernetes 集群连接
+    if ! kubectl cluster-info &>/dev/null; then
+        log_error "Cannot connect to Kubernetes cluster"
+        exit 1
+    fi
+    
+    # 添加 Aqua Security Helm 仓库
     if ! helm repo list 2>/dev/null | grep -q aquasecurity; then
         log_info "Adding Aqua Security Helm repository..."
         helm repo add aquasecurity https://aquasecurity.github.io/helm-charts/ --force-update
@@ -46,7 +68,7 @@ check_prereqs() {
     log_info "Prerequisites satisfied"
 }
 
-# Create namespace
+# create_namespace - 创建 Trivy 命名空间并设置安全标签
 create_namespace() {
     log_info "Creating namespace: ${NAMESPACE}"
     
@@ -57,9 +79,18 @@ create_namespace() {
         team=devops \
         environment=production \
         --overwrite
+    
+    # 验证命名空间
+    if kubectl get namespace "${NAMESPACE}" &>/dev/null; then
+        log_info "Namespace ${NAMESPACE} verified"
+    else
+        log_error "Failed to create namespace ${NAMESPACE}"
+        exit 1
+    fi
 }
 
-# Deploy Trivy Server
+# deploy_trivy_server - 部署 Trivy Server (Deployment, Service, RBAC)
+# 包含 ConfigMap 配置、健康检查探针和资源限制
 deploy_trivy_server() {
     log_info "Deploying Trivy Server..."
     
@@ -246,7 +277,7 @@ EOF
     log_info "Trivy Server deployed"
 }
 
-# Deploy Trivy Operator for continuous scanning
+# deploy_trivy_operator - 部署 Trivy Operator 用于持续安全扫描
 deploy_trivy_operator() {
     log_info "Deploying Trivy Operator for continuous scanning..."
     
@@ -281,7 +312,8 @@ EOF
     log_info "Trivy Operator configuration created"
 }
 
-# Deploy Trivy Jenkins Integration ConfigMap
+# deploy_jenkins_integration - 部署 Trivy Jenkins 集成配置
+# 创建 Pipeline 模板和 Wrapper 脚本
 deploy_jenkins_integration() {
     log_info "Deploying Trivy Jenkins integration configuration..."
     
@@ -438,24 +470,61 @@ EOF
     log_info "Jenkins integration configured"
 }
 
-# Verify deployment
+# verify_deployment - 验证 Trivy 部署状态
+# 检查 Pod、Service 和健康检查端点
 verify_deployment() {
     log_info "Verifying Trivy deployment..."
     
+    local issues=0
+    
+    # 检查 Pod 状态
     log_info "--- Pods ---"
     kubectl get pods -n "${NAMESPACE}" -o wide
+    
+    local not_running
+    not_running=$(kubectl get pods -n "${NAMESPACE}" --no-headers 2>/dev/null | grep -cv "Running\|Completed" || true)
+    if [[ "${not_running}" -gt 0 ]]; then
+        log_warn "${not_running} pods are not in Running state"
+        ((issues++))
+    fi
     
     log_info "--- Services ---"
     kubectl get svc -n "${NAMESPACE}" -o wide
     
-    # Test connectivity
+    # 健康检查 - 通过 kubectl exec 测试 Trivy Server
     log_info "--- Health Check ---"
-    kubectl exec -n "${NAMESPACE}" \
-        "$(kubectl get pod -n "${NAMESPACE}" -l app.kubernetes.io/name=trivy-server -o jsonpath='{.items[0].metadata.name}')" \
-        -- wget -qO- http://localhost:4954/healthz 2>/dev/null || \
-        log_warn "Trivy health check failed (pod may still be starting)"
+    local trivy_pod
+    trivy_pod=$(kubectl get pod -n "${NAMESPACE}" -l app.kubernetes.io/name=trivy-server -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [[ -n "${trivy_pod}" ]]; then
+        if kubectl exec -n "${NAMESPACE}" "${trivy_pod}" -- wget -qO- http://localhost:4954/healthz 2>/dev/null; then
+            log_info "Trivy Server health check passed"
+        else
+            log_warn "Trivy health check failed (pod may still be starting)"
+        fi
+    else
+        log_warn "Trivy pod not found for health check"
+    fi
     
-    log_info "Verification complete"
+    if [[ "${issues}" -eq 0 ]]; then
+        log_info "Verification complete - no issues detected"
+    else
+        log_warn "Verification complete - ${issues} issues detected"
+    fi
+}
+
+# wait_for_ready - 等待 Trivy Server Pod 就绪
+wait_for_ready() {
+    log_info "Waiting for Trivy Server to be ready..."
+    
+    if kubectl wait --for=condition=ready pod \
+        -l app.kubernetes.io/name=trivy-server \
+        -n "${NAMESPACE}" \
+        --timeout=300s 2>/dev/null; then
+        log_info "Trivy Server is ready"
+    else
+        log_warn "Timeout waiting for Trivy Server"
+        log_warn "Check 'kubectl get pods -n ${NAMESPACE}' for pod status"
+    fi
 }
 
 # Print summary

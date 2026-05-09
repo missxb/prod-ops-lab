@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 ###############################################################################
 # 步骤1 - 创建命名空间
+#
+# 描述:
+#   为应用部署创建所需的 Kubernetes 命名空间。
+#   支持 dev 和 prod 两种环境。
+#
+# 用法:
+#   ./01-create-namespace.sh [-e|--env dev|prod|all]
+#
+# 示例:
+#   ./01-create-namespace.sh
+#   ./01-create-namespace.sh --env prod
+#   ./01-create-namespace.sh --env all
 ###############################################################################
 set -euo pipefail
 
@@ -23,16 +35,21 @@ done
 
 echo "===== 创建命名空间 (环境: ${ENV}) ====="
 
+# create_namespace - 创建命名空间并设置标准标签
+# Args:
+#   $1 - 命名空间名称
 create_namespace() {
     local ns="$1"
     local manifest="${MANIFEST_DIR}/namespace/${ns}.yaml"
 
     info "应用命名空间配置: ${ns}"
 
+    # 检查命名空间是否已存在
     if kubectl get namespace "${ns}" &>/dev/null; then
         warn "命名空间 ${ns} 已存在，将更新配置"
     fi
 
+    # 应用命名空间配置
     if [[ -f "$manifest" ]]; then
         kubectl apply -f "$manifest"
         ok "命名空间 ${ns} 已创建/更新"
@@ -41,16 +58,22 @@ create_namespace() {
         ok "命名空间 ${ns} 已创建 (使用默认配置)"
     fi
 
-    # 标签
+    # 设置标准标签
     kubectl label namespace "${ns}" \
         app.kubernetes.io/managed-by=enterprise-platform \
         platform=enterprise-cloud-native \
         env="${ns}" \
         --overwrite
 
-    ok "命名空间 ${ns} 标签已设置"
+    # 验证命名空间创建成功
+    if kubectl get namespace "${ns}" &>/dev/null; then
+        ok "命名空间 ${ns} 标签已设置并验证通过"
+    else
+        fail "命名空间 ${ns} 创建失败"
+    fi
 }
 
+# 根据环境参数执行创建
 case "$ENV" in
     dev|prod)
         create_namespace "$ENV"
@@ -60,7 +83,7 @@ case "$ENV" in
         create_namespace prod
         ;;
     *)
-        fail "不支持的环境: ${ENV}"
+        fail "不支持的环境: ${ENV} (支持: dev, prod, all)"
         ;;
 esac
 

@@ -10,6 +10,9 @@
 
 set -euo pipefail
 
+# 错误处理：脚本退出时清理临时文件
+trap 'log_error "脚本异常退出 (行号: $LINENO)"' ERR
+
 # ==================== 全局变量 ====================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="$(cd "$SCRIPT_DIR/../../configs" && pwd)"
@@ -31,7 +34,66 @@ log_error()   { echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*"; }
 log_step()    { echo -e "${CYAN}[STEP]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*"; }
 log_success() { echo -e "${GREEN}[✓]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*"; }
 
+# ==================== 辅助函数 ====================
+# 检查命令是否存在，不存在则报错退出
+check_command() {
+    local cmd="$1"
+    local package="${2:-$1}"
+    if ! command -v "$cmd" &>/dev/null; then
+        log_error "命令 '$cmd' 未安装，请先安装 $package"
+        exit 1
+    fi
+}
+
+# 验证目录是否存在，不存在则创建
+ensure_dir() {
+    local dir="$1"
+    mkdir -p "$dir" || { log_error "无法创建目录: $dir"; exit 1; }
+}
+
+# 验证服务是否正常运行
+check_service() {
+    local service="$1"
+    if systemctl is-active "$service" &>/dev/null; then
+        log_success "$service 服务运行正常"
+        return 0
+    else
+        log_error "$service 服务未运行"
+        return 1
+    fi
+}
+
+# ==================== 用法说明 ====================
+usage() {
+    cat << EOF
+用法: $(basename "$0") <action>
+
+操作选项:
+  deploy       部署完整高可用架构（默认）
+  keepalived   仅部署Keepalived
+  nginx        仅部署Nginx负载均衡
+  mysql        仅部署MySQL高可用
+  redis        仅部署Redis Sentinel
+  test         仅运行故障转移测试
+  status       查看各组件运行状态
+  help         显示此帮助信息
+
+示例:
+  $(basename "$0") deploy        # 一键部署全部HA组件
+  $(basename "$0") keepalived    # 仅部署Keepalived VIP漂移
+  $(basename "$0") status       # 查看各组件运行状态
+
+环境变量:
+  VIP_ADDRESS      VIP地址（默认: 192.168.100.100）
+  SKIP_FAILOVER_TEST=true  跳过故障转移测试
+EOF
+}
+
 # ==================== 初始化 ====================
+# ==================== 初始化 ====================
+# 功能: 创建日志目录、检查权限和操作系统兼容性
+# 参数: 无
+# 返回: 无（失败则exit 1）
 init() {
     log_step "========== 高可用架构部署开始 =========="
     mkdir -p "$LOG_DIR"
@@ -51,6 +113,10 @@ init() {
 }
 
 # ==================== 环境检测 ====================
+# ==================== 环境检测 ====================
+# 功能: 检查网络、磁盘、内存、端口等运行环境
+# 参数: 无
+# 返回: 无（不可用条件则exit 1）
 check_environment() {
     log_step "[1/7] 检查运行环境..."
 
@@ -88,6 +154,9 @@ check_environment() {
 }
 
 # ==================== 部署Keepalived ====================
+# ==================== 部署Keepalived ====================
+# 功能: 调用Keepalived部署脚本，实现VIP漂移
+# 日志: 输出到 $LOG_DIR/keepalived_$TIMESTAMP.log
 deploy_keepalived() {
     log_step "[2/7] 部署Keepalived (VIP漂移)..."
     bash "$SCRIPT_DIR/01-deploy-keepalived.sh" 2>&1 | tee -a "$LOG_DIR/keepalived_${TIMESTAMP}.log"
@@ -95,6 +164,9 @@ deploy_keepalived() {
 }
 
 # ==================== 部署Nginx负载均衡 ====================
+# ==================== 部署Nginx负载均衡 ====================
+# 功能: 调用Nginx LB部署脚本，实现7层负载均衡
+# 日志: 输出到 $LOG_DIR/nginx-lb_$TIMESTAMP.log
 deploy_nginx_lb() {
     log_step "[3/7] 部署Nginx负载均衡..."
     bash "$SCRIPT_DIR/02-deploy-nginx-lb.sh" 2>&1 | tee -a "$LOG_DIR/nginx-lb_${TIMESTAMP}.log"
@@ -102,6 +174,9 @@ deploy_nginx_lb() {
 }
 
 # ==================== 部署MySQL HA ====================
+# ==================== 部署MySQL HA ====================
+# 功能: 调用MySQL高可用部署脚本，实现主从复制
+# 日志: 输出到 $LOG_DIR/mysql-ha_$TIMESTAMP.log
 deploy_mysql_ha() {
     log_step "[4/7] 部署MySQL高可用 (主从复制)..."
     bash "$SCRIPT_DIR/03-deploy-mysql-ha.sh" 2>&1 | tee -a "$LOG_DIR/mysql-ha_${TIMESTAMP}.log"
@@ -109,6 +184,9 @@ deploy_mysql_ha() {
 }
 
 # ==================== 部署Redis Sentinel ====================
+# ==================== 部署Redis Sentinel ====================
+# 功能: 调用Redis Sentinel部署脚本，实现自动故障转移
+# 日志: 输出到 $LOG_DIR/redis-sentinel_$TIMESTAMP.log
 deploy_redis_sentinel() {
     log_step "[5/7] 部署Redis Sentinel..."
     bash "$SCRIPT_DIR/04-deploy-redis-sentinel.sh" 2>&1 | tee -a "$LOG_DIR/redis-sentinel_${TIMESTAMP}.log"
@@ -116,6 +194,9 @@ deploy_redis_sentinel() {
 }
 
 # ==================== 运行故障转移测试 ====================
+# ==================== 运行故障转移测试 ====================
+# 功能: 验证各组件故障转移能力
+# 注意: 生产环境建议设置 SKIP_FAILOVER_TEST=true
 run_failover_test() {
     log_step "[6/7] 运行故障转移测试..."
     bash "$SCRIPT_DIR/05-test-failover.sh" 2>&1 | tee -a "$LOG_DIR/failover-test_${TIMESTAMP}.log"
@@ -123,6 +204,9 @@ run_failover_test() {
 }
 
 # ==================== 生成部署报告 ====================
+# ==================== 生成部署报告 ====================
+# 功能: 生成Markdown格式的部署报告，包含组件状态和端口信息
+# 报告路径: $LOG_DIR/ha-deploy-report_$TIMESTAMP.md
 generate_report() {
     log_step "[7/7] 生成部署报告..."
     local report_file="$LOG_DIR/ha-deploy-report_${TIMESTAMP}.md"
@@ -174,6 +258,10 @@ main() {
     local action="${1:-deploy}"
 
     case "$action" in
+        help|-h|--help)
+            usage
+            exit 0
+            ;;
         deploy)
             init
             check_environment
@@ -214,20 +302,31 @@ main() {
     esac
 }
 
+# ==================== 显示状态 ====================
+# 功能: 检查并显示所有HA组件的运行状态
+# 输出: Keepalived、Nginx、MySQL、Redis状态
 show_status() {
     log_step "检查各组件状态..."
     echo ""
-    echo "  Keepalived状态:"
-    systemctl is-active keepalived 2>/dev/null || echo "  未运行"
+    local status_output=""
+    for svc in keepalived:Keepalived nginx:Nginx mysqld:MySQL redis:Redis redis-sentinel:"Redis Sentinel"; do
+        IFS=':' read -r service name <<< "$svc"
+        if systemctl is-active "$service" &>/dev/null; then
+            echo "  ${name}: ✓ 运行中"
+        else
+            echo "  ${name}: ✗ 未运行"
+        fi
+    done
     echo ""
-    echo "  Nginx状态:"
-    systemctl is-active nginx 2>/dev/null || echo "  未运行"
-    echo ""
-    echo "  MySQL状态:"
-    systemctl is-active mysqld 2>/dev/null || echo "  未运行"
-    echo ""
-    echo "  Redis状态:"
-    systemctl is-active redis 2>/dev/null || echo "  未运行"
+    # 显示端口监听状态
+    echo "  端口监听状态:"
+    for port in 80 443 3306 6379 26379; do
+        if ss -tlnp | grep -q ":${port} "; then
+            echo "    端口 $port: ✓ 监听中"
+        else
+            echo "    端口 $port: ✗ 未监听"
+        fi
+    done
 }
 
 main "$@"

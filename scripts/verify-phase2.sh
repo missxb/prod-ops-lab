@@ -3,59 +3,66 @@ set -euo pipefail
 
 ##############################################################################
 # 阶段2: Kubernetes集群部署验证
-# 验证项目: 节点状态、系统Pod、CoreDNS、Calico网络、kubectl操作
+# 验证项目: 节点状态、系统Pod、CoreDNS、Calico网络、kubectl操作、资源配额、网络策略
 ##############################################################################
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 REPORT_DIR="$PROJECT_DIR/reports"
 REPORT_FILE="$REPORT_DIR/verify-phase2-$(date +%Y%m%d-%H%M%S).log"
+TIMESTAMP_REPORT="$REPORT_DIR/verify-phase2-$(date +%Y%m%d-%H%M%S).txt"
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+# 加载共享库
+source "$SCRIPT_DIR/lib/common.sh"
 
-PASS_COUNT=0
-FAIL_COUNT=0
-WARN_COUNT=0
-TOTAL_COUNT=0
+# 初始化
+common_init_verify "$PROJECT_DIR" 2
 
-mkdir -p "$REPORT_DIR"
+# 解析选项
+show_help() {
+    common_show_verify_help \
+        "阶段2: Kubernetes集群部署验证" \
+        "验证K8s集群状态、节点、Pod、网络、组件等" \
+        "  2.1  kubectl配置检查
+  2.2  节点状态检查
+  2.3  系统Pod检查
+  2.4  CoreDNS检查
+  2.5  Calico网络插件检查
+  2.6  kubelet运行状态
+  2.7  集群组件检查
+  2.8  资源配额检查
+  2.9  网络策略检查
+  2.10 Pod安全策略检查
+  2.11 集群版本兼容性检查"
+}
+COMMON_HELP_FUNCTION=show_help
+common_parse_verify_options "$@"
 
-log() { local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $1"; echo -e "$msg"; echo "$msg" >> "$REPORT_FILE"; }
-pass() { PASS_COUNT=$((PASS_COUNT + 1)); TOTAL_COUNT=$((TOTAL_COUNT + 1)); log "${GREEN}[PASS]${NC} $1"; }
-fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); TOTAL_COUNT=$((TOTAL_COUNT + 1)); log "${RED}[FAIL]${NC} $1"; }
-warn() { WARN_COUNT=$((WARN_COUNT + 1)); TOTAL_COUNT=$((TOTAL_COUNT + 1)); log "${YELLOW}[WARN]${NC} $1"; }
-info() { log "${BLUE}[INFO]${NC} $1"; }
-section() { echo ""; log "${CYAN}========== $1 ==========${NC}"; }
+# ========== 开始验证 ==========
+common_header "阶段2: Kubernetes集群验证"
+common_info "验证时间: $(date '+%Y-%m-%d %H:%M:%S')"
+echo ""
 
-# ========== 前置检查 ==========
 if ! command -v kubectl &>/dev/null; then
-    echo -e "${RED}错误: kubectl 命令不可用，请先安装 Kubernetes${NC}"
+    common_error "kubectl 命令不可用，请先安装 Kubernetes"
     exit 1
 fi
 
-# ========== 开始验证 ==========
-section "阶段2: Kubernetes集群验证"
-
 # --- 2.1 kubectl配置检查 ---
-section "2.1 kubectl配置检查"
+common_step "2.1 kubectl配置检查"
 
 if kubectl cluster-info &>/dev/null; then
-    pass "kubectl 可以连接到集群"
+    common_pass "kubectl 可以连接到集群"
     K8S_VERSION=$(kubectl version --short 2>/dev/null | head -1 || echo "unknown")
-    info "集群版本: $K8S_VERSION"
+    common_info_check "集群版本: $K8S_VERSION"
 else
-    fail "kubectl 无法连接到集群"
-    echo -e "${RED}无法连接到集群，终止后续检查${NC}"
+    common_fail "kubectl 无法连接到集群"
+    common_error "无法连接到集群，终止后续检查"
     exit 1
 fi
 
 # --- 2.2 节点状态检查 ---
-section "2.2 节点状态检查"
+common_step "2.2 节点状态检查"
 
 NODE_OUTPUT=$(kubectl get nodes --no-headers 2>/dev/null || echo "")
 NODE_COUNT=$(echo "$NODE_OUTPUT" | grep -c . 2>/dev/null || echo "0")
@@ -208,6 +215,57 @@ for component in etcd apiserver controller-manager scheduler; do
         fi
     fi
 done
+
+# --- 2.8 资源配额检查 ---
+common_step "2.8 资源配额检查"
+
+QUOTA_ALL=$(kubectl get resourcequotas --all-namespaces --no-headers 2>/dev/null || echo "")
+QUOTA_COUNT=$(echo "$QUOTA_ALL" | grep -c . 2>/dev/null || echo "0")
+
+if [[ $QUOTA_COUNT -gt 0 ]]; then
+    common_pass "ResourceQuota 数量: $QUOTA_COUNT"
+else
+    common_info_check "未配置ResourceQuota (可选)"
+fi
+
+LIMIT_RANGE_ALL=$(kubectl get limitranges --all-namespaces --no-headers 2>/dev/null || echo "")
+LIMIT_RANGE_COUNT=$(echo "$LIMIT_RANGE_ALL" | grep -c . 2>/dev/null || echo "0")
+if [[ $LIMIT_RANGE_COUNT -gt 0 ]]; then
+    common_pass "LimitRange 数量: $LIMIT_RANGE_COUNT"
+else
+    common_info_check "未配置LimitRange (可选)"
+fi
+
+# --- 2.9 网络策略检查 ---
+common_step "2.9 网络策略检查"
+
+NP_ALL=$(kubectl get networkpolicies --all-namespaces --no-headers 2>/dev/null || echo "")
+NP_COUNT=$(echo "$NP_ALL" | grep -c . 2>/dev/null || echo "0")
+
+if [[ $NP_COUNT -gt 0 ]]; then
+    common_pass "NetworkPolicy 数量: $NP_COUNT"
+else
+    common_info_check "未配置NetworkPolicy (建议生产环境配置)"
+fi
+
+# 检查default命名空间是否有拒绝策略
+DEFAULT_NP=$(kubectl get networkpolicy -n default --no-headers 2>/dev/null || echo "")
+if echo "$DEFAULT_NP" | grep -q "deny-all\|default-deny"; then
+    common_pass "default命名空间已配置默认拒绝策略"
+else
+    common_info_check "default命名空间未配置默认拒绝策略"
+fi
+
+# --- 2.10 Pod安全策略检查 ---
+common_step "2.10 Pod安全策略检查"
+
+# 检查Pod Security Admission (PSA)
+PSA_NS=$(kubectl get namespace kube-system -o jsonpath='{.metadata.labels}' 2>/dev/null || echo "")
+if echo "$PSA_NS" | grep -q "pod-security.kubernetes.io"; then
+    common_pass "Pod Security Admission 已配置"
+else
+    common_info_check "Pod Security Admission 未配置"
+fi
 
 # ========== 验证报告 ==========
 section "验证汇总"

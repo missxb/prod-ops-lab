@@ -7,6 +7,9 @@
 
 set -euo pipefail
 
+# 错误处理（测试脚本不退出，记录错误继续执行）
+trap 'log_error "故障转移测试脚本异常退出 (行号: $LINENO)"' ERR
+
 # 颜色输出
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -20,6 +23,29 @@ log_error() { echo -e "${RED}[ERROR]${NC} $(date '+%H:%M:%S') $*"; }
 log_step()  { echo -e "${CYAN}[STEP]${NC} $(date '+%H:%M:%S') $*"; }
 log_pass()  { echo -e "${GREEN}[PASS]${NC} $(date '+%H:%M:%S') $*"; }
 log_fail()  { echo -e "${RED}[FAIL]${NC} $(date '+%H:%M:%S') $*"; }
+
+# ==================== 用法说明 ====================
+usage() {
+    cat << EOF
+用法: $(basename "$0") [options]
+
+功能: 测试各组件的故障转移能力
+
+测试项:
+  - Keepalived VIP漂移
+  - Nginx负载均衡配置
+  - MySQL主从复制状态
+  - Redis Sentinel高可用
+  - 网络连通性
+
+环境变量:
+  SKIP_FAILOVER_TEST=true   跳过VIP漂移测试（生产环境推荐）
+
+示例:
+  SKIP_FAILOVER_TEST=true $(basename "$0")
+  $(basename "$0")
+EOF
+}
 
 # ==================== 测试结果统计 ====================
 TEST_TOTAL=0
@@ -39,6 +65,9 @@ test_result() {
 }
 
 # ==================== Keepalived VIP漂移测试 ====================
+# ==================== Keepalived VIP漂移测试 ====================
+# 功能: 验证Keepalived VIP地址、VRRP协议、健康检查脚本、VIP漂移
+# 注意: VIP漂移测试会暂时中断服务，生产环境建议跳过
 test_keepalived() {
     log_step "========== 测试 Keepalived VIP漂移 =========="
 
@@ -106,6 +135,8 @@ test_keepalived() {
 }
 
 # ==================== Nginx负载均衡测试 ====================
+# ==================== Nginx负载均衡测试 ====================
+# 功能: 验证Nginx健康端点、SSL证书、配置语法、上游服务器
 test_nginx_lb() {
     log_step "========== 测试 Nginx负载均衡 =========="
 
@@ -158,6 +189,8 @@ test_nginx_lb() {
 }
 
 # ==================== MySQL主从复制测试 ====================
+# ==================== MySQL主从复制测试 ====================
+# 功能: 验证MySQL连接、二进制日志、GTID、半同步复制、复制延迟
 test_mysql_ha() {
     log_step "========== 测试 MySQL高可用 =========="
 
@@ -230,6 +263,8 @@ test_mysql_ha() {
 }
 
 # ==================== Redis Sentinel测试 ====================
+# ==================== Redis Sentinel测试 ====================
+# 功能: 验证Redis连接、主从状态、Sentinel监控、持久化状态
 test_redis_sentinel() {
     log_step "========== 测试 Redis Sentinel =========="
 
@@ -307,6 +342,8 @@ test_redis_sentinel() {
 }
 
 # ==================== 网络连通性测试 ====================
+# ==================== 网络连通性测试 ====================
+# 功能: 验证各服务端口监听和防火墙规则
 test_network() {
     log_step "========== 测试 网络连通性 =========="
 

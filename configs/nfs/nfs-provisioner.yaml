@@ -1,3 +1,15 @@
+###############################################################################
+# NFS Provisioner 配置 - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: NFS动态存储供给，支持PVC自动创建
+# 前提: 已部署NFS服务器并共享存储目录
+# 部署: kubectl apply -f nfs-provisioner.yaml
+# 验证: kubectl get pods -n nfs-provisioner
+###############################################################################
+
+# =============================================================================
+# Namespace - 存储供给器命名空间
+# =============================================================================
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -6,7 +18,12 @@ metadata:
     app.kubernetes.io/name: nfs-provisioner
     app.kubernetes.io/part-of: enterprise-cloud-native-platform
     app.kubernetes.io/managed-by: deploy-storage.sh
+
 ---
+# =============================================================================
+# ServiceAccount - NFS Provisioner服务账户
+# 用途: 运行NFS动态供给器Pod
+# =============================================================================
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -14,32 +31,50 @@ metadata:
   namespace: nfs-provisioner
   labels:
     app.kubernetes.io/name: nfs-client-provisioner
+
 ---
+# =============================================================================
+# ClusterRole - NFS Provisioner集群权限
+# 权限说明:
+#   - PV: 创建、删除、查看持久卷
+#   - PVC: 查看、更新持久卷声明
+#   - StorageClass: 查看存储类
+#   - Events: 创建事件
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: nfs-client-provisioner-runner
+  labels:
+    app.kubernetes.io/name: nfs-client-provisioner
 rules:
+  # 持久卷操作权限
   - apiGroups: [""]
     resources: ["persistentvolumes"]
     verbs: ["get", "list", "watch", "create", "delete"]
+  # 持久卷声明操作权限
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "update"]
+  # 存储类查看权限
   - apiGroups: ["storage.k8s.io"]
     resources: ["storageclasses"]
     verbs: ["get", "list", "watch"]
+  # 事件创建权限
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "update", "patch"]
-  - apiGroups: [""]
-    resources: ["services/status"]
-    verbs: ["patch"]
+
 ---
+# =============================================================================
+# ClusterRoleBinding - 绑定集群权限
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: run-nfs-client-provisioner
+  labels:
+    app.kubernetes.io/name: nfs-client-provisioner
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -48,22 +83,35 @@ subjects:
   - kind: ServiceAccount
     name: nfs-client-provisioner
     namespace: nfs-provisioner
+
 ---
+# =============================================================================
+# Role - Leader选举权限 (单实例部署时可选)
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: leader-locking-nfs-client-provisioner
   namespace: nfs-provisioner
+  labels:
+    app.kubernetes.io/name: nfs-client-provisioner
 rules:
+  # Endpoints操作权限 (用于Leader选举)
   - apiGroups: [""]
     resources: ["endpoints"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
+
 ---
+# =============================================================================
+# RoleBinding - 绑定命名空间权限
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: leader-locking-nfs-client-provisioner
   namespace: nfs-provisioner
+  labels:
+    app.kubernetes.io/name: nfs-client-provisioner
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -72,7 +120,12 @@ subjects:
   - kind: ServiceAccount
     name: nfs-client-provisioner
     namespace: nfs-provisioner
+
 ---
+# =============================================================================
+# Deployment - NFS Client Provisioner
+# 功能: 监控PVC请求，动态创建PV
+# =============================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -83,6 +136,8 @@ metadata:
     app.kubernetes.io/component: storage-provisioner
 spec:
   replicas: 1
+  # Recreate策略: 停止旧Pod后创建新Pod
+  # 适用于单实例部署，避免并发冲突
   strategy:
     type: Recreate
   selector:
@@ -95,19 +150,28 @@ spec:
         app.kubernetes.io/component: storage-provisioner
     spec:
       serviceAccountName: nfs-client-provisioner
+      # 安全上下文 (以root身份运行，需要访问NFS)
       securityContext:
         runAsUser: 0
       containers:
         - name: nfs-client-provisioner
+          # NFS外部供给器镜像
+          # 文档: https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner
           image: registry.k8s.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2
           imagePullPolicy: IfNotPresent
           env:
+            # 供给器名称 (必须与StorageClass的provisioner匹配)
             - name: PROVISIONER_NAME
               value: nfs-provisioner
+            # NFS服务器地址 (替换为实际IP)
+            # 生产环境建议使用DNS名称
             - name: NFS_SERVER
               value: "NFS_SERVER_PLACEHOLDER"
+            # NFS共享路径
+            # NFS服务器上导出的目录
             - name: NFS_PATH
               value: "NFS_PATH_PLACEHOLDER"
+          # 资源限制
           resources:
             requests:
               cpu: 50m
@@ -116,10 +180,35 @@ spec:
               cpu: 200m
               memory: 128Mi
           volumeMounts:
+            # NFS挂载点
             - name: nfs-client-root
               mountPath: /persistentvolumes
       volumes:
+        # NFS存储卷
         - name: nfs-client-root
           nfs:
+            # NFS服务器地址
             server: "NFS_SERVER_PLACEHOLDER"
+            # NFS共享路径
             path: "NFS_PATH_PLACEHOLDER"
+
+# =============================================================================
+# 部署前配置
+# =============================================================================
+# 1. 创建NFS服务器共享目录:
+#    mkdir -p /exports/kubernetes
+#    chmod 777 /exports/kubernetes
+#
+# 2. 配置/etc/exports:
+#    /exports/kubernetes *(rw,sync,no_subtree_check,no_root_squash)
+#
+# 3. 应用配置:
+#    sed -i 's/NFS_SERVER_PLACEHOLDER/192.168.100.50/g' nfs-provisioner.yaml
+#    sed -i 's/NFS_PATH_PLACEHOLDER/\/exports\/kubernetes/g' nfs-provisioner.yaml
+#    kubectl apply -f nfs-provisioner.yaml
+#
+# 4. 验证:
+#    kubectl get pods -n nfs-provisioner
+#    kubectl get storageclass
+#    kubectl get pv
+# =============================================================================

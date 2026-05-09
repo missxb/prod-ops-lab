@@ -2,6 +2,25 @@
 #==============================================================================
 # 05-setup-pipeline.sh - Configure Jenkins CI/CD Pipeline
 # Enterprise Cloud Native Platform - Phase 4
+#
+# Description:
+#   Sets up the complete CI/CD pipeline configuration including Jenkins
+#   declarative pipeline, demo applications for testing, Kubernetes
+#   deployment manifests, and Harbor webhook integration.
+#
+# Usage:
+#   ./05-setup-pipeline.sh [deploy|verify]
+#
+#   deploy  - Full pipeline configuration (default)
+#   verify  - Verify pipeline setup
+#
+# Environment Variables:
+#   DOMAIN  - Base domain (default: example.com)
+#
+# Examples:
+#   ./05-setup-pipeline.sh
+#   DOMAIN=corp.example.com ./05-setup-pipeline.sh deploy
+#   ./05-setup-pipeline.sh verify
 #==============================================================================
 set -euo pipefail
 
@@ -27,21 +46,28 @@ log_info()  { echo -e "${GREEN}${LOG_PREFIX} [INFO] $(date '+%H:%M:%S') $*${NC}"
 log_warn()  { echo -e "${YELLOW}${LOG_PREFIX} [WARN] $(date '+%H:%M:%S') $*${NC}"; }
 log_error() { echo -e "${RED}${LOG_PREFIX} [ERROR] $(date '+%H:%M:%S') $*${NC}"; }
 
-# Check prerequisites
+# check_prereqs - 检查必需工具
 check_prereqs() {
     log_info "Checking prerequisites..."
     
     for cmd in kubectl helm; do
         if ! command -v "${cmd}" &>/dev/null; then
             log_error "Required command not found: ${cmd}"
+            log_error "Please install ${cmd} before running this script"
             exit 1
         fi
     done
     
+    # 验证 Kubernetes 集群连接
+    if ! kubectl cluster-info &>/dev/null; then
+        log_error "Cannot connect to Kubernetes cluster"
+        exit 1
+    fi
+    
     log_info "Prerequisites satisfied"
 }
 
-# Create pipeline namespace
+# create_pipeline_namespace - 创建 CI/CD pipeline 命名空间
 create_pipeline_namespace() {
     log_info "Creating pipeline namespace..."
     
@@ -52,9 +78,18 @@ create_pipeline_namespace() {
         team=devops \
         environment=production \
         --overwrite
+    
+    # 验证命名空间
+    if kubectl get namespace cicd &>/dev/null; then
+        log_info "Namespace cicd verified"
+    else
+        log_error "Failed to create namespace cicd"
+        exit 1
+    fi
 }
 
-# Deploy demo application for pipeline testing
+# deploy_demo_app - 部署用于 pipeline 测试的示例应用
+# 创建 demo-app 命名空间、ConfigMap、Deployment、Service
 deploy_demo_app() {
     log_info "Deploying demo application for pipeline testing..."
     
@@ -158,7 +193,8 @@ EOF
     log_info "Demo application deployed"
 }
 
-# Create Jenkins Pipeline configurations
+# create_pipeline_configs - 创建 Jenkins Pipeline 配置
+# 包括声明式 Pipeline、Seed Job XML 等
 create_pipeline_configs() {
     log_info "Creating Jenkins Pipeline configurations..."
     
@@ -511,7 +547,8 @@ EOF
     log_info "Pipeline configurations created"
 }
 
-# Create Kubernetes deployment manifests
+# create_k8s_manifests - 创建生产环境的 Kubernetes 部署清单
+# 包括 Deployment、Service、Ingress
 create_k8s_manifests() {
     log_info "Creating Kubernetes deployment manifests..."
     
@@ -619,7 +656,7 @@ EOF
     log_info "Kubernetes manifests created"
 }
 
-# Create Harbor webhook for vulnerability scanning
+# setup_harbor_webhook - 配置 Harbor Webhook 用于自动触发 Jenkins 构建
 setup_harbor_webhook() {
     log_info "Setting up Harbor webhook for vulnerability scanning..."
     
@@ -663,26 +700,58 @@ EOF
     log_info "Harbor webhook configured"
 }
 
-# Verify pipeline setup
+# verify_pipeline - 验证 pipeline 设置是否完整
+# 检查命名空间、Demo App Pod、Pipeline ConfigMap、Webhook 配置
 verify_pipeline() {
     log_info "Verifying pipeline setup..."
     
+    local issues=0
+    
+    # 检查命名空间
     log_info "--- Namespaces ---"
-    kubectl get ns cicd demo-app production 2>/dev/null || true
+    kubectl get ns cicd demo-app production 2>/dev/null || log_warn "Some namespaces may not exist yet"
     
+    # 检查 Demo App (Staging)
     log_info "--- Demo App (Staging) ---"
-    kubectl get pods -n demo-app -o wide 2>/dev/null || true
+    kubectl get pods -n demo-app -o wide 2>/dev/null || log_info "No pods in demo-app namespace"
+    local staging_not_running
+    staging_not_running=$(kubectl get pods -n demo-app --no-headers 2>/dev/null | grep -cv "Running\|Completed" || true)
+    if [[ "${staging_not_running}" -gt 0 ]]; then
+        log_warn "${staging_not_running} staging pods not in Running state"
+        ((issues++))
+    fi
     
+    # 检查 Demo App (Production)
     log_info "--- Demo App (Production) ---"
-    kubectl get pods -n production -o wide 2>/dev/null || true
+    kubectl get pods -n production -o wide 2>/dev/null || log_info "No pods in production namespace"
+    local prod_not_running
+    prod_not_running=$(kubectl get pods -n production --no-headers 2>/dev/null | grep -cv "Running\|Completed" || true)
+    if [[ "${prod_not_running}" -gt 0 ]]; then
+        log_warn "${prod_not_running} production pods not in Running state"
+        ((issues++))
+    fi
     
+    # 检查 Jenkins Pipeline ConfigMaps
     log_info "--- Jenkins Pipeline ConfigMaps ---"
-    kubectl get configmap -n "${NAMESPACE_JENKINS}" -l component=pipeline-jobs 2>/dev/null || true
+    if kubectl get configmap -n "${NAMESPACE_JENKINS}" -l component=pipeline-jobs 2>/dev/null; then
+        log_info "Pipeline ConfigMaps verified"
+    else
+        log_warn "Pipeline ConfigMaps not found"
+    fi
     
+    # 检查 Harbor Webhook Config
     log_info "--- Harbor Webhook Config ---"
-    kubectl get configmap harbor-webhook-config -n "${NAMESPACE_HARBOR}" 2>/dev/null || true
+    if kubectl get configmap harbor-webhook-config -n "${NAMESPACE_HARBOR}" 2>/dev/null; then
+        log_info "Harbor webhook config verified"
+    else
+        log_warn "Harbor webhook config not found"
+    fi
     
-    log_info "Pipeline verification complete"
+    if [[ "${issues}" -eq 0 ]]; then
+        log_info "Pipeline verification complete - no issues detected"
+    else
+        log_warn "Pipeline verification complete - ${issues} issues detected"
+    fi
 }
 
 # Print summary

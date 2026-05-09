@@ -1,21 +1,34 @@
-#===============================================================================
-# Kubernetes Pod Security Policies
-#===============================================================================
-# Pod Security Standards (PSS) - Production grade security
-#===============================================================================
+# =============================================================================
+# Kubernetes Pod Security Policies - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: Pod安全策略配置，实现Pod级别安全控制
+# 部署: kubectl apply -f pod-security.yaml
+# 验证: kubectl get psp,psp.clusterrole,constrainttemplate --all-namespaces
+# =============================================================================
+
+# =============================================================================
+# Pod Security Standards (PSS) - 命名空间安全级别
+# 生产环境必须配置!
+# =============================================================================
 
 ---
-# Pod Security Standards - Baseline (Restricted)
+# Production命名空间 - 严格级别
+# 最严格的安全策略，适合核心业务
 apiVersion: v1
 kind: Namespace
 metadata:
   name: production
   labels:
+    # 强制执行: 拒绝不符合策略的Pod
     pod-security.kubernetes.io/enforce: restricted
+    # 审计: 记录不符合策略的Pod (不拒绝)
     pod-security.kubernetes.io/audit: restricted
+    # 警告: 显示不符合策略的Pod警告
     pod-security.kubernetes.io/warn: restricted
 
 ---
+# Staging命名斯基 - 基线级别
+# 中等安全策略，适合测试环境
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -26,6 +39,8 @@ metadata:
     pod-security.kubernetes.io/warn: restricted
 
 ---
+# Development命名空间 - 基线级别
+# 较宽松的安全策略，适合开发环境
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -35,8 +50,14 @@ metadata:
     pod-security.kubernetes.io/audit: baseline
     pod-security.kubernetes.io/warn: baseline
 
+# =============================================================================
+# Pod Security Policy (PSP) - 详细安全策略
+# 注意: PSP在K8s 1.25+已弃用，推荐使用Pod Security Standards
+# =============================================================================
+
 ---
-# Pod Security Policy - Restricted
+# PSP - 严格策略
+# 适用于生产环境核心业务
 apiVersion: policy/v1beta1
 kind: PodSecurityPolicy
 metadata:
@@ -44,11 +65,16 @@ metadata:
   labels:
     app.kubernetes.io/name: pod-security-policy
     app.kubernetes.io/part-of: enterprise-cloud-native-platform
+    app.kubernetes.io/component: security
 spec:
+  # 禁止特权模式
   privileged: false
+  # 禁止权限提升
   allowPrivilegeEscalation: false
+  # 必须丢弃所有能力
   requiredDropCapabilities:
   - ALL
+  # 允许的卷类型
   volumes:
   - 'configMap'
   - 'emptyDir'
@@ -56,18 +82,25 @@ spec:
   - 'secret'
   - 'downwardAPI'
   - 'persistentVolumeClaim'
+  # 禁止主机网络
   hostNetwork: false
+  # 禁止主机IPC
   hostIPC: false
+  # 禁止主机PID
   hostPID: false
+  # 必须以非root用户运行
   runAsUser:
     rule: 'MustRunAsNonRoot'
+  # SELinux配置
   seLinux:
     rule: 'RunAsAny'
+  # 补充组配置
   supplementalGroups:
     rule: 'MustRunAs'
     ranges:
     - min: 1
       max: 65535
+  # 文件系统组配置
   fsGroup:
     rule: 'MustRunAs'
     ranges:
@@ -75,7 +108,8 @@ spec:
       max: 65535
 
 ---
-# Pod Security Policy - Baseline
+# PSP - 基线策略
+# 适用于测试环境
 apiVersion: policy/v1beta1
 kind: PodSecurityPolicy
 metadata:
@@ -83,25 +117,40 @@ metadata:
   labels:
     app.kubernetes.io/name: pod-security-policy
     app.kubernetes.io/part-of: enterprise-cloud-native-platform
+    app.kubernetes.io/component: security
 spec:
+  # 禁止特权模式
   privileged: false
+  # 禁止权限提升
   allowPrivilegeEscalation: false
+  # 允许所有卷类型
   volumes:
   - '*'
+  # 禁止主机网络
   hostNetwork: false
+  # 禁止主机IPC
   hostIPC: false
+  # 禁止主机PID
   hostPID: false
+  # 运行用户配置
   runAsUser:
     rule: 'RunAsAny'
+  # SELinux配置
   seLinux:
     rule: 'RunAsAny'
+  # 补充组配置
   supplementalGroups:
     rule: 'RunAsAny'
+  # 文件系统组配置
   fsGroup:
     rule: 'RunAsAny'
 
----
+# =============================================================================
 # RBAC for Pod Security Policies
+# =============================================================================
+
+---
+# 严格PSP用户角色
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -116,6 +165,7 @@ rules:
   verbs: ['use']
 
 ---
+# 基线PSP用户角色
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -167,8 +217,10 @@ subjects:
   name: default
   namespace: development
 
+# =============================================================================
+# Security Context Templates - 生产级Pod安全模板
+# =============================================================================
 ---
-# Sample Security Context for Production Pods
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -178,6 +230,7 @@ metadata:
     app.kubernetes.io/name: security-context
     app.kubernetes.io/part-of: enterprise-cloud-native-platform
 data:
+  # 严格安全上下文模板 (生产环境)
   restricted-pod.yaml: |
     apiVersion: v1
     kind: Pod
@@ -186,24 +239,36 @@ data:
       labels:
         app.kubernetes.io/name: example
     spec:
+      # Pod级安全上下文
       securityContext:
+        # 必须以非root用户运行
         runAsNonRoot: true
+        # 运行用户ID
         runAsUser: 1000
+        # 运行组ID
         runAsGroup: 1000
+        # 文件系统组
         fsGroup: 1000
+        # seccomp配置
         seccompProfile:
           type: RuntimeDefault
       containers:
       - name: app
         image: enterprise-registry.local/base/distroless:latest
+        # 容器级安全上下文
         securityContext:
+          # 禁止权限提升
           allowPrivilegeEscalation: false
+          # 只读根文件系统
           readOnlyRootFilesystem: true
+          # 必须以非root用户运行
           runAsNonRoot: true
           runAsUser: 1000
+          # 丢弃所有能力
           capabilities:
             drop:
             - ALL
+        # 资源限制
         resources:
           limits:
             cpu: "500m"
@@ -213,6 +278,7 @@ data:
             cpu: "100m"
             memory: "128Mi"
             ephemeral-storage: "100Mi"
+        # 临时存储挂载 (只读根文件系统需要)
         volumeMounts:
         - name: tmp
           mountPath: /tmp
@@ -228,6 +294,7 @@ data:
       - name: run
         emptyDir: {}
 
+  # 严格Deployment模板 (生产环境)
   restricted-deployment.yaml: |
     apiVersion: apps/v1
     kind: Deployment
@@ -287,8 +354,12 @@ data:
           - name: run
             emptyDir: {}
 
+# =============================================================================
+# OPA Gatekeeper - 策略即代码
+# =============================================================================
+
 ---
-# OPA Gatekeeper Constraint Template for Pod Security
+# Pod安全约束模板
 apiVersion: templates.gatekeeper.sh/v1
 kind: ConstraintTemplate
 metadata:
@@ -338,7 +409,7 @@ spec:
         }
 
 ---
-# OPA Gatekeeper Constraint for Pod Security
+# Pod安全约束
 apiVersion: constraints.gatekeeper.sh/v1beta1
 kind: K8sPodSecurity
 metadata:
@@ -360,7 +431,7 @@ spec:
     allowPrivilegeEscalation: false
 
 ---
-# OPA Gatekeeper Constraint for Image Registry
+# 镜像仓库约束模板
 apiVersion: templates.gatekeeper.sh/v1
 kind: ConstraintTemplate
 metadata:
@@ -393,7 +464,7 @@ spec:
         }
 
 ---
-# OPA Gatekeeper Constraint for Allowed Registries
+# 允许的镜像仓库约束
 apiVersion: constraints.gatekeeper.sh/v1beta1
 kind: K8sAllowedRegistries
 metadata:
@@ -409,7 +480,32 @@ spec:
       kinds: ["Pod"]
   parameters:
     registries:
-    - "enterprise-registry.local/"
-    - "docker.io/library/"
-    - "gcr.io/distroless/"
-    - "quay.io/"
+    - "enterprise-registry.local/"  # 企业私有仓库
+    - "docker.io/library/"          # Docker官方镜像
+    - "gcr.io/distroless/"          # Google Distroless
+    - "quay.io/"                    # Red Hat镜像
+
+# =============================================================================
+# Pod Security验证命令
+# =============================================================================
+# 查看PSP:
+#   kubectl get psp
+#
+# 查看Gatekeeper约束:
+#   kubectl get constrainttemplates
+#   kubectl get k8spodsecurity
+#   kubectl get k8sallowedregistries
+#
+# 测试Pod是否符合策略:
+#   kubectl apply -f restricted-pod.yaml -n production
+#
+# 查看告警:
+#   kubectl get events --field-selector reason=FailedCreate
+#
+# 禁用PSP (如需要):
+#   kubectl delete psp restricted
+#   kubectl delete psp baseline
+#
+# 启用Pod Security Standards (K8s 1.25+):
+#   kubectl label namespace production pod-security.kubernetes.io/enforce=restricted
+# =============================================================================

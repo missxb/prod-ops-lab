@@ -5,8 +5,20 @@
 # 适用系统: CentOS 7/8, Rocky Linux 8/9
 # 依赖条件: root权限
 # 作者: 运维平台团队
-# 版本: 1.0.0
+# 版本: 1.1.0
 # 创建日期: 2026-05-09
+# 更新日期: 2026-05-09
+#
+# 使用方法:
+#   ./01-hostname.sh my-server          # 指定主机名
+#   ./01-hostname.sh                    # 从配置文件或使用当前主机名
+#   HOSTNAME=web-01 ./01-hostname.sh    # 通过环境变量指定
+#
+# 功能说明:
+#   1. 检测操作系统类型
+#   2. 设置主机名 (支持hostnamectl和hostname命令)
+#   3. 配置/etc/hosts映射
+#   4. 幂等性检查，已设置则跳过
 ###############################################################################
 set -euo pipefail
 umask 077
@@ -46,13 +58,19 @@ trap cleanup EXIT
 trap 'log_error "收到信号，正在退出..."; exit 1' SIGINT SIGTERM
 
 # ========================= 工具函数 =========================
+
+# 检查是否以root权限运行
+# 主机名设置和hosts文件修改需要root权限
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         log_error "此脚本必须以root权限运行"
+        log_error "请使用: sudo $0"
         exit 1
     fi
 }
 
+# 检查锁文件，防止并发执行
+# 如果锁文件存在且进程仍在运行，则退出
 check_lock() {
     if [[ -f "$LOCK_FILE" ]]; then
         local pid
@@ -67,6 +85,8 @@ check_lock() {
     echo $$ > "$LOCK_FILE"
 }
 
+# 检测操作系统类型和版本
+# 从/etc/os-release读取系统信息
 detect_os() {
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
@@ -110,10 +130,18 @@ main() {
     current_hostname=$(hostname)
     if [[ "$current_hostname" == "$target_hostname" ]]; then
         log_success "主机名已经是目标值: $target_hostname，跳过设置"
+        log_info "幂等性检查通过，无需修改"
     else
         # 设置主机名（支持CentOS 7和8/9）
         hostnamectl set-hostname "$target_hostname" 2>/dev/null || hostname "$target_hostname"
-        log_success "主机名已设置为: $target_hostname"
+        # 验证主机名是否设置成功
+        local verify_hostname
+        verify_hostname=$(hostname)
+        if [[ "$verify_hostname" == "$target_hostname" ]]; then
+            log_success "主机名已设置为: $target_hostname"
+        else
+            log_warn "主机名设置可能未完全生效 (当前: $verify_hostname)"
+        fi
     fi
 
     # 确保 /etc/hosts 中包含主机名映射

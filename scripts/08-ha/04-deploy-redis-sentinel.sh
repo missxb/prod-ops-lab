@@ -7,6 +7,9 @@
 
 set -euo pipefail
 
+# 错误处理
+trap 'log_error "Redis Sentinel部署脚本异常退出 (行号: $LINENO)"' ERR
+
 # 颜色输出
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -18,6 +21,26 @@ log_info()  { echo -e "${GREEN}[INFO]${NC} $(date '+%H:%M:%S') $*"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $(date '+%H:%M:%S') $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $(date '+%H:%M:%S') $*"; }
 log_step()  { echo -e "${CYAN}[STEP]${NC} $(date '+%H:%M:%S') $*"; }
+
+# ==================== 用法说明 ====================
+usage() {
+    cat << EOF
+用法: $(basename "$0") [options]
+
+功能: 部署Redis主从复制和Sentinel高可用架构
+架构: 3 Sentinel + 1 Master + 2 Slave
+
+环境变量:
+  MASTER_HOST          主节点IP（默认: 192.168.100.10）
+  SLAVE_HOSTS          从节点IP列表（逗号分隔）
+  SENTINEL_HOSTS       Sentinel节点IP列表（逗号分隔）
+  REDIS_PASS           Redis密码（默认: redis_pass_2024）
+  SENTINEL_PORT        Sentinel端口（默认: 26379）
+
+示例:
+  MASTER_HOST=10.0.0.1 $(basename "$0")
+EOF
+}
 
 # ==================== 配置变量 ====================
 REDIS_VERSION="${REDIS_VERSION:-7.0}"
@@ -40,6 +63,9 @@ REDIS_PASS="${REDIS_PASS:-redis_pass_2024}"
 REDIS_SENTINEL_PASS="${REDIS_SENTINEL_PASS:-sentinel_pass_2024}"
 
 # ==================== 安装Redis ====================
+# ==================== 安装Redis ====================
+# 功能: 检测并安装Redis服务器
+# 支持: CentOS/RHEL (yum), Debian/Ubuntu (apt)
 install_redis() {
     log_step "[1/6] 安装Redis..."
 
@@ -65,6 +91,9 @@ install_redis() {
 }
 
 # ==================== 创建目录 ====================
+# ==================== 创建目录 ====================
+# 功能: 创建Redis数据、日志、配置目录结构
+# 目录: /var/lib/redis, /var/log/redis, /etc/redis, /etc/redis/sentinel
 create_directories() {
     log_step "[2/6] 创建目录结构..."
 
@@ -85,6 +114,9 @@ create_directories() {
 }
 
 # ==================== 生成Redis主节点配置 ====================
+# ==================== 生成Redis主节点配置 ====================
+# 功能: 生成redis-master.conf，包含网络、认证、持久化、复制等配置
+# 配置路径: /etc/redis/redis-master.conf
 generate_master_config() {
     log_step "[3/6] 生成Redis主节点配置..."
 
@@ -253,6 +285,10 @@ CONF
 }
 
 # ==================== 生成Redis从节点配置 ====================
+# ==================== 生成Redis从节点配置 ====================
+# 功能: 生成指定从节点的配置文件
+# 参数: $1=slave_id, $2=slave_host
+# 配置路径: /etc/redis/redis-slave-{id}.conf
 generate_slave_config() {
     local slave_id=$1
     local slave_host=$2
@@ -327,6 +363,10 @@ CONF
 }
 
 # ==================== 生成Sentinel配置 ====================
+# ==================== 生成Sentinel配置 ====================
+# 功能: 生成指定Sentinel节点的配置文件
+# 参数: $1=sentinel_id, $2=sentinel_host
+# 配置路径: /etc/redis/sentinel/sentinel-{id}.conf
 generate_sentinel_config() {
     local sentinel_id=$1
     local sentinel_host=$2
@@ -409,6 +449,9 @@ CONF
 }
 
 # ==================== 生成Sentinel通知脚本 ====================
+# ==================== 生成Sentinel脚本 ====================
+# 功能: 生成故障转移通知脚本和Sentinel健康检查脚本
+# 脚本路径: /var/lib/redis/notify.sh, /var/lib/redis/check_sentinel.sh
 generate_sentinel_scripts() {
     log_step "[5/6] 生成Sentinel脚本..."
 
@@ -484,6 +527,9 @@ SCRIPT
 }
 
 # ==================== 启动Redis服务 ====================
+# ==================== 启动Redis服务 ====================
+# 功能: 启动Redis主节点和Sentinel服务
+# 验证: 检查服务状态和端口监听
 start_redis_services() {
     log_step "[6/6] 启动Redis服务..."
 

@@ -1,78 +1,133 @@
-## Prometheus Helm Values - kube-prometheus-stack
-## 生产级配置
+###############################################################################
+# Prometheus Helm Values - kube-prometheus-stack
+# 项目: 企业级云原生运维平台
+# 功能: Prometheus全栈监控配置
+# 图表: https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack
+# 部署: helm install prometheus prometheus-community/kube-prometheus-stack -f prometheus.yaml
+# 验证: kubectl get pods -n monitoring
+###############################################################################
 
-## Prometheus 配置
+## =============================================================================
+## Prometheus 核心配置
+## =============================================================================
 prometheus:
   prometheusSpec:
-    # 保留策略
+    # =========================================================================
+    # 数据保留策略
+    # =========================================================================
+    # 数据保留时间 (天)
+    # 建议: 15-30天 (根据存储容量调整)
+    # 计算: 每天数据量 * 保留天数 < 存储容量
     retention: 30d
+    # 数据保留大小 (自动清理超过此大小的数据)
+    # 留出20%空间给压缩和临时文件
     retentionSize: "45GB"
 
+    # =========================================================================
     # 存储配置
+    # =========================================================================
     storageSpec:
       volumeClaimTemplate:
         spec:
+          # 存储类 (使用本地路径或SSD)
           storageClassName: local-path
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:
+              # 存储大小 (根据数据量调整)
+              # 生产环境建议: 50-100Gi
               storage: 50Gi
 
-    # 资源限制
+    # =========================================================================
+    # 资源限制 (必须设置!)
+    # =========================================================================
     resources:
       requests:
+        # CPU请求 (核心数)
+        # 根据监控目标数量调整
         cpu: 500m
+        # 内存请求 (建议为数据量的2-3倍)
         memory: 2Gi
       limits:
+        # CPU限制 (防止无限CPU使用)
         cpu: "2"
+        # 内存限制 (超过会OOM)
         memory: 4Gi
 
-    # 服务发现 - 自动发现所有命名空间的 ServiceMonitor
+    # =========================================================================
+    # 服务发现配置
+    # =========================================================================
+    # 自动发现所有命名空间的ServiceMonitor
     serviceMonitorSelectorNilUsesHelmValues: false
+    # 自动发现所有命名空间的PodMonitor
     podMonitorSelectorNilUsesHelmValues: false
+    # 自动发现所有命名空间的告警规则
     ruleSelectorNilUsesHelmValues: false
+
+    # =========================================================================
+    # 额外抓取配置 - 自动发现Pod监控
+    # =========================================================================
+    # 通过Pod注解自动发现监控目标
+    # Pod需要添加注解:
+    #   prometheus.io/scrape: "true"
+    #   prometheus.io/port: "8080"
+    #   prometheus.io/path: "/metrics"
     additionalScrapeConfigs:
       - job_name: 'kubernetes-pods'
         kubernetes_sd_configs:
           - role: pod
             namespaces:
-              names: []
+              names: []  # 空=所有命名空间
         relabel_configs:
+          # 仅抓取启用scrape的Pod
           - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
             action: keep
             regex: true
+          # 自定义metrics路径
           - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
             action: replace
             target_label: __metrics_path__
             regex: (.+)
+          # 自定义端口
           - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
             action: replace
             target_label: __address__
             regex: ([^:]+)(?::\d+)?;(\d+)
             replacement: $1:$2
+          # 添加命名空间标签
           - source_labels: [__meta_kubernetes_namespace]
             action: replace
             target_label: namespace
+          # 添加Pod名称标签
           - source_labels: [__meta_kubernetes_pod_name]
             action: replace
             target_label: pod
+          # 添加应用标签
           - source_labels: [__meta_kubernetes_pod_label_app]
             action: replace
             target_label: app
 
+    # =========================================================================
     # 告警规则选择器
+    # =========================================================================
     ruleSelector:
       matchLabels:
         prometheus: kube-prometheus
         role: alert-rules
 
-  # 额外告警规则 - 节点宕机、Pod重启、CPU/内存过高、磁盘满
+  # =========================================================================
+  # 内联告警规则 - 企业级监控
+  # =========================================================================
   additionalPrometheusRulesMap:
     enterprise-rules:
       groups:
-        ## 节点宕机告警
+        # -----------------------------------------------------------------
+        # 节点告警规则
+        # 监控物理机/虚拟机的健康状态
+        # -----------------------------------------------------------------
         - name: node.rules
           rules:
+            # 节点宕机 (最严重)
             - alert: NodeDown
               expr: up{job="node-exporter"} == 0
               for: 2m
@@ -81,7 +136,9 @@ prometheus:
               annotations:
                 summary: "节点 {{ $labels.instance }} 宕机"
                 description: "节点 {{ $labels.instance }} 已超过2分钟不可达，请立即检查"
+                # runbook_url: "https://wiki.internal/runbook/node-down"
 
+            # CPU使用率过高
             - alert: NodeHighCPU
               expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
               for: 5m
@@ -90,7 +147,9 @@ prometheus:
               annotations:
                 summary: "节点 {{ $labels.instance }} CPU 使用率过高"
                 description: "节点 {{ $labels.instance }} CPU 使用率超过 85%，当前值: {{ $value }}%"
+                # 建议: 检查异常进程，考虑扩容或优化应用
 
+            # 内存使用率过高
             - alert: NodeHighMemory
               expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 85
               for: 5m
@@ -99,7 +158,9 @@ prometheus:
               annotations:
                 summary: "节点 {{ $labels.instance }} 内存使用率过高"
                 description: "节点 {{ $labels.instance }} 内存使用率超过 85%，当前值: {{ $value }}%"
+                # 建议: 检查内存泄漏，考虑增加内存
 
+            # 磁盘使用率过高 (预警)
             - alert: NodeDiskSpaceHigh
               expr: (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes) * 100 > 85
               for: 5m
@@ -108,7 +169,9 @@ prometheus:
               annotations:
                 summary: "节点 {{ $labels.instance }} 磁盘 {{ $labels.mountpoint }} 使用率过高"
                 description: "磁盘使用率超过 85%，当前值: {{ $value }}%"
+                # 建议: 清理日志或扩容磁盘
 
+            # 磁盘即将耗尽 (紧急)
             - alert: NodeDiskSpaceCritical
               expr: (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes) * 100 > 95
               for: 2m
@@ -118,9 +181,13 @@ prometheus:
                 summary: "节点 {{ $labels.instance }} 磁盘 {{ $labels.mountpoint }} 即将耗尽"
                 description: "磁盘使用率超过 95%，当前值: {{ $value }}%"
 
-        ## Pod 告警
+        # -----------------------------------------------------------------
+        # Pod告警规则
+        # 监控容器运行状态
+        # -----------------------------------------------------------------
         - name: pod.rules
           rules:
+            # Pod频繁重启
             - alert: PodCrashLooping
               expr: rate(kube_pod_container_status_restarts_total[15m]) * 60 * 5 > 0
               for: 5m
@@ -129,7 +196,9 @@ prometheus:
               annotations:
                 summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} 频繁重启"
                 description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} 在过去15分钟内重启次数过多"
+                # 建议: 检查Pod日志，排查崩溃原因
 
+            # Pod CPU使用率过高
             - alert: PodHighCPU
               expr: sum(rate(container_cpu_usage_seconds_total{container!=""}[5m])) by (namespace, pod) * 100 > 80
               for: 5m
@@ -139,6 +208,7 @@ prometheus:
                 summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} CPU 使用率过高"
                 description: "Pod CPU 使用率超过 80%，当前值: {{ $value }}%"
 
+            # Pod内存使用率过高
             - alert: PodHighMemory
               expr: container_memory_working_set_bytes{container!=""} / container_spec_memory_limit_bytes * 100 > 85
               for: 5m
@@ -148,6 +218,7 @@ prometheus:
                 summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} 内存使用率过高"
                 description: "Pod 内存使用率超过 85%，当前值: {{ $value }}%"
 
+            # Pod长时间未就绪
             - alert: PodNotReady
               expr: kube_pod_status_ready{condition="true"} == 0
               for: 10m
@@ -157,9 +228,13 @@ prometheus:
                 summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} 长时间未就绪"
                 description: "Pod 已超过10分钟处于未就绪状态"
 
-        ## Deployment 告警
+        # -----------------------------------------------------------------
+        # Deployment告警规则
+        # 监控部署状态
+        # -----------------------------------------------------------------
         - name: deployment.rules
           rules:
+            # 副本数不匹配
             - alert: DeploymentReplicasMismatch
               expr: kube_deployment_spec_replicas != kube_deployment_status_available_replicas
               for: 15m
@@ -169,9 +244,13 @@ prometheus:
                 summary: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} 副本数不匹配"
                 description: "期望副本数与可用副本数不一致已超过15分钟"
 
-        ## 集群级告警
+        # -----------------------------------------------------------------
+        # 集群级告警规则
+        # 监控K8s核心组件
+        # -----------------------------------------------------------------
         - name: cluster.rules
           rules:
+            # API Server不可达 (最严重)
             - alert: KubeAPIServerDown
               expr: absent(up{job="apiserver"} == 1)
               for: 5m
@@ -181,6 +260,7 @@ prometheus:
                 summary: "Kubernetes API Server 不可达"
                 description: "API Server 已超过5分钟不可达"
 
+            # 节点NotReady
             - alert: KubeNodeNotReady
               expr: kube_node_status_condition{condition="Ready",status="true"} == 0
               for: 5m
@@ -190,6 +270,7 @@ prometheus:
                 summary: "节点 {{ $labels.node }} NotReady"
                 description: "节点 {{ $labels.node }} 已处于 NotReady 状态超过5分钟"
 
+            # PVC使用率过高
             - alert: PVCUsageHigh
               expr: kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes * 100 > 85
               for: 5m
@@ -199,22 +280,33 @@ prometheus:
                 summary: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} 使用率过高"
                 description: "PVC 使用率超过 85%，当前值: {{ $value }}%"
 
+## =============================================================================
 ## Grafana 配置
+## =============================================================================
 grafana:
   enabled: true
+  # 管理员密码 (生产环境必须修改!)
+  # 推荐: 使用Secret管理密码
   adminPassword: admin123
 
-  # 预置 Dashboard
+  # =========================================================================
+  # Sidecar配置 - 自动发现Dashboard和数据源
+  # =========================================================================
   sidecar:
     dashboards:
       enabled: true
+      # 搜索所有命名空间
       searchNamespace: ALL
+      # 标签选择器 (ConfigMap需要添加此标签)
       label: grafana_dashboard
+      # 文件夹注解 (用于组织Dashboard)
       folderAnnotation: grafana_folder
     datasources:
       enabled: true
 
+  # =========================================================================
   # 资源限制
+  # =========================================================================
   resources:
     requests:
       cpu: 100m
@@ -223,7 +315,9 @@ grafana:
       cpu: 500m
       memory: 512Mi
 
-  # Dashboard Providers
+  # =========================================================================
+  # Dashboard Provider配置
+  # =========================================================================
   dashboardProviders:
     dashboardproviders.yaml:
       apiVersion: 1
@@ -232,16 +326,44 @@ grafana:
           orgId: 1
           folder: 'Kubernetes'
           type: file
+          # 禁用Dashboard删除 (防止误操作)
           disableDeletion: false
+          # Dashboard自动刷新间隔 (秒)
           updateIntervalSeconds: 30
           options:
             path: /var/lib/grafana/dashboards/default
 
+  # =========================================================================
+  # 额外配置 (可选)
+  # =========================================================================
+  # SMTP邮件配置 (告警通知)
+  # smtp:
+  #   existingSecret: grafana-smtp
+  #   userKey: username
+  #   passwordKey: password
+
+  # OAuth/SSO配置 (可选)
+  # grafana.ini:
+  #   auth.generic_oauth:
+  #     enabled: true
+  #     name: "SSO"
+  #     client_id: grafana
+  #     client_secret: ${OAUTH_CLIENT_SECRET}
+  #     scopes: openid profile email
+  #     auth_url: https://auth.example.com/authorize
+  #     token_url: https://auth.example.com/token
+  #     api_url: https://auth.example.com/userinfo
+
+## =============================================================================
 ## Alertmanager 配置
+## =============================================================================
 alertmanager:
   enabled: true
 
   alertmanagerSpec:
+    # =========================================================================
+    # 资源限制
+    # =========================================================================
     resources:
       requests:
         cpu: 50m
@@ -250,6 +372,9 @@ alertmanager:
         cpu: 200m
         memory: 256Mi
 
+    # =========================================================================
+    # 存储配置
+    # =========================================================================
     storage:
       volumeClaimTemplate:
         spec:
@@ -257,11 +382,17 @@ alertmanager:
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:
+              # Alertmanager存储 (告警历史)
               storage: 5Gi
 
+  # =========================================================================
+  # Alertmanager配置 (YAML格式)
+  # =========================================================================
   config:
     global:
+      # 告警解决超时时间
       resolve_timeout: 5m
+      # SMTP邮件服务器
       smtp_smarthost: 'smtp.example.com:587'
       smtp_from: 'alertmanager@example.com'
       smtp_auth_username: 'alertmanager@example.com'
@@ -269,21 +400,30 @@ alertmanager:
       smtp_require_tls: true
 
     route:
+      # 告警分组 (按名称、命名空间、严重级别分组)
       group_by: ['alertname', 'namespace', 'severity']
+      # 首次告警等待时间 (秒)
       group_wait: 30s
+      # 分组间隔 (秒)
       group_interval: 5m
+      # 重复告警间隔 (小时)
       repeat_interval: 4h
+      # 默认接收者
       receiver: 'default-receiver'
+      # 路由规则
       routes:
+        # 紧急告警: 立即通知
         - match:
             severity: critical
           receiver: 'critical-receiver'
           group_wait: 10s
+        # 警告告警: 常规通知
         - match:
             severity: warning
           receiver: 'warning-receiver'
 
     receivers:
+      # 默认接收者 (邮件+钉钉)
       - name: 'default-receiver'
         email_configs:
           - to: 'ops-team@example.com'
@@ -292,6 +432,7 @@ alertmanager:
           - url: 'http://dingtalk-webhook-proxy:8060/dingtalk/ops/send'
             send_resolved: true
 
+      # 紧急接收者 (电话+短信)
       - name: 'critical-receiver'
         email_configs:
           - to: 'oncall@example.com'
@@ -300,11 +441,14 @@ alertmanager:
           - url: 'http://dingtalk-webhook-proxy:8060/dingtalk/critical/send'
             send_resolved: true
 
+      # 警告接收者 (邮件)
       - name: 'warning-receiver'
         email_configs:
           - to: 'ops-team@example.com'
             send_resolved: true
 
+    # 告警抑制规则
+    # 紧急告警触发时，抑制同名警告告警
     inhibit_rules:
       - source_match:
           severity: 'critical'
@@ -312,15 +456,21 @@ alertmanager:
           severity: 'warning'
         equal: ['alertname', 'namespace']
 
-## Node Exporter
+## =============================================================================
+## Node Exporter 配置 (采集节点指标)
+## =============================================================================
 nodeExporter:
   enabled: true
 
-## Kube State Metrics
+## =============================================================================
+## Kube State Metrics 配置 (采集K8s对象指标)
+## =============================================================================
 kubeStateMetrics:
   enabled: true
 
-## Prometheus Operator
+## =============================================================================
+## Prometheus Operator 配置
+## =============================================================================
 prometheusOperator:
   resources:
     requests:
@@ -329,3 +479,25 @@ prometheusOperator:
     limits:
       cpu: 500m
       memory: 512Mi
+
+###############################################################################
+# 部署验证命令
+# =============================================================================
+# 安装/升级:
+#   helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+#     -n monitoring -f prometheus.yaml
+#
+# 验证部署:
+#   kubectl get pods -n monitoring
+#   kubectl get svc -n monitoring
+#
+# 访问Prometheus:
+#   kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090
+#
+# 访问Grafana:
+#   kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
+#   默认账号: admin / admin123
+#
+# 访问Alertmanager:
+#   kubectl port-forward -n monitoring svc/kube-prometheus-stack-alertmanager 9093:9093
+###############################################################################

@@ -1,43 +1,86 @@
+# =============================================================================
+# Alertmanager 配置 - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: Alertmanager Secret配置 + 钉钉Webhook代理
+# 命名空间: monitoring
+# 部署: kubectl apply -f alertmanager.yaml
+# 验证: kubectl get secret alertmanager-config -n monitoring
+# =============================================================================
+
+# =============================================================================
+# Alertmanager Secret - 主配置
+# =============================================================================
+# 包含敏感信息 (密码、token)，使用Secret存储
 apiVersion: v1
 kind: Secret
 metadata:
   name: alertmanager-config
   namespace: monitoring
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: config
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
 type: Opaque
 stringData:
   alertmanager.yaml: |
+    # =========================================================================
+    # 全局配置
+    # =========================================================================
     global:
+      # 告警解决超时时间 (秒)
+      # 超过此时间未收到新告警，视为已解决
       resolve_timeout: 5m
+
+      # SMTP邮件服务器配置
       smtp_smarthost: 'smtp.example.com:587'
       smtp_from: 'alertmanager@example.com'
       smtp_auth_username: 'alertmanager@example.com'
       smtp_auth_password: 'your-password'
       smtp_require_tls: true
 
+    # =========================================================================
+    # 路由配置 - 告警分发规则
+    # =========================================================================
     route:
+      # 告警分组 (减少通知数量)
       group_by: ['alertname', 'namespace', 'severity']
+      # 首次告警等待时间 (秒)
+      # 等待期间收到的相同分组告警会合并
       group_wait: 30s
+      # 分组间隔 (秒)
+      # 同一分组告警的最小发送间隔
       group_interval: 5m
+      # 重复告警间隔 (小时)
+      # 未解决告警的重复通知间隔
       repeat_interval: 4h
+      # 默认接收者
       receiver: 'default-receiver'
+      # 路由规则 (按优先级匹配)
       routes:
+        # 紧急告警: 立即通知，缩短等待时间
         - match:
             severity: critical
           receiver: 'critical-receiver'
           group_wait: 10s
+        # 警告告警: 常规通知
         - match:
             severity: warning
           receiver: 'warning-receiver'
 
+    # =========================================================================
+    # 接收者配置 - 通知方式
+    # =========================================================================
     receivers:
+      # 默认接收者 (邮件+钉钉)
       - name: 'default-receiver'
         email_configs:
           - to: 'ops-team@example.com'
-            send_resolved: true
+            send_resolved: true  # 告警解决时发送通知
         webhook_configs:
           - url: 'http://dingtalk-webhook-proxy:8060/dingtalk/ops/send'
             send_resolved: true
 
+      # 紧急接收者 (电话+短信)
       - name: 'critical-receiver'
         email_configs:
           - to: 'oncall@example.com'
@@ -45,20 +88,42 @@ stringData:
         webhook_configs:
           - url: 'http://dingtalk-webhook-proxy:8060/dingtalk/critical/send'
             send_resolved: true
+        # PagerDuty集成 (可选)
+        # pagerduty_configs:
+        #   - service_key: 'your-pagerduty-key'
+        #     severity: critical
+        #     send_resolved: true
 
+      # 警告接收者 (邮件)
       - name: 'warning-receiver'
         email_configs:
           - to: 'ops-team@example.com'
             send_resolved: true
+        # 钉钉群机器人 (可选)
+        # webhook_configs:
+        #   - url: 'http://dingtalk-webhook-proxy:8060/dingtalk/warning/send'
+        #     send_resolved: true
 
+    # =========================================================================
+    # 抑制规则 - 避免告警风暴
+    # =========================================================================
     inhibit_rules:
+      # 紧急告警触发时，抑制同名警告告警
       - source_match:
           severity: 'critical'
         target_match:
           severity: 'warning'
         equal: ['alertname', 'namespace']
+
 ---
-# 钉钉 Webhook 代理 (可选部署)
+# =============================================================================
+# 钉钉 Webhook 代理 - 企业级告警通知
+# =============================================================================
+# 部署说明:
+#   1. 创建钉钉群机器人，获取Webhook URL
+#   2. 替换环境变量中的access_token
+#   3. kubectl apply -f alertmanager.yaml
+# =============================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -66,6 +131,9 @@ metadata:
   namespace: monitoring
   labels:
     app: dingtalk-webhook-proxy
+    app.kubernetes.io/name: dingtalk-webhook-proxy
+    app.kubernetes.io/component: notification
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
 spec:
   replicas: 1
   selector:
@@ -78,14 +146,19 @@ spec:
     spec:
       containers:
         - name: dingtalk-webhook-proxy
+          # 钉钉Webhook代理镜像
           image: timonwong/prometheus-webhook-dingtalk:v2.1.0
           ports:
             - containerPort: 8060
+              name: http
           env:
+            # 运维团队钉钉机器人
             - name: DINGTALK_OPS_WEBHOOK_URL
               value: "https://oapi.dingtalk.com/robot/send?access_token=YOUR_OPS_TOKEN"
+            # 紧急告警钉钉机器人
             - name: DINGTALK_CRITICAL_WEBHOOK_URL
               value: "https://oapi.dingtalk.com/robot/send?access_token=YOUR_CRITICAL_TOKEN"
+          # 资源限制
           resources:
             requests:
               cpu: 50m
@@ -93,27 +166,59 @@ spec:
             limits:
               cpu: 200m
               memory: 128Mi
+          # 健康检查
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8060
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8060
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
 ---
+# =============================================================================
+# 钉钉 Webhook 代理 Service
+# =============================================================================
 apiVersion: v1
 kind: Service
 metadata:
   name: dingtalk-webhook-proxy
   namespace: monitoring
+  labels:
+    app: dingtalk-webhook-proxy
+    app.kubernetes.io/name: dingtalk-webhook-proxy
 spec:
   selector:
     app: dingtalk-webhook-proxy
   ports:
     - port: 8060
       targetPort: 8060
+      protocol: TCP
+      name: http
+
 ---
-# Alertmanager ConfigMap (备用)
+# =============================================================================
+# Alertmanager ConfigMap - 备用配置 (简化版)
+# =============================================================================
+# 用途: 当Secret配置损坏时的备用配置
+# 部署: kubectl apply -f alertmanager.yaml --validate=false
+# =============================================================================
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: alertmanager-config-backup
   namespace: monitoring
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: config-backup
 data:
   alertmanager.yaml: |
+    # 简化的备用配置
     global:
       resolve_timeout: 5m
     route:
@@ -127,3 +232,24 @@ data:
         email_configs:
           - to: 'ops-team@example.com'
             send_resolved: true
+
+# =============================================================================
+# 部署验证命令
+# =============================================================================
+# 验证Secret:
+#   kubectl get secret alertmanager-config -n monitoring -o yaml
+#
+# 查看Alertmanager配置:
+#   kubectl exec -it -n monitoring alertmanager-0 -- amtool config show
+#
+# 测试告警通知:
+#   kubectl exec -it -n monitoring alertmanager-0 -- amtool alert add \
+#     --alertname=TestAlert --severity=warning --summary="测试告警"
+#
+# 查看告警历史:
+#   kubectl exec -it -n monitoring alertmanager-0 -- amtool alert query
+#
+# 禁用告警:
+#   kubectl exec -it -n monitoring alertmanager-0 -- amtool silence add \
+#     --alertname=NodeDown --duration=1h --comment="维护窗口"
+# =============================================================================

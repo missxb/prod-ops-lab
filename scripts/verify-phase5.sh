@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 加载共享库
+source "$SCRIPT_DIR/lib/common.sh"
+
 ##############################################################################
 # 阶段5: 应用部署验证
 # 验证项目: 命名空间、Demo App、HPA、Service、Ingress、滚动更新
@@ -10,6 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 REPORT_DIR="$PROJECT_DIR/reports"
 REPORT_FILE="$REPORT_DIR/verify-phase5-$(date +%Y%m%d-%H%M%S).log"
+TIMESTAMP_REPORT="$REPORT_DIR/verify-phase5-$(date +%Y%m%d-%H%M%S).txt"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -178,6 +182,52 @@ for ns in dev prod; do
                 pass "$ns/$DEPLOY_NAME 有就绪探针"
             else
                 warn "$ns/$DEPLOY_NAME 缺少就绪探针"
+            fi
+        done <<< "$DEPLOYMENTS"
+    fi
+done
+
+# --- 5.8 资源限制检查 ---
+section "5.8 资源限制检查"
+
+for ns in dev prod; do
+    if kubectl get namespace "$ns" &>/dev/null 2>&1; then
+        DEPLOYMENTS=$(kubectl get deployments -n "$ns" --no-headers 2>/dev/null || echo "")
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            DEPLOY_NAME=$(echo "$line" | awk '{print $1}')
+            RESOURCES=$(kubectl get deployment "$DEPLOY_NAME" -n "$ns" -o jsonpath='{.spec.template.spec.containers[0].resources}' 2>/dev/null || echo "")
+            if [[ -n "$RESOURCES" && "$RESOURCES" != "{}" ]]; then
+                REQUESTS=$(echo "$RESOURCES" | grep -o '"requests"' || echo "")
+                LIMITS=$(echo "$RESOURCES" | grep -o '"limits"' || echo "")
+                if [[ -n "$REQUESTS" && -n "$LIMITS" ]]; then
+                    pass "$ns/$DEPLOY_NAME 已配置资源限制和请求"
+                elif [[ -n "$LIMITS" ]]; then
+                    warn "$ns/$DEPLOY_NAME 仅配置了资源限制 (建议同时配置requests)"
+                fi
+            else
+                warn "$ns/$DEPLOY_NAME 未配置资源限制"
+            fi
+        done <<< "$DEPLOYMENTS"
+    fi
+done
+
+# --- 5.9 滚动更新状态检查 ---
+section "5.9 滚动更新状态检查"
+
+for ns in dev prod; do
+    if kubectl get namespace "$ns" &>/dev/null 2>&1; then
+        DEPLOYMENTS=$(kubectl get deployments -n "$ns" --no-headers 2>/dev/null || echo "")
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            DEPLOY_NAME=$(echo "$line" | awk '{print $1}')
+            REPLICAS=$(echo "$line" | awk '{print $2}')
+            AVAILABLE=$(echo "$line" | awk '{print $4}')
+            UPDATED=$(echo "$line" | awk '{print $6}')
+            if [[ "$REPLICAS" == "$AVAILABLE" && "$REPLICAS" == "$UPDATED" ]]; then
+                pass "$ns/$DEPLOY_NAME 滚动更新完成 ($UPDATED/$REPLICAS)"
+            elif [[ "$UPDATED" != "0" ]]; then
+                warn "$ns/$DEPLOY_NAME 滚动更新进行中 ($UPDATED/$REPLICAS)"
             fi
         done <<< "$DEPLOYMENTS"
     fi

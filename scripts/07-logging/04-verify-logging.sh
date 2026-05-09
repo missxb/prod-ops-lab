@@ -1,9 +1,26 @@
 #!/usr/bin/env bash
 ###############################################################################
 # 验证日志系统 (ELK Stack) 部署
+#
+# 功能:
+#   - 验证 Elasticsearch 集群状态 (StatefulSet, Pod, 集群健康)
+#   - 验证 Fluentd DaemonSet 状态 (DaemonSet, Pod, 日志错误)
+#   - 验证 Kibana 状态 (Deployment, Service, 外部访问)
+#   - 验证日志流 (容器日志文件)
+#   - 检查资源使用情况
+#   - 检查 ILM 保留策略
+#
+# 使用示例:
+#   ./04-verify-logging.sh                     # 验证默认命名空间
+#   ./04-verify-logging.sh -n logging          # 指定命名空间
+#
+# 退出码:
+#   0 = 全部验证通过
+#   1 = 发现问题
 ###############################################################################
 set -euo pipefail
 
+# ===== 颜色与日志函数 =====
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -15,8 +32,10 @@ log_ok()    { echo -e "${GREEN}[OK]${NC}    $(date '+%Y-%m-%d %H:%M:%S') $*"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $(date '+%Y-%m-%d %H:%M:%S') $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*"; }
 
+# ===== 参数解析 =====
 NAMESPACE="logging"
 ERRORS=0
+WARNINGS=0
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -25,6 +44,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# ===== 显示验证信息 =====
 echo "==========================================="
 echo "  日志系统验证"
 echo "  命名空间: $NAMESPACE"
@@ -38,9 +58,9 @@ echo "----- Elasticsearch 验证 -----"
 # 1.1 检查 StatefulSet 状态
 log_info "检查 Elasticsearch StatefulSet..."
 if kubectl get statefulset elasticsearch -n "$NAMESPACE" >/dev/null 2>&1; then
-    READY=$(kubectl get statefulset elasticsearch -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}')
-    DESIRED=$(kubectl get statefulset elasticsearch -n "$NAMESPACE" -o jsonpath='{.spec.replicas}')
-    if [[ "$READY" == "$DESIRED" ]]; then
+    READY=$(kubectl get statefulset elasticsearch -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+    DESIRED=$(kubectl get statefulset elasticsearch -n "$NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
+    if [[ "$READY" == "$DESIRED" && "$READY" -gt 0 ]]; then
         log_ok "Elasticsearch StatefulSet: $READY/$DESIRED 副本就绪"
     else
         log_warn "Elasticsearch StatefulSet: $READY/$DESIRED 副本就绪"
@@ -72,10 +92,19 @@ if [[ -n "$ES_POD" ]]; then
         log_ok "Elasticsearch 集群状态: GREEN"
     elif [[ "$CLUSTER_STATUS" == "yellow" ]]; then
         log_warn "Elasticsearch 集群状态: YELLOW (可能副本不足)"
+        WARNINGS=$((WARNINGS + 1))
     else
         log_error "Elasticsearch 集群状态: $CLUSTER_STATUS"
         ERRORS=$((ERRORS + 1))
     fi
+    
+    # 检查节点数
+    NODES=$(echo "$HEALTH" | grep -o '"number_of_nodes":[0-9]*' | cut -d':' -f2 || echo "0")
+    log_info "Elasticsearch 节点数: $NODES"
+    
+    # 检查索引数
+    INDICES=$(kubectl exec -n "$NAMESPACE" "$ES_POD" -- curl -s http://localhost:9200/_cat/indices 2>/dev/null | wc -l || echo "0")
+    log_info "Elasticsearch 索引数: $INDICES"
 else
     log_error "无法找到 Elasticsearch Pod"
     ERRORS=$((ERRORS + 1))
@@ -88,8 +117,8 @@ echo "----- Fluentd 验证 -----"
 # 2.1 检查 DaemonSet 状态
 log_info "检查 Fluentd DaemonSet..."
 if kubectl get daemonset fluentd -n "$NAMESPACE" >/dev/null 2>&1; then
-    DESIRED=$(kubectl get daemonset fluentd -n "$NAMESPACE" -o jsonpath='{.status.desiredNumberScheduled}')
-    READY=$(kubectl get daemonset fluentd -n "$NAMESPACE" -o jsonpath='{.status.numberReady}')
+    DESIRED=$(kubectl get daemonset fluentd -n "$NAMESPACE" -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || echo "0")
+    READY=$(kubectl get daemonset fluentd -n "$NAMESPACE" -o jsonpath='{.status.numberReady}' 2>/dev/null || echo "0")
     if [[ "$READY" == "$DESIRED" && "$READY" -gt 0 ]]; then
         log_ok "Fluentd DaemonSet: $READY/$DESIRED Pod 就绪"
     else
@@ -114,6 +143,7 @@ if [[ -n "$FLUENTD_POD" ]]; then
             log_ok "Fluentd 最近日志: 无严重错误"
         else
             log_warn "Fluentd 最近日志: 发现 $RECENT_ERRORS 条错误"
+            WARNINGS=$((WARNINGS + 1))
         fi
     else
         log_error "Fluentd Pod 状态: $FLUENTD_STATUS"
@@ -124,6 +154,14 @@ else
     ERRORS=$((ERRORS + 1))
 fi
 
+# 2.3 检查 RBAC
+log_info "检查 Fluentd RBAC..."
+if kubectl get serviceaccount fluentd -n "$NAMESPACE" >/dev/null 2>&1; then
+    log_ok "Fluentd ServiceAccount 存在"
+else
+    log_warn "Fluentd ServiceAccount 不存在"
+fi
+
 # ===== 3. 验证 Kibana =====
 echo ""
 echo "----- Kibana 验证 -----"
@@ -132,7 +170,7 @@ echo "----- Kibana 验证 -----"
 log_info "检查 Kibana Deployment..."
 if kubectl get deployment kibana -n "$NAMESPACE" >/dev/null 2>&1; then
     READY=$(kubectl get deployment kibana -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
-    DESIRED=$(kubectl get deployment kibana -n "$NAMESPACE" -o jsonpath='{.spec.replicas}')
+    DESIRED=$(kubectl get deployment kibana -n "$NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
     if [[ "$READY" == "$DESIRED" && "$READY" -gt 0 ]]; then
         log_ok "Kibana Deployment: $READY/$DESIRED 副本就绪"
     else
@@ -160,6 +198,23 @@ if [[ -n "$KIBANA_SVC" ]]; then
     log_ok "Kibana 外部访问端口: $KIBANA_SVC"
 else
     log_warn "Kibana 外部访问 Service 不存在"
+    WARNINGS=$((WARNINGS + 1))
+fi
+
+# 3.4 检查 Kibana 初始化 Job
+log_info "检查 Kibana 初始化 Job..."
+if kubectl get job kibana-init -n "$NAMESPACE" >/dev/null 2>&1; then
+    JOB_STATUS=$(kubectl get job kibana-init -n "$NAMESPACE" -o jsonpath='{.status.conditions[0].type}' 2>/dev/null || echo "unknown")
+    if [[ "$JOB_STATUS" == "Complete" ]]; then
+        log_ok "Kibana 初始化 Job: 已完成"
+    elif [[ "$JOB_STATUS" == "Failed" ]]; then
+        log_warn "Kibana 初始化 Job: 失败"
+        WARNINGS=$((WARNINGS + 1))
+    else
+        log_info "Kibana 初始化 Job: 运行中"
+    fi
+else
+    log_warn "Kibana 初始化 Job 不存在"
 fi
 
 # ===== 4. 验证日志流 =====
@@ -173,6 +228,7 @@ if [[ "$LOG_COUNT" -gt 0 ]]; then
     log_ok "找到 $LOG_COUNT 个容器日志文件"
 else
     log_warn "未找到容器日志文件"
+    WARNINGS=$((WARNINGS + 1))
 fi
 
 # ===== 5. 资源使用 =====
@@ -180,12 +236,12 @@ echo ""
 echo "----- 资源使用 -----"
 
 log_info "检查日志系统资源使用..."
-kubectl top pods -n "$NAMESPACE" --no-headers 2>/dev/null | while read line; do
-    POD_NAME=$(echo "$line" | awk '{print $1}')
-    CPU=$(echo "$line" | awk '{print $2}')
-    MEM=$(echo "$line" | awk '{print $3}')
-    log_info "  $POD_NAME: CPU=$CPU, MEM=$MEM"
-done || log_warn "无法获取资源使用信息"
+if kubectl top pods -n "$NAMESPACE" --no-headers 2>/dev/null; then
+    log_ok "资源使用信息获取成功"
+else
+    log_warn "无法获取资源使用信息 (metrics-server 可能未安装)"
+    WARNINGS=$((WARNINGS + 1))
+fi
 
 # ===== 6. 日志保留策略 =====
 echo ""
@@ -198,18 +254,30 @@ if [[ -n "$ES_POD" ]]; then
         log_ok "ILM 策略已配置"
     else
         log_warn "未发现 ILM 策略"
+        WARNINGS=$((WARNINGS + 1))
     fi
+else
+    log_warn "无法检查 ILM 策略 (ES Pod 不可用)"
 fi
 
 # ===== 汇总 =====
 echo ""
 echo "==========================================="
-if [[ $ERRORS -eq 0 ]]; then
+echo "  验证汇总"
+echo "  命名空间: $NAMESPACE"
+echo "  时间: $(date)"
+echo "==========================================="
+
+if [[ $ERRORS -eq 0 && $WARNINGS -eq 0 ]]; then
     log_ok "日志系统验证完成 - 全部通过"
     echo "==========================================="
     exit 0
+elif [[ $ERRORS -eq 0 ]]; then
+    log_warn "日志系统验证完成 - 发现 $WARNINGS 个警告"
+    echo "==========================================="
+    exit 0
 else
-    log_error "日志系统验证完成 - 发现 $ERRORS 个问题"
+    log_error "日志系统验证完成 - 发现 $ERRORS 个错误, $WARNINGS 个警告"
     echo "==========================================="
     exit 1
 fi

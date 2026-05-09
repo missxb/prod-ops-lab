@@ -1,24 +1,41 @@
 #!/usr/bin/env bash
 ###############################################################################
 # 部署 Kibana 可视化平台
-# 配置ES连接，预置Index Pattern
+#
+# 功能:
+#   - 部署 Kibana ConfigMap (ES连接配置)
+#   - 部署 Kibana Deployment
+#   - 创建 Service (内部 + 外部 NodePort)
+#   - 配置 NetworkPolicy (安全隔离)
+#   - 创建 Index Pattern ConfigMap
+#   - 部署初始化 Job (自动创建 Index Patterns)
+#   - 创建 Secret (凭证管理)
+#
+# 使用示例:
+#   ./03-deploy-kibana.sh                     # 部署到默认命名空间
+#   ./03-deploy-kibana.sh -n logging          # 指定命名空间
+#
+# 外部访问:
+#   http://<node-ip>:30561
 ###############################################################################
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# ===== 颜色与日志函数 =====
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-log_info()  { echo -e "${BLUE}[INFO]${NC}  $(date '+%Y-%m-%d %H:%M:%S') $*"; }
-log_ok()    { echo -e "${GREEN}[OK]${NC}    $(date '+%Y-%m-%d %H:%M:%S') $*"; }
-log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $(date '+%Y-%m-%d %H:%M:%S') $*"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*"; }
+log_info()  { echo -e "${BLUE}[INFO]${NC}  $(date '+%Y-%m-%d %H:%M:%S') [Kibana] $*"; }
+log_ok()    { echo -e "${GREEN}[OK]${NC}    $(date '+%Y-%m-%d %H:%M:%S') [Kibana] $*"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $(date '+%Y-%m-%d %H:%M:%S') [Kibana] $*"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') [Kibana] $*"; }
 
+# ===== 参数解析 =====
 NAMESPACE="logging"
 
 while [[ $# -gt 0 ]]; do
@@ -28,9 +45,26 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# ===== 前置检查 =====
+log_info "检查 Kibana 部署前置条件..."
+
+# 验证命名空间
+if ! kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+    log_error "命名空间 $NAMESPACE 不存在"
+    exit 1
+fi
+log_ok "命名空间 $NAMESPACE 存在"
+
+# 验证 Elasticsearch 是否运行
+ES_PODS=$(kubectl get pods -n "$NAMESPACE" -l app=elasticsearch --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l)
+if [[ "$ES_PODS" -eq 0 ]]; then
+    log_warn "Elasticsearch Pods 未运行，Kibana 可能无法连接"
+fi
+
 log_info "部署 Kibana 到命名空间: $NAMESPACE"
 
-# 创建 Kibana 配置 ConfigMap
+# ===== 创建 ConfigMap: Kibana 配置 =====
+log_info "创建 Kibana ConfigMap..."
 cat <<'CONFIGMAP' | kubectl apply -f -
 apiVersion: v1
 kind: ConfigMap
@@ -66,7 +100,8 @@ data:
     i18n.fallbackLocale: "en"
 CONFIGMAP
 
-# 部署 Kibana Deployment
+# ===== 部署 Kibana Deployment =====
+log_info "部署 Kibana Deployment..."
 cat <<'MANIFEST' | kubectl apply -f -
 apiVersion: apps/v1
 kind: Deployment
@@ -145,7 +180,8 @@ spec:
         emptyDir: {}
 MANIFEST
 
-# 创建 Kibana Service
+# ===== 创建 Service =====
+log_info "创建 Kibana Service..."
 cat <<'SVC' | kubectl apply -f -
 apiVersion: v1
 kind: Service
@@ -180,7 +216,8 @@ spec:
     app: kibana
 SVC
 
-# 创建 NetworkPolicy
+# ===== 创建 NetworkPolicy =====
+log_info "配置 Kibana NetworkPolicy..."
 cat <<'NETPOL' | kubectl apply -f -
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -214,7 +251,8 @@ spec:
   - {}  # DNS
 NETPOL
 
-# 创建用于存储 Index Pattern 配置的 ConfigMap
+# ===== 创建 Index Pattern ConfigMap =====
+log_info "创建 Kibana Index Pattern ConfigMap..."
 cat <<'PATTERN' | kubectl apply -f -
 apiVersion: v1
 kind: ConfigMap
@@ -250,7 +288,8 @@ data:
     }
 PATTERN
 
-# 创建用于初始化 Kibana 的 Job
+# ===== 创建初始化 Job =====
+log_info "创建 Kibana 初始化 Job..."
 cat <<'JOB' | kubectl apply -f -
 apiVersion: batch/v1
 kind: Job
@@ -332,11 +371,45 @@ spec:
           echo "Index patterns created successfully!"
 JOB
 
-# 创建 Secret
+# ===== 创建 Secret =====
+log_info "创建 Kibana 凭证 Secret..."
 kubectl create secret generic kibana-credentials \
     --namespace="$NAMESPACE" \
     --from-literal=password="$(openssl rand -base64 24)" \
     --dry-run=client -o yaml | kubectl apply -f -
+
+# ===== 验证部署 =====
+log_info "验证 Kibana 部署..."
+
+# 检查 Deployment
+if kubectl get deployment kibana -n "$NAMESPACE" >/dev/null 2>&1; then
+    log_ok "Kibana Deployment 已创建"
+else
+    log_error "Kibana Deployment 创建失败"
+    exit 1
+fi
+
+# 检查 Service
+if kubectl get service kibana -n "$NAMESPACE" >/dev/null 2>&1; then
+    log_ok "Kibana Service 已创建"
+else
+    log_warn "Kibana Service 不存在"
+fi
+
+# 检查外部 Service
+if kubectl get service kibana-external -n "$NAMESPACE" >/dev/null 2>&1; then
+    NODE_PORT=$(kubectl get service kibana-external -n "$NAMESPACE" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+    log_ok "Kibana 外部访问端口: $NODE_PORT"
+else
+    log_warn "Kibana 外部 Service 不存在"
+fi
+
+# 检查 Job
+if kubectl get job kibana-init -n "$NAMESPACE" >/dev/null 2>&1; then
+    log_ok "Kibana 初始化 Job 已创建"
+else
+    log_warn "Kibana 初始化 Job 不存在"
+fi
 
 log_ok "Kibana 部署完成"
 log_info "Kibana 将在 Pod 就绪后自动创建 Index Patterns"

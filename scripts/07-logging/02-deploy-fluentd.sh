@@ -1,24 +1,49 @@
 #!/usr/bin/env bash
 ###############################################################################
 # 部署 Fluentd 日志收集 DaemonSet
-# 收集所有节点日志，过滤Kubernetes元数据
+#
+# 功能:
+#   - 创建 ServiceAccount 和 RBAC 权限
+#   - 部署 Fluentd 配置 (容器日志 + 系统日志 + 认证日志)
+#   - 配置 Elasticsearch 索引模板
+#   - 部署 Fluentd DaemonSet (每节点一个 Pod)
+#   - 创建监控 Service
+#
+# 日志源:
+#   - /var/log/containers/*.log (Kubernetes 容器日志)
+#   - /var/log/syslog, /var/log/messages (系统日志)
+#   - /var/log/auth.log, /var/log/secure (认证日志)
+#
+# 输出目标:
+#   - kubernetes-* (容器日志)
+#   - system-logs (系统日志)
+#   - auth-logs (认证日志)
+#
+# 使用示例:
+#   ./02-deploy-fluentd.sh                    # 部署到默认命名空间
+#   ./02-deploy-fluentd.sh -n logging         # 指定命名空间
+#
+# 配置文件:
+#   configs/elk/fluentd-config.yaml          (Fluentd 配置)
 ###############################################################################
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+# ===== 颜色与日志函数 =====
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-log_info()  { echo -e "${BLUE}[INFO]${NC}  $(date '+%Y-%m-%d %H:%M:%S') $*"; }
-log_ok()    { echo -e "${GREEN}[OK]${NC}    $(date '+%Y-%m-%d %H:%M:%S') $*"; }
-log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $(date '+%Y-%m-%d %H:%M:%S') $*"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*"; }
+log_info()  { echo -e "${BLUE}[INFO]${NC}  $(date '+%Y-%m-%d %H:%M:%S') [Fluentd] $*"; }
+log_ok()    { echo -e "${GREEN}[OK]${NC}    $(date '+%Y-%m-%d %H:%M:%S') [Fluentd] $*"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $(date '+%Y-%m-%d %H:%M:%S') [Fluentd] $*"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') [Fluentd] $*"; }
 
+# ===== 参数解析 =====
 NAMESPACE="logging"
 
 while [[ $# -gt 0 ]]; do
@@ -28,9 +53,26 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# ===== 前置检查 =====
+log_info "检查 Fluentd 部署前置条件..."
+
+# 验证命名空间
+if ! kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+    log_error "命名空间 $NAMESPACE 不存在"
+    exit 1
+fi
+log_ok "命名空间 $NAMESPACE 存在"
+
+# 验证 Fluentd 配置文件
+FLUENTD_CONFIG="$PROJECT_ROOT/configs/elk/fluentd-config.yaml"
+if [[ ! -f "$FLUENTD_CONFIG" ]]; then
+    log_warn "Fluentd 配置文件不存在: $FLUENTD_CONFIG，将使用内嵌配置"
+fi
+
 log_info "部署 Fluentd DaemonSet 到命名空间: $NAMESPACE"
 
-# 创建 ServiceAccount 和 RBAC
+# ===== 创建 ServiceAccount 和 RBAC =====
+log_info "创建 Fluentd ServiceAccount 和 RBAC..."
 cat <<'RBAC' | kubectl apply -f -
 apiVersion: v1
 kind: ServiceAccount
@@ -71,13 +113,19 @@ subjects:
   namespace: logging
 RBAC
 
-# 创建 Fluentd 配置 ConfigMap
-kubectl create configmap fluentd-config \
-    --from-file=fluent.conf="$PROJECT_ROOT/configs/elk/fluentd-config.yaml" \
-    --namespace="$NAMESPACE" \
-    --dry-run=client -o yaml | kubectl apply -f -
+# ===== 创建 Fluentd 配置 ConfigMap =====
+log_info "创建 Fluentd ConfigMap..."
+if [[ -f "$FLUENTD_CONFIG" ]]; then
+    kubectl create configmap fluentd-config \
+        --from-file=fluent.conf="$FLUENTD_CONFIG" \
+        --namespace="$NAMESPACE" \
+        --dry-run=client -o yaml | kubectl apply -f -
+else
+    log_warn "跳过外部配置文件加载，使用内嵌配置"
+fi
 
-# 创建 Fluentd 配置
+# ===== 创建 Fluentd 配置 =====
+log_info "创建 Fluentd 配置 ConfigMap (内嵌配置)..."
 cat <<'CONFIGMAP' | kubectl apply -f -
 apiVersion: v1
 kind: ConfigMap
@@ -277,7 +325,8 @@ data:
     </source>
 CONFIGMAP
 
-# 创建 Elasticsearch 索引模板
+# ===== 创建 Elasticsearch 索引模板 =====
+log_info "创建 Elasticsearch 索引模板..."
 cat <<'TEMPLATE' | kubectl apply -f -
 apiVersion: v1
 kind: ConfigMap
@@ -317,7 +366,8 @@ data:
     }
 TEMPLATE
 
-# 部署 Fluentd DaemonSet
+# ===== 部署 Fluentd DaemonSet =====
+log_info "部署 Fluentd DaemonSet..."
 cat <<'MANIFEST' | kubectl apply -f -
 apiVersion: apps/v1
 kind: DaemonSet
@@ -440,7 +490,8 @@ spec:
       terminationGracePeriodSeconds: 30
 MANIFEST
 
-# 创建 Fluentd Service (用于监控)
+# ===== 创建 Fluentd Service (用于监控) =====
+log_info "创建 Fluentd 监控 Service..."
 cat <<'SVC' | kubectl apply -f -
 apiVersion: v1
 kind: Service
@@ -457,5 +508,30 @@ spec:
   selector:
     app: fluentd
 SVC
+
+# ===== 验证部署 =====
+log_info "验证 Fluentd 部署..."
+
+# 检查 DaemonSet
+if kubectl get daemonset fluentd -n "$NAMESPACE" >/dev/null 2>&1; then
+    log_ok "Fluentd DaemonSet 已创建"
+else
+    log_error "Fluentd DaemonSet 创建失败"
+    exit 1
+fi
+
+# 检查 ConfigMap
+if kubectl get configmap fluentd-config-files -n "$NAMESPACE" >/dev/null 2>&1; then
+    log_ok "Fluentd ConfigMap 已创建"
+else
+    log_warn "Fluentd ConfigMap 不存在"
+fi
+
+# 检查 RBAC
+if kubectl get serviceaccount fluentd -n "$NAMESPACE" >/dev/null 2>&1; then
+    log_ok "Fluentd ServiceAccount 已创建"
+else
+    log_warn "Fluentd ServiceAccount 不存在"
+fi
 
 log_ok "Fluentd DaemonSet 部署完成"

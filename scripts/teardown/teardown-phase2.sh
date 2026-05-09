@@ -6,6 +6,9 @@
 ###############################################################################
 set -euo pipefail
 
+# 加载共享库
+source "$SCRIPT_DIR/../../scripts/lib/common.sh"
+
 # ========================= 全局变量 =========================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -123,6 +126,9 @@ cleanup_k8s_dirs() {
         "/etc/sysctl.d/k8s.conf"
         "/etc/modules-load.d/k8s.conf"
         "/etc/crictl.yaml"
+        "/var/lib/kube-proxy"
+        "/var/run/kubernetes"
+        "/etc/systemd/system/kubelet.service.d"
     )
     
     for dir in "${dirs[@]}"; do
@@ -160,13 +166,20 @@ rollback_k8s_packages() {
         systemctl disable kubelet 2>/dev/null || true
     fi
     
+    # 清理K8s yum/apt仓库配置
+    log_info "清理K8s软件仓库配置..."
+    rm -f /etc/yum.repos.d/kubernetes.repo 2>/dev/null || true
+    rm -f /etc/apt/sources.list.d/kubernetes.list 2>/dev/null || true
+    
     # 卸载软件包
     if command -v yum &>/dev/null; then
         log_info "使用yum卸载..."
         yum remove -y kubelet kubeadm kubectl 2>/dev/null || log_warn "yum卸载失败"
+        yum clean all 2>/dev/null || true
     elif command -v apt-get &>/dev/null; then
         log_info "使用apt卸载..."
         apt-get remove -y kubelet kubeadm kubectl 2>/dev/null || log_warn "apt卸载失败"
+        apt-get autoremove -y 2>/dev/null || true
     fi
     
     log_success "K8s软件包已卸载"

@@ -1,24 +1,52 @@
 ---
-# 默认StorageClass - 支持ReadWriteMany
+# =============================================================================
+# StorageClass - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: 定义存储类，支持不同访问模式和回收策略
+# 部署: kubectl apply -f storageclass.yaml
+# 验证: kubectl get storageclass
+# =============================================================================
+
+# =============================================================================
+# StorageClass 1: 默认NFS存储 (ReadWriteMany)
+# 用途: 多节点共享存储，如配置文件、共享数据
+# =============================================================================
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: nfs-client
   annotations:
+    # 设置为默认存储类 (不指定storageClass时使用)
     storageclass.kubernetes.io/is-default-class: "true"
   labels:
     app.kubernetes.io/name: nfs-client
     app.kubernetes.io/part-of: enterprise-cloud-native-platform
     app.kubernetes.io/managed-by: deploy-storage.sh
+# 动态供给器名称 (必须与NFS Provisioner的PROVISIONER_NAME匹配)
 provisioner: nfs-provisioner
+# 回收策略
+# Delete: 删除PVC时删除PV和底层数据 (默认)
+# Retain: 删除PVC时保留PV和数据 (需要手动清理)
 reclaimPolicy: Delete
+# 允许卷扩展 (PVC可以扩容)
 allowVolumeExpansion: true
+# 卷绑定模式
+# Immediate: 立即绑定 (默认)
+# WaitForFirstConsumer: 等待Pod调度后再绑定 (推荐，避免调度问题)
 volumeBindingMode: Immediate
 parameters:
+  # 删除PVC时归档数据 (而非直接删除)
   archiveOnDelete: "true"
+  # 目录命名规则
+  # ${.PVC.namespace}: PVC命名空间
+  # ${.PVC.name}: PVC名称
   pathPattern: "${.PVC.namespace}-${.PVC.name}"
+
 ---
-# 只读/归档StorageClass - 支持ReadWriteOnce
+# =============================================================================
+# StorageClass 2: 保留策略NFS存储 (ReadWriteOnce)
+# 用途: 需要保留数据的场景，如数据库、日志
+# =============================================================================
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
@@ -28,14 +56,20 @@ metadata:
     app.kubernetes.io/part-of: enterprise-cloud-native-platform
     app.kubernetes.io/managed-by: deploy-storage.sh
 provisioner: nfs-provisioner
+# 回收策略: 保留数据 (删除PVC后PV仍存在)
 reclaimPolicy: Retain
 allowVolumeExpansion: true
 volumeBindingMode: Immediate
 parameters:
+  # 不归档 (直接保留)
   archiveOnDelete: "false"
   pathPattern: "${.PVC.namespace}-${.PVC.name}"
+
 ---
-# 开发环境StorageClass - 保持策略
+# =============================================================================
+# StorageClass 3: 开发环境存储 (保留策略)
+# 用途: 开发/测试环境，数据需要长期保留
+# =============================================================================
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
@@ -45,9 +79,39 @@ metadata:
     app.kubernetes.io/part-of: enterprise-cloud-native-platform
     app.kubernetes.io/managed-by: deploy-storage.sh
 provisioner: nfs-provisioner
+# 回收策略: 保留数据
 reclaimPolicy: Retain
 allowVolumeExpansion: true
 volumeBindingMode: Immediate
 parameters:
+  # 归档数据
   archiveOnDelete: "true"
+  # 包含PV名称，便于数据追踪
   pathPattern: "${.PVC.namespace}-${.PVC.name}-${.PV.name}"
+
+# =============================================================================
+# StorageClass使用示例
+# =============================================================================
+# 在PVC中指定StorageClass:
+#
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: my-pvc
+#   namespace: production
+# spec:
+#   accessModes:
+#     - ReadWriteMany  # 或 ReadWriteOnce
+#   storageClassName: nfs-client  # 指定存储类
+#   resources:
+#     requests:
+#       storage: 10Gi
+#
+# 使用默认存储类 (不指定storageClassName):
+#   storageClassName: ""  # 或省略
+#
+# 查看PVC状态:
+#   kubectl get pvc -n production
+#   kubectl describe pvc my-pvc -n production
+#   kubectl get pv
+# =============================================================================

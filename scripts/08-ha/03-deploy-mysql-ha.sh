@@ -7,6 +7,9 @@
 
 set -euo pipefail
 
+# 错误处理
+trap 'log_error "MySQL HA部署脚本异常退出 (行号: $LINENO)"' ERR
+
 # 颜色输出
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -18,6 +21,27 @@ log_info()  { echo -e "${GREEN}[INFO]${NC} $(date '+%H:%M:%S') $*"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $(date '+%H:%M:%S') $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $(date '+%H:%M:%S') $*"; }
 log_step()  { echo -e "${CYAN}[STEP]${NC} $(date '+%H:%M:%S') $*"; }
+
+# ==================== 用法说明 ====================
+usage() {
+    cat << EOF
+用法: $(basename "$0") [options]
+
+功能: 部署MySQL主从复制，支持半同步和GTID模式
+
+环境变量:
+  MASTER_HOST    主节点IP（默认: 192.168.100.10）
+  SLAVE_HOST     从节点IP（默认: 192.168.100.11）
+  REPL_USER      复制用户（默认: repl_user）
+  REPL_PASS      复制密码（默认: repl_pass_2024）
+  ROOT_PASS      root密码（默认: root_pass_2024）
+  NODE_ROLE      节点角色（默认: auto）
+
+示例:
+  NODE_ROLE=master $(basename "$0")
+  NODE_ROLE=slave $(basename "$0")
+EOF
+}
 
 # ==================== 配置变量 ====================
 MYSQL_VERSION="${MYSQL_VERSION:-8.0}"
@@ -40,6 +64,10 @@ MONITOR_PASS="${MONITOR_PASS:-monitor_pass}"
 # 节点角色检测
 NODE_ROLE="${NODE_ROLE:-auto}"
 
+# ==================== 节点角色检测 ====================
+# 功能: 根据环境变量、主机名或IP自动判断master/slave角色
+# 参数: 无
+# 返回: "master" 或 "slave"
 detect_role() {
     if [[ "$NODE_ROLE" != "auto" ]]; then
         echo "$NODE_ROLE"
@@ -59,6 +87,10 @@ detect_role() {
 }
 
 # ==================== 安装MySQL ====================
+# ==================== 安装MySQL ====================
+# 功能: 检测并安装MySQL 8.0
+# 支持: CentOS/RHEL (yum), Debian/Ubuntu (apt)
+# 返回: 无（失败则exit 1）
 install_mysql() {
     log_step "[1/6] 安装MySQL ${MYSQL_VERSION}..."
 
@@ -389,6 +421,10 @@ CONF
 }
 
 # ==================== 初始化MySQL ====================
+# ==================== 初始化MySQL ====================
+# 功能: 初始化MySQL数据目录（--initialize-insecure）
+# 前置条件: MySQL已安装，数据目录不存在
+# 返回: 无（失败则exit 1）
 initialize_mysql() {
     log_step "[3/6] 初始化MySQL..."
 
@@ -409,6 +445,10 @@ initialize_mysql() {
 }
 
 # ==================== 创建复制用户 ====================
+# ==================== 创建复制用户 ====================
+# 功能: 在主节点创建复制用户和监控用户
+# 仅主节点执行
+# 返回: 无
 create_repl_user() {
     local role=$1
     log_step "[4/6] 创建复制用户..."
@@ -435,6 +475,10 @@ SQL
 }
 
 # ==================== 配置主从复制 ====================
+# ==================== 配置主从复制 ====================
+# 功能: 在从节点配置GTID自动定位的主从复制
+# 仅从节点执行
+# 返回: 无
 configure_replication() {
     local role=$1
     log_step "[5/6] 配置主从复制..."
@@ -475,6 +519,9 @@ SQL
 }
 
 # ==================== 启动MySQL ====================
+# ==================== 启动MySQL ====================
+# 功能: 启动MySQL服务并验证端口监听
+# 返回: 无（失败则exit 1）
 start_mysql() {
     local role=$1
     log_step "[6/6] 启动MySQL..."

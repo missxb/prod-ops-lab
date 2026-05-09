@@ -7,6 +7,9 @@
 
 set -euo pipefail
 
+# 错误处理
+trap 'log_error "Keepalived部署脚本异常退出 (行号: $LINENO)"' ERR
+
 # 颜色输出
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -18,6 +21,28 @@ log_info()  { echo -e "${GREEN}[INFO]${NC} $(date '+%H:%M:%S') $*"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $(date '+%H:%M:%S') $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $(date '+%H:%M:%S') $*"; }
 log_step()  { echo -e "${CYAN}[STEP]${NC} $(date '+%H:%M:%S') $*"; }
+
+# ==================== 用法说明 ====================
+usage() {
+    cat << EOF
+用法: $(basename "$0") [options]
+
+功能: 安装配置Keepalived，实现VIP漂移和健康检查
+
+环境变量:
+  VIP_ADDRESS          VIP地址（默认: 192.168.100.100）
+  VIP_NETMASK          VIP子网掩码（默认: 255.255.255.0）
+  VIP_INTERFACE        绑定接口（默认: eth0）
+  ROUTER_ID            路由ID（默认: 51）
+  VRRP_AUTH_PASS       认证密码（默认: ha_secret_2024）
+  PREEMPT_MODE         抢占模式（默认: nopreempt）
+  PRIORITY_START       优先级起始值（默认: 101）
+
+示例:
+  VIP_ADDRESS=10.0.0.100 $(basename "$0")
+  ./$(basename "$0")
+EOF
+}
 
 # ==================== 配置变量 ====================
 KEEPALIVED_VERSION="2.2.8"
@@ -36,6 +61,10 @@ PRIORITY_START="${PRIORITY_START:-101}"
 PREEMPT_MODE="${PREEMPT_MODE:-nopreempt}"
 
 # ==================== 安装Keepalived ====================
+# ==================== 安装Keepalived ====================
+# 功能: 检测并安装Keepalived软件包
+# 支持: CentOS/RHEL (yum), Debian/Ubuntu (apt)
+# 返回: 无（失败则exit 1）
 install_keepalived() {
     log_step "[1/4] 安装Keepalived..."
 
@@ -60,6 +89,10 @@ install_keepalived() {
 }
 
 # ==================== 创建健康检查脚本 ====================
+# ==================== 创建健康检查脚本 ====================
+# 功能: 生成Nginx和MySQL健康检查脚本、VIP故障转移通知脚本
+# 脚本路径: /etc/keepalived/scripts/
+# 返回: 无
 create_health_check_script() {
     log_step "[2/4] 创建健康检查脚本..."
 
@@ -185,6 +218,10 @@ SCRIPT
 }
 
 # ==================== 生成Keepalived配置 ====================
+# ==================== 生成Keepalived配置 ====================
+# 功能: 根据节点角色生成keepalived.conf配置文件
+# 配置: /etc/keepalived/keepalived.conf
+# 参数: 无（自动检测节点角色）
 generate_config() {
     log_step "[3/4] 生成Keepalived配置..."
 
@@ -396,6 +433,9 @@ CONF
 }
 
 # ==================== 启动Keepalived ====================
+# ==================== 启动Keepalived ====================
+# 功能: 配置防火墙规则、启动Keepalived服务、验证VIP
+# 验证: 检查服务状态和VIP地址
 start_keepalived() {
     log_step "[4/4] 启动Keepalived..."
 
@@ -438,6 +478,9 @@ start_keepalived() {
 }
 
 # ==================== 主流程 ====================
+# ==================== 主流程 ====================
+# 功能: 顺序执行安装、脚本创建、配置生成、启动
+# 用法: ./01-deploy-keepalived.sh
 main() {
     log_step "========== 部署Keepalived =========="
     install_keepalived

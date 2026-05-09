@@ -2,6 +2,26 @@
 #==============================================================================
 # 02-deploy-jenkins.sh - Deploy Jenkins with Helm
 # Enterprise Cloud Native Platform - Phase 4
+#
+# Description:
+#   Deploys Jenkins CI server using Helm chart with Kubernetes plugin support,
+#   RBAC configuration, GitLab/Harbor credentials, and shared pipeline library.
+#
+# Usage:
+#   ./02-deploy-jenkins.sh [deploy|verify|credentials|delete]
+#
+#   deploy      - Full Jenkins deployment (default)
+#   verify      - Verify Jenkins is running
+#   credentials - Show Jenkins login credentials
+#   delete      - Remove Jenkins deployment
+#
+# Environment Variables:
+#   DOMAIN  - Base domain for Jenkins (default: example.com)
+#
+# Examples:
+#   ./02-deploy-jenkins.sh
+#   DOMAIN=corp.example.com ./02-deploy-jenkins.sh deploy
+#   ./02-deploy-jenkins.sh credentials
 #==============================================================================
 set -euo pipefail
 
@@ -28,16 +48,23 @@ log_info()  { echo -e "${GREEN}${LOG_PREFIX} [INFO] $(date '+%H:%M:%S') $*${NC}"
 log_warn()  { echo -e "${YELLOW}${LOG_PREFIX} [WARN] $(date '+%H:%M:%S') $*${NC}"; }
 log_error() { echo -e "${RED}${LOG_PREFIX} [ERROR] $(date '+%H:%M:%S') $*${NC}"; }
 
-# Check prerequisites
+# check_prereqs - 检查必需工具和 Helm 仓库
 check_prereqs() {
     log_info "Checking prerequisites..."
     
     for cmd in kubectl helm; do
         if ! command -v "${cmd}" &>/dev/null; then
             log_error "Required command not found: ${cmd}"
+            log_error "Please install ${cmd} before running this script"
             exit 1
         fi
     done
+    
+    # 验证 Kubernetes 集群连接
+    if ! kubectl cluster-info &>/dev/null; then
+        log_error "Cannot connect to Kubernetes cluster"
+        exit 1
+    fi
     
     if ! helm repo list 2>/dev/null | grep -q jenkins; then
         log_info "Adding Jenkins Helm repository..."
@@ -48,7 +75,7 @@ check_prereqs() {
     log_info "Prerequisites satisfied"
 }
 
-# Create namespaces
+# create_namespaces - 创建 Jenkins 和 Jenkins Agents 命名空间
 create_namespaces() {
     log_info "Creating namespaces..."
     
@@ -67,10 +94,19 @@ create_namespaces() {
         environment=production \
         --overwrite
     
-    log_info "Namespaces created"
+    # 验证命名空间
+    for ns in "${NAMESPACE}" "${NAMESPACE_AGENTS}"; do
+        if kubectl get namespace "${ns}" &>/dev/null; then
+            log_info "Namespace ${ns} verified"
+        else
+            log_error "Failed to create namespace ${ns}"
+            exit 1
+        fi
+    done
 }
 
-# Create service account and RBAC for Kubernetes plugin
+# create_rbac - 创建 Jenkins Kubernetes 插件所需的 RBAC 权限
+# 包括 ServiceAccount, Role, RoleBinding, ClusterRole, ClusterRoleBinding
 create_rbac() {
     log_info "Creating RBAC for Jenkins Kubernetes plugin..."
     
@@ -153,18 +189,27 @@ EOF
     log_info "RBAC created"
 }
 
-# Create gitlab credentials secret
+# create_credentials - 创建 Jenkins 所需的凭据 Secrets
+# 包括 GitLab 凭据、Harbor Docker Registry 凭据、Docker Config
 create_credentials() {
     log_info "Creating credential secrets..."
     
-    # GitLab credential for Jenkins
+    # GitLab 凭据
+    local gitlab_password
+    gitlab_password=$(openssl rand -base64 24 | tr -d '=+/' || true)
+    if [[ -z "${gitlab_password}" ]]; then
+        log_error "Failed to generate GitLab deployer password"
+        exit 1
+    fi
+    
     kubectl create secret generic jenkins-gitlab-credentials \
         --from-literal=username="gitlab-deployer" \
-        --from-literal=password="$(openssl rand -base64 24 | tr -d '=+/')" \
+        --from-literal=password="${gitlab_password}" \
         -n "${NAMESPACE}" \
         --dry-run=client -o yaml | kubectl apply -f -
+    log_info "GitLab credentials secret created"
     
-    # Docker registry credential for Harbor
+    # Harbor Docker Registry 凭据
     kubectl create secret docker-registry jenkins-harbor-credentials \
         --docker-server="harbor.${DOMAIN}" \
         --docker-username="admin" \
@@ -172,46 +217,70 @@ create_credentials() {
         --docker-email="admin@${DOMAIN}" \
         -n "${NAMESPACE}" \
         --dry-run=client -o yaml | kubectl apply -f -
+    log_info "Harbor registry credentials secret created"
     
-    # Docker config for image pulls
+    # Docker config (用于镜像拉取)
     kubectl create secret generic jenkins-docker-config \
         --from-file=config.json=/dev/null \
         -n "${NAMESPACE}" \
-        --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
+        --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || \
+        log_warn "Docker config secret may already exist"
     
-    log_info "Credentials created"
+    # 验证 Secrets 创建成功
+    local secret_count
+    secret_count=$(kubectl get secrets -n "${NAMESPACE}" --no-headers 2>/dev/null | wc -l)
+    log_info "Credentials created (${secret_count} secrets in namespace)"
 }
 
-# Deploy Jenkins
+# deploy_jenkins - 使用 Helm 安装/升级 Jenkins
+# 使用 --atomic 标志确保部署失败时自动回滚
 deploy_jenkins() {
     log_info "Deploying Jenkins..."
     
-    helm upgrade --install "${RELEASE_NAME}" jenkins/jenkins \
+    # 验证 values 文件存在
+    if [[ ! -f "${VALUES_FILE}" ]]; then
+        log_error "Values file not found: ${VALUES_FILE}"
+        log_error "Please create the values file before deploying"
+        exit 1
+    fi
+    
+    local admin_password
+    admin_password=$(openssl rand -base64 16 | tr -d '=+/' || true)
+    
+    if helm upgrade --install "${RELEASE_NAME}" jenkins/jenkins \
         --namespace "${NAMESPACE}" \
         --values "${VALUES_FILE}" \
         --set controller.ingress.hostName="jenkins.${DOMAIN}" \
         --set controller.ingress.tls[0].hosts[0]="jenkins.${DOMAIN}" \
-        --set controller.admin.password="$(openssl rand -base64 16 | tr -d '=+/')" \
+        --set controller.admin.password="${admin_password}" \
         --timeout 10m \
         --wait \
-        --atomic
-    
-    log_info "Jenkins Helm release deployed"
+        --atomic; then
+        log_info "Jenkins Helm release deployed"
+    else
+        log_error "Jenkins Helm release deployment failed"
+        log_error "Check 'helm history ${RELEASE_NAME} -n ${NAMESPACE}' for details"
+        exit 1
+    fi
 }
 
-# Wait for readiness
+# wait_for_ready - 等待 Jenkins Pod 就绪
 wait_for_ready() {
     log_info "Waiting for Jenkins to be ready..."
     
-    kubectl wait --for=condition=ready pod \
+    if kubectl wait --for=condition=ready pod \
         -l app.kubernetes.io/name=jenkins \
         -n "${NAMESPACE}" \
-        --timeout=600s
-    
-    log_info "Jenkins is ready"
+        --timeout=600s 2>/dev/null; then
+        log_info "Jenkins is ready"
+    else
+        log_warn "Timeout waiting for Jenkins to become ready"
+        log_warn "Check 'kubectl get pods -n ${NAMESPACE}' for pod status"
+    fi
 }
 
-# Configure pipeline library
+# setup_pipeline_library - 配置 Jenkins 共享 Pipeline 库
+# 提供 buildAndPushImage, trivyScan, deployToK8s, notifySlack 等通用步骤
 setup_pipeline_library() {
     log_info "Setting up shared pipeline library..."
     
@@ -337,12 +406,23 @@ EOF
     log_info "Shared pipeline library configured"
 }
 
-# Verify deployment
+# verify_deployment - 验证 Jenkins 部署状态
+# 检查 Pod、Service、PVC、Ingress 和 Agent 命名空间
 verify_deployment() {
     log_info "Verifying Jenkins deployment..."
     
+    local issues=0
+    
+    # 检查 Jenkins Pod 状态
     log_info "--- Pods ---"
     kubectl get pods -n "${NAMESPACE}" -o wide
+    
+    local not_running
+    not_running=$(kubectl get pods -n "${NAMESPACE}" --no-headers 2>/dev/null | grep -cv "Running\|Completed" || true)
+    if [[ "${not_running}" -gt 0 ]]; then
+        log_warn "${not_running} pods are not in Running state"
+        ((issues++))
+    fi
     
     log_info "--- Services ---"
     kubectl get svc -n "${NAMESPACE}" -o wide
@@ -354,9 +434,21 @@ verify_deployment() {
     kubectl get ingress -n "${NAMESPACE}" -o wide
     
     log_info "--- Agent Namespace ---"
-    kubectl get all -n "${NAMESPACE_AGENTS}" 2>/dev/null || true
+    kubectl get all -n "${NAMESPACE_AGENTS}" 2>/dev/null || log_info "No resources in agent namespace yet"
     
-    log_info "Verification complete"
+    # 验证 RBAC 是否存在
+    log_info "--- RBAC ---"
+    if kubectl get serviceaccount jenkins-agent -n "${NAMESPACE_AGENTS}" &>/dev/null; then
+        log_info "Jenkins agent ServiceAccount verified"
+    else
+        log_warn "Jenkins agent ServiceAccount not found"
+    fi
+    
+    if [[ "${issues}" -eq 0 ]]; then
+        log_info "Verification complete - no issues detected"
+    else
+        log_warn "Verification complete - ${issues} issues detected"
+    fi
 }
 
 # Print credentials

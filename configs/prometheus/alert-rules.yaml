@@ -1,3 +1,11 @@
+# =============================================================================
+# Prometheus Alert Rules - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: 企业级告警规则，覆盖节点、K8s、应用、存储、网络五大维度
+# 部署: kubectl apply -f alert-rules.yaml
+# 验证: kubectl get prometheusrule -n monitoring
+# =============================================================================
+
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -7,11 +15,17 @@ metadata:
     prometheus: kube-prometheus
     role: alert-rules
     release: kube-prometheus-stack
+    app.kubernetes.io/name: alert-rules
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
 spec:
   groups:
-    ## 节点宕机告警
+    # =========================================================================
+    # 节点告警规则
+    # 监控物理机/虚拟机的健康状态
+    # =========================================================================
     - name: node.rules
       rules:
+        # 节点宕机 (最严重)
         - alert: NodeDown
           expr: up{job="node-exporter"} == 0
           for: 2m
@@ -20,7 +34,9 @@ spec:
           annotations:
             summary: "节点 {{ $labels.instance }} 宕机"
             description: "节点 {{ $labels.instance }} 已超过2分钟不可达，请立即检查"
+            # runbook_url: "https://wiki.internal/runbook/node-down"
 
+        # CPU使用率过高
         - alert: NodeHighCPU
           expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
           for: 5m
@@ -28,8 +44,9 @@ spec:
             severity: warning
           annotations:
             summary: "节点 {{ $labels.instance }} CPU 使用率过高"
-            description: "CPU 使用率超过 85%，当前值: {{ $value }}%"
+            description: "节点 {{ $labels.instance }} CPU 使用率超过 85%，当前值: {{ $value }}%"
 
+        # 内存使用率过高
         - alert: NodeHighMemory
           expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 85
           for: 5m
@@ -37,8 +54,9 @@ spec:
             severity: warning
           annotations:
             summary: "节点 {{ $labels.instance }} 内存使用率过高"
-            description: "内存使用率超过 85%，当前值: {{ $value }}%"
+            description: "节点 {{ $labels.instance }} 内存使用率超过 85%，当前值: {{ $value }}%"
 
+        # 磁盘使用率过高 (预警)
         - alert: NodeDiskSpaceHigh
           expr: (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes) * 100 > 85
           for: 5m
@@ -48,6 +66,7 @@ spec:
             summary: "节点 {{ $labels.instance }} 磁盘使用率过高"
             description: "磁盘 {{ $labels.mountpoint }} 使用率超过 85%，当前值: {{ $value }}%"
 
+        # 磁盘即将耗尽 (紧急)
         - alert: NodeDiskSpaceCritical
           expr: (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes) * 100 > 95
           for: 2m
@@ -57,9 +76,13 @@ spec:
             summary: "节点 {{ $labels.instance }} 磁盘即将耗尽"
             description: "磁盘 {{ $labels.mountpoint }} 使用率超过 95%，当前值: {{ $value }}%"
 
-    ## Pod 告警
+    # =========================================================================
+    # Pod告警规则
+    # 监控容器运行状态
+    # =========================================================================
     - name: pod.rules
       rules:
+        # Pod频繁重启
         - alert: PodCrashLooping
           expr: rate(kube_pod_container_status_restarts_total[15m]) * 60 * 5 > 0
           for: 5m
@@ -69,6 +92,7 @@ spec:
             summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} 频繁重启"
             description: "Pod 在过去15分钟内重启次数过多"
 
+        # Pod CPU使用率过高
         - alert: PodHighCPU
           expr: sum(rate(container_cpu_usage_seconds_total{container!=""}[5m])) by (namespace, pod) * 100 > 80
           for: 5m
@@ -78,6 +102,7 @@ spec:
             summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} CPU 过高"
             description: "Pod CPU 使用率超过 80%，当前值: {{ $value }}%"
 
+        # Pod内存使用率过高
         - alert: PodHighMemory
           expr: container_memory_working_set_bytes{container!=""} / container_spec_memory_limit_bytes * 100 > 85
           for: 5m
@@ -87,6 +112,7 @@ spec:
             summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} 内存过高"
             description: "Pod 内存使用率超过 85%，当前值: {{ $value }}%"
 
+        # Pod长时间未就绪
         - alert: PodNotReady
           expr: kube_pod_status_ready{condition="true"} == 0
           for: 10m
@@ -95,9 +121,13 @@ spec:
           annotations:
             summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} 长时间未就绪"
 
-    ## Deployment 告警
+    # =========================================================================
+    # Deployment告警规则
+    # 监控部署状态
+    # =========================================================================
     - name: deployment.rules
       rules:
+        # 副本数不匹配
         - alert: DeploymentReplicasMismatch
           expr: kube_deployment_spec_replicas != kube_deployment_status_available_replicas
           for: 15m
@@ -106,9 +136,13 @@ spec:
           annotations:
             summary: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} 副本数不匹配"
 
-    ## 集群告警
+    # =========================================================================
+    # 集群告警规则
+    # 监控K8s核心组件
+    # =========================================================================
     - name: cluster.rules
       rules:
+        # API Server不可达 (最严重)
         - alert: KubeAPIServerDown
           expr: absent(up{job="apiserver"} == 1)
           for: 5m
@@ -117,6 +151,7 @@ spec:
           annotations:
             summary: "Kubernetes API Server 不可达"
 
+        # 节点NotReady
         - alert: KubeNodeNotReady
           expr: kube_node_status_condition{condition="Ready",status="true"} == 0
           for: 5m
@@ -125,6 +160,7 @@ spec:
           annotations:
             summary: "节点 {{ $labels.node }} NotReady"
 
+        # PVC使用率过高
         - alert: PVCUsageHigh
           expr: kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes * 100 > 85
           for: 5m
@@ -132,3 +168,27 @@ spec:
             severity: warning
           annotations:
             summary: "PVC {{ $labels.persistentvolumeclaim }} 使用率过高"
+
+# =============================================================================
+# 告警规则验证
+# =============================================================================
+# 查看所有告警规则:
+#   kubectl get prometheusrule --all-namespaces
+#
+# 查看规则详情:
+#   kubectl describe prometheusrule enterprise-alert-rules -n monitoring
+#
+# 在Prometheus中测试告警:
+#   kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090
+#   访问 http://localhost:9090/alerts
+#
+# 手动触发告警测试:
+#   curl -X POST http://localhost:9090/api/v1/alerts -d '[{"labels":{"alertname":"TestAlert","severity":"warning"}}]'
+#
+# 查看当前告警:
+#   kubectl exec -it -n monitoring alertmanager-0 -- amtool alert query
+#
+# 静默告警 (维护窗口):
+#   kubectl exec -it -n monitoring alertmanager-0 -- amtool silence add \
+#     --alertname=NodeDown --duration=1h --comment="维护窗口"
+# =============================================================================

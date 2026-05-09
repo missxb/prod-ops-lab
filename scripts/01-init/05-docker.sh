@@ -5,8 +5,27 @@
 # 适用系统: CentOS 7/8, Rocky Linux 8/9
 # 依赖条件: root权限, 网络连接
 # 作者: 运维平台团队
-# 版本: 1.0.0
+# 版本: 1.1.0
 # 创建日期: 2026-05-09
+# 更新日期: 2026-05-09
+#
+# 使用方法:
+#   ./05-docker.sh                                    # 使用默认配置
+#   DOCKER_VERSION=25.0 ./05-docker.sh               # 指定Docker版本
+#   DOCKER_DATA_ROOT=/data/docker ./05-docker.sh     # 自定义数据目录
+#
+# 功能说明:
+#   1. 清理旧版本Docker
+#   2. 安装Docker CE和containerd
+#   3. 配置Docker Daemon (镜像加速/日志/存储)
+#   4. 配置containerd (systemd cgroup)
+#   5. 启动并验证Docker服务
+#
+# Docker Daemon配置说明:
+#   - 存储驱动: overlay2 (推荐)
+#   - 日志驱动: json-file (限制大小)
+#   - 镜像加速: 腾讯云/阿里云/网易
+#   - Cgroup驱动: systemd (Kubernetes要求)
 ###############################################################################
 set -euo pipefail
 umask 077
@@ -82,6 +101,9 @@ detect_os() {
 }
 
 # ========================= Docker安装函数 =========================
+
+# 清理旧版本Docker
+# 移除可能冲突的旧包，确保安装环境干净
 remove_old_docker() {
     log_step "清理旧版本Docker"
 
@@ -108,6 +130,9 @@ remove_old_docker() {
     fi
 }
 
+# 安装Docker CE
+# 支持CentOS/RHEL/Rocky/AlmaLinux
+# 使用阿里云镜像加速下载
 install_docker() {
     log_step "安装Docker CE"
 
@@ -160,6 +185,9 @@ install_docker() {
     fi
 }
 
+# 配置Docker Daemon
+# 生成/etc/docker/daemon.json配置文件
+# 包括: 镜像加速、日志限制、存储配置、安全选项
 configure_docker() {
     log_step "配置Docker Daemon"
 
@@ -226,6 +254,9 @@ DOCKER_EOF
     log_success "Docker Daemon配置已更新"
 }
 
+# 配置containerd容器运行时
+# Kubernetes 1.24+推荐使用containerd
+# 关键配置: SystemdCgroup=true
 configure_containerd() {
     log_step "配置containerd"
 
@@ -258,6 +289,9 @@ configure_containerd() {
     log_success "containerd配置已更新"
 }
 
+# 启动Docker服务
+# 启动containerd和docker服务
+# 等待Docker daemon就绪
 start_docker() {
     log_step "启动Docker服务"
 
@@ -285,6 +319,8 @@ start_docker() {
     fi
 }
 
+# 验证Docker安装
+# 显示版本信息、运行hello-world测试、检查containerd状态
 verify_docker() {
     log_step "验证Docker安装"
 

@@ -1,11 +1,22 @@
-#===============================================================================
+# =============================================================================
 # Kubernetes RBAC - Readonly Configuration
-#===============================================================================
-# Read-only access for monitoring and audit purposes
-#===============================================================================
+# 项目: 企业级云原生运维平台
+# 功能: 只读角色配置，用于监控和审计
+# 部署: kubectl apply -f rbac-readonly.yaml
+# 验证: kubectl get clusterrole,clusterrolebinding,rolebinding --all-namespaces
+# =============================================================================
 
 ---
-# Readonly ClusterRole - Read-only access to most resources
+# =============================================================================
+# Readonly ClusterRole - 只读集群访问权限
+# 权限说明:
+#   - 只读访问核心资源 (get, list, watch)
+#   - 只读访问应用资源
+#   - 只读访问网络资源
+#   - 只读访问存储资源
+#   - 只读访问监控资源
+# 用途: 监控系统、审计系统、CI/CD只读用户
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -13,59 +24,106 @@ metadata:
   labels:
     app.kubernetes.io/name: rbac-readonly
     app.kubernetes.io/part-of: enterprise-cloud-native-platform
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: deploy-rbac.sh
 rules:
-# Read-only access to core resources
+# 只读访问核心资源
 - apiGroups: [""]
-  resources: ["pods", "pods/log", "pods/status", "services", "endpoints", "configmaps", "namespaces", "nodes", "nodes/status", "events", "persistentvolumes", "persistentvolumeclaims", "serviceaccounts", "secrets"]
+  resources:
+    - pods
+    - pods/log
+    - pods/status
+    - services
+    - endpoints
+    - configmaps
+    - namespaces
+    - nodes
+    - nodes/status
+    - events
+    - persistentvolumes
+    - persistentvolumeclaims
+    - serviceaccounts
+    - secrets  # 注意: 包含敏感信息，生产环境建议限制
   verbs: ["get", "list", "watch"]
 
-# Read-only access to apps resources
+# 只读访问应用资源
 - apiGroups: ["apps"]
-  resources: ["deployments", "replicasets", "statefulsets", "daemonsets", "controllerrevisions"]
+  resources:
+    - deployments
+    - replicasets
+    - statefulsets
+    - daemonsets
+    - controllerrevisions
   verbs: ["get", "list", "watch"]
 
-# Read-only access to batch resources
+# 只读访问批量资源
 - apiGroups: ["batch"]
-  resources: ["jobs", "cronjobs"]
+  resources:
+    - jobs
+    - cronjobs
   verbs: ["get", "list", "watch"]
 
-# Read-only access to networking resources
+# 只读访问网络资源
 - apiGroups: ["networking.k8s.io"]
-  resources: ["ingresses", "networkpolicies"]
+  resources:
+    - ingresses
+    - networkpolicies
   verbs: ["get", "list", "watch"]
 
-# Read-only access to RBAC resources
+# 只读访问RBAC资源
 - apiGroups: ["rbac.authorization.k8s.io"]
-  resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+  resources:
+    - roles
+    - rolebindings
+    - clusterroles
+    - clusterrolebindings
   verbs: ["get", "list", "watch"]
 
-# Read-only access to storage resources
+# 只读访问存储资源
 - apiGroups: ["storage.k8s.io"]
-  resources: ["storageclasses", "csinodes", "csidrivers"]
+  resources:
+    - storageclasses
+    - csinodes
+    - csidrivers
   verbs: ["get", "list", "watch"]
 
-# Read-only access to policy resources
+# 只读访问策略资源
 - apiGroups: ["policy"]
-  resources: ["poddisruptionbudgets", "podsecuritypolicies"]
+  resources:
+    - poddisruptionbudgets
+    - podsecuritypolicies
   verbs: ["get", "list", "watch"]
 
-# Read-only access to resource quotas
+# 只读访问资源配额
 - apiGroups: [""]
-  resources: ["resourcequotas", "limitranges"]
+  resources:
+    - resourcequotas
+    - limitranges
   verbs: ["get", "list", "watch"]
 
-# Read-only access to certificates
+# 只读访问证书
 - apiGroups: ["cert-manager.io"]
-  resources: ["certificates", "certificaterequests", "issuers", "clusterissuers"]
+  resources:
+    - certificates
+    - certificaterequests
+    - issuers
+    - clusterissuers
   verbs: ["get", "list", "watch"]
 
-# Read-only access to monitoring resources
+# 只读访问监控资源
 - apiGroups: ["monitoring.coreos.com"]
-  resources: ["prometheuses", "servicemonitors", "podmonitors", "alertmanagers", "prometheusrules"]
+  resources:
+    - prometheuses
+    - servicemonitors
+    - podmonitors
+    - alertmanagers
+    - prometheusrules
   verbs: ["get", "list", "watch"]
 
 ---
-# Readonly ClusterRoleBinding
+# =============================================================================
+# Readonly ClusterRoleBinding - 集群级绑定
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -78,12 +136,15 @@ roleRef:
   kind: ClusterRole
   name: readonly
 subjects:
+# 绑定到只读用户组
 - kind: Group
   name: readonly-users
   apiGroup: rbac.authorization.k8s.io
 
 ---
-# Readonly RoleBinding for production namespace
+# =============================================================================
+# Readonly RoleBinding - production命名空间
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -101,7 +162,9 @@ subjects:
   apiGroup: rbac.authorization.k8s.io
 
 ---
-# Readonly RoleBinding for staging namespace
+# =============================================================================
+# Readonly RoleBinding - staging命名空间
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -119,7 +182,9 @@ subjects:
   apiGroup: rbac.authorization.k8s.io
 
 ---
-# Readonly RoleBinding for development namespace
+# =============================================================================
+# Readonly RoleBinding - development命名空间
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -137,7 +202,9 @@ subjects:
   apiGroup: rbac.authorization.k8s.io
 
 ---
-# Readonly RoleBinding for monitoring namespace
+# =============================================================================
+# Readonly RoleBinding - monitoring命名空间
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -155,7 +222,9 @@ subjects:
   apiGroup: rbac.authorization.k8s.io
 
 ---
-# Readonly RoleBinding for logging namespace
+# =============================================================================
+# Readonly RoleBinding - logging命名空间
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -173,7 +242,9 @@ subjects:
   apiGroup: rbac.authorization.k8s.io
 
 ---
-# Readonly RoleBinding for security namespace
+# =============================================================================
+# Readonly RoleBinding - security命名空间
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -189,3 +260,29 @@ subjects:
 - kind: Group
   name: readonly-users
   apiGroup: rbac.authorization.k8s.io
+
+# =============================================================================
+# Readonly RBAC使用说明
+# =============================================================================
+# 1. 创建只读用户组:
+#    kubectl create group readonly-users
+#
+# 2. 添加用户:
+#    # OIDC用户自动获得组成员身份
+#    # 或手动添加:
+#    kubectl create rolebinding readonly-user \
+#      --clusterrole=readonly \
+#      --user=readonly@example.com \
+#      -n production
+#
+# 3. 验证权限:
+#    # 以readonly用户执行:
+#    kubectl auth can-i list pods -n production       # 应返回yes
+#    kubectl auth can-i create deployments -n production  # 应返回no
+#    kubectl auth can-i delete pods -n production     # 应返回no
+#
+# 4. 安全注意事项:
+#    - secrets资源包含敏感信息，生产环境建议排除
+#    - 定期审计访问日志
+#    - 使用OIDC/LDAP管理用户身份
+# =============================================================================

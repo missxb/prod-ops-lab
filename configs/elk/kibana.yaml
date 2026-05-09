@@ -1,68 +1,161 @@
 # =============================================================================
-# Kibana 可视化平台配置
-# 企业级云原生运维平台 - 日志系统
+# Kibana 可视化平台配置 - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: Kibana仪表盘配置，支持日志可视化和分析
+# 版本: Kibana 8.x
+# 部署: kubectl apply -f kibana.yaml
+# 验证: curl -k http://localhost:5601/api/status
 # =============================================================================
 
-# ===== 服务器配置 =====
+# =============================================================================
+# 服务器配置
+# =============================================================================
+# 服务名称
 server.name: kibana
+# 绑定地址
+# 0.0.0.0: 监听所有接口 (允许远程访问)
+# 127.0.0.1: 仅本地访问
 server.host: "0.0.0.0"
+# 服务端口
 server.port: 5601
-server.publicBaseUrl: ""
+# 公共基础URL (用于反向代理)
+# 如果通过反向代理访问，需要设置
+# server.publicBaseUrl: "https://kibana.example.com"
 
-# ===== Elasticsearch 连接 =====
+# =============================================================================
+# Elasticsearch 连接配置
+# =============================================================================
+# Elasticsearch地址 (支持多个节点)
 elasticsearch.hosts: ["http://elasticsearch.logging.svc.cluster.local:9200"]
+# Elasticsearch用户名
 elasticsearch.username: "elastic"
+# Elasticsearch密码 (使用环境变量)
 elasticsearch.password: "${ELASTICSEARCH_PASSWORD}"
+# SSL验证模式
+# none: 不验证 (开发环境)
+# certificate: 验证证书
+# full: 验证证书和主机名
 elasticsearch.ssl.verificationMode: none
 
-# ===== 监控配置 =====
+# =============================================================================
+# 监控配置
+# =============================================================================
+# 容器监控
 monitoring.ui.container.elasticsearch.enabled: true
+# 启用监控界面
 monitoring.ui.enabled: true
 
-# ===== 日志配置 =====
+# =============================================================================
+# 日志配置
+# =============================================================================
+# 日志级别
+# error: 仅错误
+# warn: 警告
+# info: 一般信息 (推荐)
+# debug: 调试信息
 logging.root.level: info
+# 日志文件配置
 logging.appenders.file.type: file
 logging.appenders.file.fileName: /usr/share/kibana/logs/kibana.log
 logging.appenders.file.layout.type: json
 
-# ===== 性能优化 =====
+# =============================================================================
+# 性能优化
+# =============================================================================
+# 健康检查间隔 (毫秒)
 ops.interval: 30000
+# 国际化配置
 i18n.locale: "zh-CN"
 i18n.fallbackLocale: "en"
 
-# ===== 仪表板配置 =====
+# =============================================================================
+# 仪表板配置
+# =============================================================================
+# 允许嵌入式仪表板
 dashboard.allowByValueEmbeddables: true
+# 发现页面默认显示条数
 discover:sampleSize: 500
+# 查询语言 (kuery/lucene)
 search:queryLanguage: kuery
+# CSV导出配置
 csv:separator: ","
 csv:quoteValues: true
 
-# ===== 安全配置 =====
+# =============================================================================
+# 安全配置
+# =============================================================================
+# 启用安全功能 (生产环境必须!)
+# xpack.security.enabled: true
+# xpack.security.session.idleTimeout: "30m"
+# xpack.security.session.lifespan: "24h"
+# 禁用安全 (仅用于开发/测试)
 xpack.security.enabled: false
+# 加密密钥 (生产环境必须生成随机密钥!)
+# 生成命令: openssl rand -hex 32
 xpack.encryptedSavedObjects.encryptionKey: "encryption-key-for-saved-objects"
 xpack.reporting.encryptionKey: "encryption-key-for-reporting"
 xpack.security.encryptionKey: "encryption-key-for-security"
 
-# ===== 功能配置 =====
-# 允许所有功能
+# =============================================================================
+# 功能配置
+# =============================================================================
+# 会话超时配置
 xpack.security.session.idleTimeout: "1h"
 xpack.security.session.lifespan: "24h"
 
-# ===== 快照配置 =====
+# =============================================================================
+# 快照配置
+# =============================================================================
+# 快照恢复功能
 xpack.snapshotRestore.enabled: false
 
-# ===== 告警配置 =====
+# =============================================================================
+# 告警配置
+# =============================================================================
+# 允许的告警主机
 xpack.actions.allowedHosts: ["*"]
+# 启用告警功能
 xpack.alerting.enabled: true
+# 启用事件日志
 xpack.eventLog.enabled: true
+# 启用监控
 xpack.monitoring.enabled: true
 
-# ===== API 配置 =====
+# =============================================================================
+# API 配置
+# =============================================================================
+# 控制台功能
 console.enabled: true
+# API功能
 api.enabled: true
 
-# ===== 默认索引模式 =====
+# =============================================================================
+# 默认配置
+# =============================================================================
+# 默认索引模式
 defaultIndex: "kubernetes-*"
-
-# ===== 时间字段 =====
+# 时间字段
 timeFieldName: "@timestamp"
+
+# =============================================================================
+# Kibana部署验证
+# =============================================================================
+# 查看状态:
+#   curl -k http://localhost:5601/api/status
+#
+# 创建索引模式:
+#   curl -X POST "http://localhost:5601/api/saved_objects/index-pattern/kubernetes-*" \
+#     -H 'kbn-xsrf: true' \
+#     -H 'Content-Type: application/json' \
+#     -d '{"attributes": {"title": "kubernetes-*", "timeFieldName": "@timestamp"}}'
+#
+# 导入仪表板:
+#   curl -X POST "http://localhost:5601/api/saved_objects/dashboard/xxx" \
+#     -H 'kbn-xsrf: true' \
+#     -H 'Content-Type: application/json' \
+#     -d @dashboard.json
+#
+# 访问地址:
+#   http://<kibana-ip>:5601
+#   默认账号: elastic (密码在ES配置中)
+# =============================================================================

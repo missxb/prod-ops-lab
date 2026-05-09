@@ -1,88 +1,194 @@
 ###############################################################################
-# calico.yaml - Calico 网络插件配置
-# Calico v3.26.x 使用 Operator 安装模式
-# 此文件包含 Calico Installation CR 和 FelixConfiguration
-# deploy-kubeadm.sh 会替换 __POD_CIDR__ 占位符
+# Calico 网络插件配置 - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: Calico CNI网络插件，支持NetworkPolicy和IP分配
+# 版本: Calico v3.26.x (Operator安装模式)
+# 前提: 已安装Tigera Operator
+# 部署: kubectl apply -f calico.yaml
+# 验证: kubectl get pods -n calico-system
 ###############################################################################
 
----
-# Calico Installation CR - 通过 Tigera Operator 管理
+# =============================================================================
+# Installation CR - Calico安装配置
+# 通过Tigera Operator管理Calico安装和配置
+# =============================================================================
 apiVersion: operator.tigera.io/v1
 kind: Installation
 metadata:
   name: default
 spec:
-  # 镜像仓库配置
+  # =========================================================================
+  # 镜像配置
+  # =========================================================================
+  # 镜像仓库 (国内镜像可加速)
   registry: quay.io
+  # Calico变体
+  # Calico: 标准Calico
+  # CalicoEnterprise: 企业版 (需要许可证)
   variant: Calico
 
+  # =========================================================================
   # 节点配置
+  # =========================================================================
+  # 控制平面副本数 (单节点=1，多节点HA=3)
   controlPlaneReplicas: 1
+  # Node Exporter指标端口 (Prometheus监控)
   nodeMetricsPort: 9091
+  # Typha代理指标端口
   typhaMetricsPort: 9093
 
-  # Calico 网络配置
+  # =========================================================================
+  # 网络配置
+  # =========================================================================
   calicoNetwork:
     # IP池配置
     ipPools:
     - name: default-ipv4-ippool
-      blockSize: 26                    # /26 = 每节点64个IP
+      # 子网掩码 (每个节点分配的IP数量)
+      # /26 = 64个IP (适合中小集群)
+      # /24 = 256个IP (大集群或需要更多Pod)
+      # /27 = 32个IP (小型集群)
+      blockSize: 26
+      # Pod网络CIDR (必须与kubeadm-config.yaml的podSubnet一致)
       cidr: __POD_CIDR__
-      encapsulation: VXLANCrossSubnet  # 同子网无封装, 跨子网VXLAN
+      # 封装模式
+      # VXLANCrossSubnet: 同子网无封装，跨子网VXLAN (推荐)
+      # VXLAN: 始终VXLAN封装 (跨云/混合云)
+      # IPIP: IPIP封装 (性能好，但不支持跨云)
+      # None: 无封装 (纯路由模式)
+      encapsulation: VXLANCrossSubnet
+      # NAT出口 (Pod访问外网)
       natOutgoing: Enabled
+      # 节点选择器 (所有节点)
       nodeSelector: all()
 
+    # =========================================================================
     # 节点IP自动检测
+    # =========================================================================
+    # 自动检测节点IP的接口
+    # eth.*: 匹配所有ethernet接口
+    # 精确接口: eth0 或 ens192
     nodeAddressAutodetectionV4:
       interface: eth.*
 
-    # Linux dataplane (推荐)
+    # Linux数据平面
+    # Iptables: 传统模式 (兼容性好)
+    # eBPF: 高性能模式 (需要内核4.18+)
     linuxDataplane: Iptables
     multiInterfaceMode: None
 
-    # BGP配置 (可选, 需要支持BGP的环境)
+    # BGP配置 (可选，需要支持BGP的环境)
+    # 禁用: 简化部署
+    # 启用: 支持跨子网路由
     bgp: Disabled
 
-  # 可选: Calico Windows支持
+  # =========================================================================
+  # 可选: Windows支持
+  # =========================================================================
   # windowsDataplane: HNS
 
 ---
-# Felix配置 - Calico数据面配置
+# =============================================================================
+# FelixConfiguration - Calico数据平面配置
+# Felix是Calico的核心组件，负责Pod网络实现
+# =============================================================================
 apiVersion: projectcalico.org/v3
 kind: FelixConfiguration
 metadata:
   name: default
 spec:
-  # 使用iptables (默认)
+  # =========================================================================
+  # iptables后端
+  # =========================================================================
+  # Auto: 自动检测
+  # Legacy: 传统iptables
+  # Nftables: nftables (内核3.13+)
   iptablesBackend: Auto
 
-  # Wireguard加密 (可选)
+  # =========================================================================
+  # WireGuard加密 (可选)
+  # =========================================================================
+  # 启用: Pod间通信加密 (性能开销约5-10%)
+  # 禁用: 高性能 (推荐生产环境，依赖网络层加密)
   # wireguardEnabled: true
 
+  # =========================================================================
+  # 日志配置
+  # =========================================================================
   # 日志级别
+  # Trace: 最详细
+  # Debug: 调试信息
+  # Info: 一般信息 (推荐)
+  # Warn: 警告
+  # Error: 错误
   logSeverityScreen: Info
 
+  # =========================================================================
   # Prometheus指标
+  # =========================================================================
   prometheusMetricsEnabled: true
   prometheusMetricsPort: 9091
 
+  # =========================================================================
   # 连接追踪
+  # =========================================================================
+  # 连接追踪超时 (秒)
+  # 默认86400 (24小时)
   conntrackTimeoutSeconds: 86400
 
+  # =========================================================================
   # 健康检查
+  # =========================================================================
   healthEnabled: true
   healthPort: 9099
 
+  # =========================================================================
   # 默认动作
+  # =========================================================================
+  # Accept: 允许流量到主机 (默认)
+  # Drop: 拒绝流量到主机
   defaultEndpointToHostAction: Accept
 
-  # 允许跳过标签 (性能优化)
+  # =========================================================================
+  # 性能优化
+  # =========================================================================
+  # 移除外部路由 (减少路由表大小)
   removeExternalRoutes: true
 
 ---
-# APIServer配置 - 启用Calico API
+# =============================================================================
+# APIServer配置 - 启用Calico API (可选)
+# =============================================================================
 apiVersion: operator.tigera.io/v1
 kind: APIServer
 metadata:
   name: default
 spec: {}
+
+###############################################################################
+# Calico部署验证命令
+# =============================================================================
+# 查看Calico Pod:
+#   kubectl get pods -n calico-system
+#
+# 查看Calico节点状态:
+#   calicoctl node status
+#
+# 查看IP池:
+#   calicoctl ipam pool show
+#
+# 查看NetworkPolicy:
+#   kubectl get networkpolicy --all-namespaces
+#
+# 测试连通性:
+#   kubectl run test --image=busybox --rm -it -- wget -qO- --timeout=5 http://<service>
+#
+# 查看Calico日志:
+#   kubectl logs -n calico-system -l k8s-app=calico-node -f
+#
+# 禁用BGP (如需要):
+#   calicoctl patch felix default -p '{"spec": {"bgpEnabled": false}}'
+#
+# 启用WireGuard加密:
+#   calicoctl patch felix default -p '{"spec": {"wireguardEnabled": true}}'
+###############################################################################

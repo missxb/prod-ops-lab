@@ -1,11 +1,20 @@
-#===============================================================================
-# Kubernetes Network Policies
-#===============================================================================
-# Default deny all, then allow specific traffic patterns
-#===============================================================================
+# =============================================================================
+# Kubernetes Network Policies - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: 网络策略配置，实现Pod间网络隔离
+# 前提: 集群必须安装支持NetworkPolicy的CNI (Calico/Cilium/Weave)
+# 部署: kubectl apply -f network-policy.yaml
+# 验证: kubectl get networkpolicy -n production
+# =============================================================================
+
+# =============================================================================
+# Production命名空间 - 严格网络策略
+# 策略: 默认拒绝所有流量，只允许必要的通信
+# =============================================================================
 
 ---
-# Default deny all ingress traffic in all namespaces
+# 1. 默认拒绝所有入站流量
+# 生产环境必须启用，防止未授权访问
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -15,12 +24,14 @@ metadata:
     app.kubernetes.io/name: network-policy
     app.kubernetes.io/part-of: enterprise-cloud-native-platform
 spec:
+  # 空podSelector = 应用到所有Pod
   podSelector: {}
   policyTypes:
   - Ingress
 
 ---
-# Default deny all egress traffic in production
+# 2. 默认拒绝所有出站流量
+# 防止Pod主动外连，减少攻击面
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -35,7 +46,8 @@ spec:
   - Egress
 
 ---
-# Allow DNS traffic (required for service discovery)
+# 3. 允许DNS流量 (必须!)
+# 服务发现依赖DNS，所有Pod都需要DNS
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -49,6 +61,7 @@ spec:
   policyTypes:
   - Egress
   egress:
+  # 允许访问所有命名空间的DNS服务
   - to:
     - namespaceSelector: {}
     ports:
@@ -58,7 +71,8 @@ spec:
       port: 53
 
 ---
-# Allow ingress from ingress controller to web services
+# 4. 允许Ingress Controller访问Web服务
+# Nginx Ingress -> 应用Pod
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -74,6 +88,7 @@ spec:
   policyTypes:
   - Ingress
   ingress:
+  # 仅允许Ingress Controller命名空间的流量
   - from:
     - namespaceSelector:
         matchLabels:
@@ -85,7 +100,8 @@ spec:
       port: 443
 
 ---
-# Allow internal service communication
+# 5. 允许内部服务通信
+# 同命名空间内Pod可以互相访问
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -101,13 +117,14 @@ spec:
   - Egress
   ingress:
   - from:
-    - podSelector: {}
+    - podSelector: {}  # 允许同命名空间内所有Pod
   egress:
   - to:
-    - podSelector: {}
+    - podSelector: {}  # 允许访问同命名空间内所有Pod
 
 ---
-# Allow monitoring traffic
+# 6. 允许监控流量
+# Prometheus -> 应用Pod (采集指标)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -127,14 +144,15 @@ spec:
           name: monitoring
     ports:
     - protocol: TCP
-      port: 9090
+      port: 9090   # Prometheus
     - protocol: TCP
-      port: 9100
+      port: 9100   # Node Exporter
     - protocol: TCP
-      port: 8080
+      port: 8080   # 应用指标端口
 
 ---
-# Allow database access from application tier only
+# 7. 允许数据库访问 (仅应用层)
+# 应用Pod -> 数据库Pod
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -150,20 +168,22 @@ spec:
   policyTypes:
   - Ingress
   ingress:
+  # 仅允许应用层Pod访问
   - from:
     - podSelector:
         matchLabels:
           app.kubernetes.io/name: application
     ports:
     - protocol: TCP
-      port: 5432
+      port: 5432  # PostgreSQL
     - protocol: TCP
-      port: 3306
+      port: 3306  # MySQL
     - protocol: TCP
-      port: 6379
+      port: 6379  # Redis
 
 ---
-# Allow API server access to all namespaces
+# 8. 允许API Server访问
+# Kubernetes API Server -> 所有Pod
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -177,6 +197,7 @@ spec:
   policyTypes:
   - Ingress
   ingress:
+  # 允许集群内部网络访问
   - from:
     - ipBlock:
         cidr: 10.0.0.0/8
@@ -187,7 +208,8 @@ spec:
       port: 8443
 
 ---
-# Allow Prometheus scraping
+# 9. 允许Prometheus抓取
+# Prometheus -> 应用Pod (更精确的控制)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -216,8 +238,11 @@ spec:
     - protocol: TCP
       port: 8080
 
+# =============================================================================
+# Staging命名空间 - 中等安全级别
+# =============================================================================
 ---
-# Default deny all ingress in staging namespace
+# 默认拒绝所有流量 (Staging)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -232,8 +257,11 @@ spec:
   - Ingress
   - Egress
 
+# =============================================================================
+# Development命名空间 - 开放模式 (用于调试)
+# =============================================================================
 ---
-# Default deny all ingress in development namespace
+# 默认拒绝所有流量 (Development)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -249,7 +277,7 @@ spec:
   - Egress
 
 ---
-# Allow development namespace internal communication
+# 允许Development内部通信 (调试用)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -265,10 +293,11 @@ spec:
   - Egress
   ingress:
   - from:
-    - podSelector: {}
+    - podSelector: {}  # 允许内部通信
   egress:
   - to:
     - podSelector: {}
+  # 允许访问外部DNS
   - to:
     - namespaceSelector: {}
     ports:
@@ -276,3 +305,23 @@ spec:
       port: 53
     - protocol: TCP
       port: 53
+
+# =============================================================================
+# 部署验证命令
+# =============================================================================
+# 查看所有网络策略:
+#   kubectl get networkpolicy --all-namespaces
+#
+# 查看特定命名空间:
+#   kubectl get networkpolicy -n production
+#
+# 描述网络策略详情:
+#   kubectl describe networkpolicy default-deny-all-ingress -n production
+#
+# 测试连通性 (需要安装nicolaka/netshoot):
+#   kubectl run test-pod --image=nicolaka/netshoot -n production --rm -it -- /bin/bash
+#   curl http://<service-name>.<namespace>.svc.cluster.local:8080
+#
+# 验证DNS:
+#   kubectl run test-pod --image=nicolaka/netshoot -n production --rm -it -- nslookup kubernetes.default
+# =============================================================================

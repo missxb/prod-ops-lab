@@ -1,13 +1,27 @@
-# Jenkins Helm Chart Values - Enterprise Cloud Native Platform
-# Chart: https://charts.jenkins.io
-# Version: 5.x+
+# =============================================================================
+# Jenkins Helm Chart Values - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: Jenkins CI/CD服务器配置
+# 图表: https://charts.jenkins.io
+# 版本: 5.x+
+# 部署: helm install jenkins jenkins/jenkins -f jenkins-values.yaml -n jenkins
+# 验证: kubectl get pods -n jenkins
+# =============================================================================
 
+# =============================================================================
+# Jenkins Controller 配置
+# =============================================================================
 controller:
-  # Jenkins controller image
+  # =========================================================================
+  # 镜像配置
+  # =========================================================================
   image: "jenkins/jenkins"
+  # LTS版本 (长期支持)
   tag: "lts-jdk17"
-  
-  # Resource allocation
+
+  # =========================================================================
+  # 资源配置
+  # =========================================================================
   resources:
     requests:
       cpu: 500m
@@ -16,75 +30,101 @@ controller:
       cpu: "2"
       memory: 4Gi
 
-  # Jenkins configuration
+  # =========================================================================
+  # Jenkins配置
+  # =========================================================================
+  # Jenkins URL前缀 (用于反向代理)
   jenkinsUriPrefix: ""
+  # 服务端口
   servicePort: 8080
-  
-  # Ingress
+
+  # =========================================================================
+  # Ingress配置
+  # =========================================================================
   ingress:
     enabled: true
     ingressClassName: nginx
     annotations:
+      # 上传文件大小限制
       nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+      # 代理超时
       nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+      # 强制HTTPS
       nginx.ingress.kubernetes.io/ssl-redirect: "true"
     tls:
       - secretName: jenkins-tls-secret
         hosts:
           - jenkins.example.com
     hostName: jenkins.example.com
-  
-  # Persistence
+
+  # =========================================================================
+  # 持久化存储
+  # =========================================================================
   persistence:
     enabled: true
     storageClass: "standard"
+    # Jenkins数据存储 (包括配置、构建历史)
     size: 50Gi
     accessMode: ReadWriteOnce
-  
-  # Admin credentials (CHANGE IN PRODUCTION)
+
+  # =========================================================================
+  # 管理员凭证 (生产环境必须修改!)
+  # =========================================================================
   admin:
     create: true
     username: admin
     password: "admin123"
+    # 使用密码哈希 (更安全)
     passwordHash: ""
+    # 使用现有Secret
     existingSecret: ""
     secretKey: "jenkins-admin-password"
 
-  # Kubernetes plugin configuration
+  # =========================================================================
+  # Kubernetes插件配置
+  # =========================================================================
   installPlugins:
-    - kubernetes:4203.v1dd44f5b_5cf9
-    - workflow-aggregator:600.vb_57cdd26fdd7
-    - git:5.2.2
-    - configuration-as-code:1810.v9b_53f58a_0182
-    - pipeline-stage-view:2.33
-    - docker-workflow:580.vc0c340c9b_16f
-    - pipeline-model-definition:2.2175.v03017a_50f656
-    - blueocean:1.27.14
-    - job-dsl:1.81
-    - credentials-binding:631.v861c06d062bf
-    - aws-credentials:292
-    - docker-plugin:534.v42257285b_89f
-    - kubernetes-credentials:0.11
-    - pipeline-utility-steps:2.15.2
-    - trivy-scanner:1.4.2
-    - slack-notification:2.40
-    - prometheus:2.3.2
+    # 核心插件
+    - kubernetes:4203.v1dd44f5b_5cf9           # Kubernetes插件
+    - workflow-aggregator:600.vb_57cdd26fdd7   # Pipeline插件
+    - git:5.2.2                                # Git插件
+    - configuration-as-code:1810.v9b_53f58a_0182  # JCasC配置
+    - pipeline-stage-view:2.33                 # Pipeline视图
+    - docker-workflow:580.vc0c340c9b_16f       # Docker Pipeline
+    - pipeline-model-definition:2.2175.v03017a_50f656  # Pipeline模型
+    - blueocean:1.27.14                        # Blue Ocean界面
+    - job-dsl:1.81                             # Job DSL
+    - credentials-binding:631.v861c06d062bf    # 凭证绑定
+    - aws-credentials:292                      # AWS凭证
+    - docker-plugin:534.v42257285b_89f         # Docker插件
+    - kubernetes-credentials:0.11              # K8s凭证
+    - pipeline-utility-steps:2.15.2            # Pipeline工具
+    - trivy-scanner:1.4.2                      # Trivy安全扫描
+    - slack-notification:2.40                   # Slack通知
+    - prometheus:2.3.2                          # Prometheus指标
 
+  # =========================================================================
   # JCasC (Jenkins Configuration as Code)
+  # =========================================================================
   JCasC:
     defaultConfig: true
     configScripts:
       pipeline-config: |
         jenkins:
+          # 系统消息
           systemMessage: "Enterprise Cloud Native Platform - CI/CD Server"
+          # 执行器数量 (0=仅使用Kubernetes Agent)
           numExecutors: 0
+          # 模式 (EXCLUSIVE=仅Kubernetes Agent)
           mode: EXCLUSIVE
+          # 安全配置
           securityRealm:
             local:
               allowsSignup: false
               users:
                 - id: admin
                   password: "${JENKINS_ADMIN_PWD}"
+          # Kubernetes Agent配置
           nodes:
             - kubernetes:
                 name: "kubernetes-agent"
@@ -92,15 +132,21 @@ controller:
                 namespace: "jenkins-agents"
                 jenkinsUrl: "http://jenkins-controller:8080"
                 jenkinsTunnel: "jenkins-agent:50000"
+                # 最大并发Agent数
                 containerCapStr: "20"
+                # 每主机最大请求数
                 maxRequestsPerHostStr: "32"
+                # Agent超时 (分钟)
                 retentionTimeout: 5
+                # 连接超时 (秒)
                 connectTimeout: 10
+                # Pod模板
                 templates:
                   - name: "default-agent"
                     label: "kubernetes"
                     nodeUsageMode: NORMAL
                     containers:
+                      # JNLP容器 (Agent主容器)
                       - name: "jnlp"
                         image: "jenkins/inbound-agent:latest"
                         workingDir: "/home/jenkins/agent"
@@ -108,6 +154,7 @@ controller:
                         resourceRequestMemory: "256Mi"
                         resourceLimitCpu: "1"
                         resourceLimitMemory: "1Gi"
+                      # Maven容器
                       - name: "maven"
                         image: "maven:3.9-eclipse-temurin-17"
                         workingDir: "/home/jenkins/agent"
@@ -117,6 +164,7 @@ controller:
                         resourceRequestMemory: "1Gi"
                         resourceLimitCpu: "2"
                         resourceLimitMemory: "4Gi"
+                      # Docker容器 (DinD)
                       - name: "docker"
                         image: "docker:24-dind"
                         workingDir: "/home/jenkins/agent"
@@ -134,9 +182,11 @@ controller:
                           key: "DOCKER_HOST"
                           value: "unix:///var/run/docker.sock"
         unclassified:
+          # Jenkins全局配置
           location:
             url: "https://jenkins.example.com/"
             adminAddress: "admin@example.com"
+          # 全局共享库
           globalLibraries:
             libraries:
               - name: "enterprise-pipeline-lib"
@@ -150,6 +200,7 @@ controller:
                         branches:
                           - branchSpec: "main"
         jobs:
+          # 自动创建Pipeline Job
           - script: >
               multibranchPipelineJob('enterprise-app-pipeline') {
                 branchSources {
@@ -166,7 +217,9 @@ controller:
                 }
               }
 
-  # JVM options
+  # =========================================================================
+  # JVM选项
+  # =========================================================================
   javaOpts: >-
     -Xms1g
     -Xmx3g
@@ -174,17 +227,19 @@ controller:
     -XX:+HeapDumpOnOutOfMemoryError
     -Djenkins.install.runSetupWizard=false
 
-  # Groovy init scripts
+  # =========================================================================
+  # Groovy初始化脚本
+  # =========================================================================
   initScripts:
     - |
       import jenkins.model.*
       import hudson.model.*
       
-      // Disable CSRF for API compatibility
+      // 禁用CSRF (API兼容性)
       def jenkins = Jenkins.getInstance()
       jenkins.setCrumbIssuer(null)
       
-      // Configure global properties
+      // 配置全局属性
       def globalNodeProperties = jenkins.getGlobalNodeProperties()
       envVarsNodePropertyList = new hudson.slaves.EnvironmentVariablesNodeProperty[]
       def envVars = new hudson.slaves.EnvironmentVariablesNodeProperty(
@@ -196,18 +251,20 @@ controller:
       globalNodeProperties.add(envVars)
       jenkins.save()
 
-  # Service configuration
+  # =========================================================================
+  # 服务配置
+  # =========================================================================
   serviceType: ClusterIP
   servicePort: 8080
-  
-  # Agent port
+  # Agent通信端口
   agentListenerPort: 50000
 
-# ============================================================
-# Pod Templates for Kubernetes agents
-# ============================================================
+# =============================================================================
+# Agent配置 - Kubernetes Pod模板
+# =============================================================================
 agent:
   enabled: true
+  # Agent命名空间
   namespace: jenkins-agents
   image:
     repository: jenkins/inbound-agent
@@ -220,33 +277,60 @@ agent:
       cpu: "1"
       memory: 1Gi
 
-# ============================================================
-# Additional configuration
-# ============================================================
+# =============================================================================
+# 额外Agent配置
+# =============================================================================
 additionalAgents: {}
 
-# ============================================================
-# Backup configuration
-# ============================================================
+# =============================================================================
+# 备份配置
+# =============================================================================
 backup:
   enabled: true
+  # 每天凌晨2点备份
   schedule: "0 2 * * *"
   storage:
     size: 20Gi
     storageClass: "standard"
 
-# ============================================================
-# Monitoring
-# ============================================================
+# =============================================================================
+# 监控配置
+# =============================================================================
 prometheus:
   enabled: true
   serviceMonitorAdditionalLabels: {}
 
-# ============================================================
-# RBAC
-# ============================================================
+# =============================================================================
+# RBAC配置
+# =============================================================================
 rbac:
   create: true
   serviceAccount:
     create: true
     name: jenkins-controller
+
+# =============================================================================
+# Jenkins部署验证
+# =============================================================================
+# 安装Jenkins:
+#   helm install jenkins jenkins/jenkins -f jenkins-values.yaml -n jenkins --create-namespace
+#
+# 查看Pod状态:
+#   kubectl get pods -n jenkins
+#
+# 获取管理员密码:
+#   kubectl get secret -n jenkins jenkins -o jsonpath="{.data.jenkins-admin-password}" | base64 --decode
+#
+# 访问Jenkins:
+#   kubectl port-forward -n jenkins svc/jenkins 8080:8080
+#   http://localhost:8080
+#
+# 查看日志:
+#   kubectl logs -n jenkins -l app.kubernetes.io/name=jenkins -f
+#
+# 手动触发构建:
+#   curl -X POST http://jenkins:8080/job/enterprise-app-pipeline/build
+#
+# 查看Pipeline日志:
+#   kubectl logs -n jenkins -l app.kubernetes.io/name=jenkins,component=master -f
+# =============================================================================

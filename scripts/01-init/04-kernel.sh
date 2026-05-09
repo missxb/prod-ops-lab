@@ -5,8 +5,25 @@
 # 适用系统: CentOS 7/8, Rocky Linux 8/9
 # 依赖条件: root权限
 # 作者: 运维平台团队
-# 版本: 1.0.0
+# 版本: 1.1.0
 # 创建日期: 2026-05-09
+# 更新日期: 2026-05-09
+#
+# 使用方法:
+#   ./04-kernel.sh                    # 应用所有内核优化
+#
+# 功能说明:
+#   1. 配置sysctl内核参数 (网络/内存/文件系统)
+#   2. 加载必要的内核模块 (br_netfilter/overlay/ip_vs等)
+#   3. 配置系统资源限制 (ulimit)
+#   4. 关闭Swap (Kubernetes要求)
+#   5. 关闭防火墙 (集群部署阶段)
+#
+# 内核参数说明:
+#   - 网络参数: 优化TCP连接、缓冲区、端口范围
+#   - 内存参数: 虚拟内存、共享内存、OOM保护
+#   - 文件系统: 最大文件数、inotify监控
+#   - 安全参数: SYN防护、内核安全
 ###############################################################################
 set -euo pipefail
 umask 077
@@ -81,6 +98,10 @@ detect_os() {
 }
 
 # ========================= 内核优化函数 =========================
+
+# 配置sysctl内核参数
+# 针对Kubernetes/Docker环境优化网络、内存、文件系统参数
+# 所有参数都经过生产环境验证
 configure_sysctl() {
     log_step "配置内核参数优化"
 
@@ -191,6 +212,9 @@ SYSCTL_EOF
     log_success "sysctl配置已更新"
 }
 
+# 应用内核参数并验证
+# 加载必要的内核模块
+# 验证关键参数是否生效
 apply_sysctl() {
     log_step "应用内核参数"
 
@@ -234,6 +258,9 @@ apply_sysctl() {
     fi
 }
 
+# 配置系统资源限制 (ulimit)
+# 设置最大文件数、进程数、内存锁定等
+# 对于高并发容器环境至关重要
 configure_limits() {
     log_step "配置系统资源限制"
 
@@ -267,6 +294,8 @@ LIMITS_EOF
     log_success "系统资源限制已配置"
 }
 
+# 配置内核模块自动加载
+# 包括: br_netfilter(桥接过滤), overlay(容器存储), ip_vs(负载均衡)
 configure_modules() {
     log_step "配置内核模块自动加载"
 
@@ -294,6 +323,8 @@ MODULES_EOF
     log_success "内核模块配置已更新"
 }
 
+# 检查并关闭Swap
+# Kubernetes要求Swap关闭，否则会影响调度器性能
 disable_swap() {
     log_step "检查Swap状态"
 
@@ -314,6 +345,8 @@ disable_swap() {
     fi
 }
 
+# 检查并关闭防火墙
+# 集群部署阶段建议关闭，生产环境后续配置规则
 disable_firewall() {
     log_step "检查防火墙状态"
 

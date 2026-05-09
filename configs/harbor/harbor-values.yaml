@@ -1,73 +1,109 @@
-# Harbor Helm Chart Values - Enterprise Cloud Native Platform
-# Chart: https://github.com/goharbor/harbor-helm
-# Version: 1.14+
+# =============================================================================
+# Harbor Helm Chart Values - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: Harbor容器镜像仓库配置
+# 图表: https://github.com/goharbor/harbor-helm
+# 版本: 1.14+
+# 部署: helm install harbor harbor/harbor -f harbor-values.yaml -n harbor
+# 验证: kubectl get pods -n harbor
+# =============================================================================
 
+# =============================================================================
+# 暴露配置 - Ingress方式
+# =============================================================================
 expose:
-  # Ingress configuration
+  # 暴露类型
+  # ingress: Ingress (推荐，支持SSL)
+  # clusterIP: ClusterIP Service
+  # nodePort: NodePort Service
+  # loadBalancer: LoadBalancer
   type: ingress
+  # TLS配置
   tls:
     enabled: true
     certSource: secret
     secret:
+      # TLS Secret名称
       secretName: harbor-tls-secret
       notarySecretName: harbor-notary-tls-secret
+  # Ingress配置
   ingress:
     hosts:
+      # Harbor主域名
       core: harbor.example.com
+      # Notary域名 (镜像签名)
       notary: notary.example.com
+    # Ingress Class (使用Nginx)
     className: nginx
+    # Ingress注解
     annotations:
+      # 允许上传大文件 (0=不限制)
       nginx.ingress.kubernetes.io/proxy-body-size: "0"
+      # 强制HTTPS
       nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      # SSL协议版本
       nginx.ingress.kubernetes.io/ssl-protocols: "TLSv1.2 TLSv1.3"
+      # SSL密码套件
       nginx.ingress.kubernetes.io/ssl-ciphers: "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256"
+      # 代理超时
       nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
       nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
 
-# ============================================================
-# External URL
-# ============================================================
+# =============================================================================
+# 外部URL (必须配置!)
+# =============================================================================
+# 用于生成镜像拉取地址
+# 例如: docker pull harbor.example.com/library/nginx:latest
 externalURL: https://harbor.example.com
 
-# ============================================================
-# Persistence
-# ============================================================
+# =============================================================================
+# 持久化存储
+# =============================================================================
 persistence:
   enabled: true
+  # 资源保留策略
+  # keep: 删除PVC后保留数据
+  # delete: 删除PVC后删除数据
   resourcePolicy: "keep"
   persistentVolumeClaim:
+    # Registry存储 (镜像数据)
     registry:
       storageClass: "standard"
       accessMode: ReadWriteOnce
-      size: 200Gi
+      size: 200Gi  # 根据镜像数量调整
+    # Job Service日志存储
     jobservice:
       jobLog:
         storageClass: "standard"
         accessMode: ReadWriteOnce
         size: 10Gi
+    # 数据库存储
     database:
       storageClass: "standard"
       accessMode: ReadWriteOnce
       size: 20Gi
+    # Redis存储
     redis:
       storageClass: "standard"
       accessMode: ReadWriteOnce
       size: 10Gi
+    # Trivy扫描器存储
     trivy:
       storageClass: "standard"
       accessMode: ReadWriteOnce
       size: 10Gi
 
-# ============================================================
-# Harbor Core
-# ============================================================
+# =============================================================================
+# Harbor Core 配置
+# =============================================================================
+# 管理员密码 (必须修改!)
 harborAdminPassword: "Harbor12345"
 
-# ============================================================
-# Image Registry
-# ============================================================
+# =============================================================================
+# Image Registry 配置
+# =============================================================================
 registry:
-  replicas: 2
+  replicas: 2  # HA模式
   resources:
     requests:
       cpu: 100m
@@ -75,25 +111,23 @@ registry:
     limits:
       cpu: "1"
       memory: 2Gi
+  # 存储配置 (S3兼容存储)
   storage:
     s3:
-      accesskey: ""
-      secretkey: ""
+      accesskey: ""  # 替换为实际AccessKey
+      secretkey: ""  # 替换为实际SecretKey
       region: us-east-1
       bucket: harbor-registry
-      regionendpoint: ""
+      regionendpoint: ""  # S3兼容端点 (如MinIO)
       encrypt: false
       secure: true
-      multipartCopyThresholdSize: "33554432"
-      multipartCopyChunkSize: "33554432"
-      multipartCopyMaxConcurrency: 10
-      multipartCopyMaxPartSize: "33554432"
       chunksize: "16777216"
       rootdirectory: /registry
       redirect:
         disabled: false
     filesystem:
       maxthreads: 100
+  # 中间件缓存 (Redis)
   middleware:
     cache:
       enabled: true
@@ -103,15 +137,17 @@ registry:
       password: ""
       idle_timeout_second: 30
       scan_interval: 120
+  # 垃圾回收 (自动清理未引用的层)
   garbageCollection:
     enabled: true
-    schedule: "0 0 0 * * *"
+    # 每天凌晨3点执行
+    schedule: "0 0 3 * * *"
 
-# ============================================================
-# Core
-# ============================================================
+# =============================================================================
+# Core 配置
+# =============================================================================
 core:
-  replicas: 2
+  replicas: 2  # HA模式
   resources:
     requests:
       cpu: 200m
@@ -119,17 +155,18 @@ core:
     limits:
       cpu: "1"
       memory: 1Gi
+  # 密钥 (必须修改!)
   secretKey: "change-this-to-a-secure-key"
   tls:
     enabled: true
   xsrf:
     enabled: true
 
-# ============================================================
-# Job Service
-# ============================================================
+# =============================================================================
+# Job Service 配置
+# =============================================================================
 jobservice:
-  replicas: 2
+  replicas: 2  # HA模式
   resources:
     requests:
       cpu: 100m
@@ -137,19 +174,23 @@ jobservice:
     limits:
       cpu: "1"
       memory: 1Gi
+  # 最大并发Worker数
   maxJobWorkers: 10
+  # 日志记录器
   jobLoggers:
     - STD_OUTPUT
     - FILE
+  # 日志清理
   loggerSweeper:
     enabled: true
-    duration: 168h
+    duration: 168h  # 7天
     workers: 3
 
-# ============================================================
-# Database (PostgreSQL)
-# ============================================================
+# =============================================================================
+# Database (PostgreSQL) 配置
+# =============================================================================
 database:
+  # 内部数据库 (推荐)
   type: internal
   internal:
     resources:
@@ -159,13 +200,24 @@ database:
       limits:
         cpu: "1"
         memory: 2Gi
+    # 指标导出
     metric:
       enabled: true
+  # 外部数据库 (可选)
+  # type: external
+  # external:
+  #   host: postgresql.example.com
+  #   port: "5432"
+  #   username: harbor
+  #   password: "your-password"
+  #   coreDatabase: registry
+  #   sslmode: disable
 
-# ============================================================
-# Redis
-# ============================================================
+# =============================================================================
+# Redis 配置
+# =============================================================================
 redis:
+  # 内部Redis (推荐)
   type: internal
   internal:
     resources:
@@ -175,13 +227,18 @@ redis:
       limits:
         cpu: 500m
         memory: 512Mi
+  # 外部Redis (可选)
+  # type: external
+  # external:
+  #   addr: redis.example.com:6379
+  #   password: "your-password"
 
-# ============================================================
-# Trivy Scanner
-# ============================================================
+# =============================================================================
+# Trivy 扫描器配置
+# =============================================================================
 trivy:
   enabled: true
-  replicas: 2
+  replicas: 2  # HA模式
   resources:
     requests:
       cpu: 100m
@@ -193,19 +250,25 @@ trivy:
     repository: harbor/trivy-adapter-photon
     tag: dev
   debugMode: false
+  # 忽略未修复的漏洞
   ignoreUnfixed: true
+  # 安全检查类型
   securityCheck: vuln
+  # 跳过更新
   skipUpdate: false
+  # 不安全连接
   insecure: false
+  # GitHub Token (用于获取漏洞数据库)
   gitHubToken: ""
+  # 严重级别过滤
   severity: "HIGH,CRITICAL"
 
-# ============================================================
-# Notary
-# ============================================================
+# =============================================================================
+# Notary 配置 (镜像签名)
+# =============================================================================
 notary:
   enabled: true
-  replicas: 2
+  replicas: 2  # HA模式
   resources:
     requests:
       cpu: 100m
@@ -214,21 +277,20 @@ notary:
       cpu: 500m
       memory: 512Mi
 
-# ============================================================
-# ChartMuseum
-# ============================================================
+# =============================================================================
+# 其他组件 (可选)
+# =============================================================================
+# ChartMuseum (Helm Chart仓库)
 chartmuseum:
   enabled: false
 
-# ============================================================
-# Clair
-# ============================================================
+# Clair (漏洞扫描器，已弃用)
 clair:
   enabled: false
 
-# ============================================================
-# Metrics
-# ============================================================
+# =============================================================================
+# 监控配置
+# =============================================================================
 metrics:
   enabled: true
   serviceMonitor:
@@ -237,9 +299,39 @@ metrics:
     interval: 30s
     additionalLabels: {}
 
-# ============================================================
-# Cache
-# ============================================================
+# =============================================================================
+# 缓存配置
+# =============================================================================
 cache:
   enabled: true
-  expireSeconds: 1800
+  expireSeconds: 1800  # 30分钟
+
+# =============================================================================
+# Harbor部署验证
+# =============================================================================
+# 安装Harbor:
+#   helm install harbor harbor/harbor -f harbor-values.yaml -n harbor --create-namespace
+#
+# 查看Pod状态:
+#   kubectl get pods -n harbor
+#
+# 登录Harbor:
+#   docker login harbor.example.com
+#   用户名: admin
+#   密码: Harbor12345
+#
+# 推送镜像:
+#   docker tag myapp:latest harbor.example.com/library/myapp:latest
+#   docker push harbor.example.com/library/myapp:latest
+#
+# 拉取镜像:
+#   docker pull harbor.example.com/library/myapp:latest
+#
+# 查看垃圾回收:
+#   kubectl logs -n harbor -l component=registry -f | grep garbage
+#
+# 手动触发垃圾回收:
+#   curl -X POST "https://harbor.example.com/api/v2.0/system/gc/schedule" \
+#     -H "Content-Type: application/json" \
+#     -d '{"parameters": {"delete_untagged": true}, "schedule": {"type": "Manual"}}'
+# =============================================================================

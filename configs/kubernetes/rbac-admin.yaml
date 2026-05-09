@@ -1,11 +1,22 @@
-#===============================================================================
+# =============================================================================
 # Kubernetes RBAC - Admin Configuration
-#===============================================================================
-# Full cluster admin access with audit logging
-#===============================================================================
+# 项目: 企业级云原生运维平台
+# 功能: 管理员角色配置，提供完整集群访问权限
+# 部署: kubectl apply -f rbac-admin.yaml
+# 验证: kubectl get clusterrole,clusterrolebinding,rolebinding --all-namespaces
+# =============================================================================
 
 ---
-# Admin ClusterRole - Full cluster access
+# =============================================================================
+# Admin ClusterRole - 完整集群访问权限
+# 权限说明:
+#   - 完整访问所有核心资源 (Pods, Services, ConfigMaps等)
+#   - 完整访问应用资源 (Deployments, StatefulSets等)
+#   - 完整访问RBAC资源 (Roles, Bindings等)
+#   - 完整访问存储资源 (PV, PVC, StorageClasses等)
+#   - 完整访问监控资源 (Prometheus, Alertmanager等)
+# 注意: 仅授权给可信管理员，生产环境建议使用更细粒度的权限
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -13,64 +24,69 @@ metadata:
   labels:
     app.kubernetes.io/name: rbac-admin
     app.kubernetes.io/part-of: enterprise-cloud-native-platform
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: deploy-rbac.sh
 rules:
-# Full access to all core resources
+# 完整访问核心资源
 - apiGroups: [""]
   resources: ["*"]
   verbs: ["*"]
 
-# Full access to apps resources
+# 完整访问应用资源
 - apiGroups: ["apps"]
   resources: ["*"]
   verbs: ["*"]
 
-# Full access to batch resources
+# 完整访问批量资源
 - apiGroups: ["batch"]
   resources: ["*"]
   verbs: ["*"]
 
-# Full access to networking resources
+# 完整访问网络资源
 - apiGroups: ["networking.k8s.io"]
   resources: ["*"]
   verbs: ["*"]
 
-# Full access to RBAC resources
+# 完整访问RBAC资源
 - apiGroups: ["rbac.authorization.k8s.io"]
   resources: ["*"]
   verbs: ["*"]
 
-# Full access to storage resources
+# 完整访问存储资源
 - apiGroups: ["storage.k8s.io"]
   resources: ["*"]
   verbs: ["*"]
 
-# Full access to policy resources
+# 完整访问策略资源
 - apiGroups: ["policy"]
   resources: ["*"]
   verbs: ["*"]
 
-# Full access to admission registration
+# 完整访问准入注册
 - apiGroups: ["admissionregistration.k8s.io"]
   resources: ["*"]
   verbs: ["*"]
 
-# Full access to apiextensions
+# 完整访问API扩展
 - apiGroups: ["apiextensions.k8s.io"]
   resources: ["*"]
   verbs: ["*"]
 
-# Full access to cert-manager resources
+# 完整访问cert-manager
 - apiGroups: ["cert-manager.io"]
   resources: ["*"]
   verbs: ["*"]
 
-# Full access to monitoring resources
+# 完整访问监控资源
 - apiGroups: ["monitoring.coreos.com"]
   resources: ["*"]
   verbs: ["*"]
 
 ---
-# Admin ClusterRoleBinding
+# =============================================================================
+# Admin ClusterRoleBinding - 集群级绑定
+# 将Admin ClusterRole绑定到administrators组
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -83,12 +99,20 @@ roleRef:
   kind: ClusterRole
   name: admin
 subjects:
+# 绑定到组 (推荐，便于用户管理)
 - kind: Group
   name: administrators
   apiGroup: rbac.authorization.k8s.io
+# 也可以绑定到单个用户 (不推荐)
+# - kind: User
+#   name: admin@example.com
+#   apiGroup: rbac.authorization.k8s.io
 
 ---
-# Admin RoleBinding for kube-system namespace
+# =============================================================================
+# Admin RoleBinding - kube-system命名空间
+# 为管理员提供kube-system命名空间的访问权限
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -106,7 +130,9 @@ subjects:
   apiGroup: rbac.authorization.k8s.io
 
 ---
-# Admin RoleBinding for production namespace
+# =============================================================================
+# Admin RoleBinding - production命名空间
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -124,7 +150,9 @@ subjects:
   apiGroup: rbac.authorization.k8s.io
 
 ---
-# Admin RoleBinding for staging namespace
+# =============================================================================
+# Admin RoleBinding - staging命名空间
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -142,7 +170,9 @@ subjects:
   apiGroup: rbac.authorization.k8s.io
 
 ---
-# Admin RoleBinding for development namespace
+# =============================================================================
+# Admin RoleBinding - development命名空间
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -160,7 +190,10 @@ subjects:
   apiGroup: rbac.authorization.k8s.io
 
 ---
-# ClusterRole for emergency access (break-glass)
+# =============================================================================
+# Emergency Admin ClusterRole - 紧急访问权限 (Break-Glass)
+# 用于紧急情况下的集群访问，仅在必要时使用
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -168,14 +201,18 @@ metadata:
   labels:
     app.kubernetes.io/name: rbac-emergency-admin
     app.kubernetes.io/part-of: enterprise-cloud-native-platform
+    app.kubernetes.io/component: emergency
 rules:
-# Full access to all resources
+# 完整访问所有资源 (紧急情况)
 - apiGroups: ["*"]
   resources: ["*"]
   verbs: ["*"]
 
 ---
-# Emergency admin ClusterRoleBinding (for break-glass scenario)
+# =============================================================================
+# Emergency Admin ClusterRoleBinding
+# 绑定到emergency-admins组
+# =============================================================================
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -183,6 +220,7 @@ metadata:
   labels:
     app.kubernetes.io/name: rbac-emergency-admin
     app.kubernetes.io/part-of: enterprise-cloud-native-platform
+    app.kubernetes.io/component: emergency
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -191,3 +229,36 @@ subjects:
 - kind: Group
   name: emergency-admins
   apiGroup: rbac.authorization.k8s.io
+
+# =============================================================================
+# RBAC使用说明
+# =============================================================================
+# 1. 创建用户组:
+#    kubectl create group administrators
+#    kubectl create group emergency-admins
+#
+# 2. 添加用户到组 (需要OIDC或LDAP集成):
+#    # OIDC用户会自动获得组成员身份
+#    # 或手动添加:
+#    kubectl create rolebinding admin-user \
+#      --clusterrole=admin \
+#      --user=admin@example.com \
+#      -n production
+#
+# 3. 验证权限:
+#    # 以admin用户执行:
+#    kubectl auth can-i list pods -n production
+#    kubectl auth can-i create deployments -n production
+#
+# 4. 紧急访问:
+#    # 仅在紧急情况下使用:
+#    kubectl create clusterrolebinding emergency-admin \
+#      --clusterrole=emergency-admin \
+#      --user=emergency@example.com
+#
+# 5. 审计日志:
+#    # 启用API审计日志记录所有访问:
+#    # --audit-log-path=/var/log/kubernetes/audit/audit.log
+#    # --audit-log-maxage=30
+#    # --audit-log-maxbackup=10
+# =============================================================================
