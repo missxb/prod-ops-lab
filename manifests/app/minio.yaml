@@ -1,0 +1,599 @@
+# =============================================================================
+# MinIO 对象存储 - 生产级分布式部署
+# =============================================================================
+# 包含：MinIO分布式部署、配置管理、持久化存储、Console暴露
+# 支持 S3 兼容 API
+# =============================================================================
+
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: minio-system
+  labels:
+    name: minio-system
+    purpose: object-storage
+    environment: production
+
+---
+# =============================================================================
+# ConfigMap - MinIO 配置
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: minio-config
+  namespace: minio-system
+  labels:
+    app: minio
+    component: config
+data:
+  # ---- 启动脚本 ----
+  start.sh: |
+    #!/bin/sh
+    set -e
+    
+    echo "Starting MinIO server..."
+    echo "Data directory: /data"
+    echo "Console port: 9001"
+    echo "API port: 9000"
+    
+    # 启动 MinIO 服务器
+    # distributed 模式下，所有节点同时启动
+    exec minio server \
+      --address ":9000" \
+      --console-address ":9001" \
+      /data
+    
+    # 注意：分布式部署时，所有节点使用相同的命令
+    # MinIO 会自动检测其他节点并组建集群
+  
+  # ---- 策略配置 ----
+  policies.json: |
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Principal": {
+            "AWS": ["arn:aws:iam:::user/minio-admin"]
+          },
+          "Action": [
+            "s3:GetObject",
+            "s3:PutObject",
+            "s3:DeleteObject",
+            "s3:ListBucket",
+            "s3:GetBucketLocation",
+            "s3:ListBucketMultipartUploads",
+            "s3:ListMultipartUploadParts",
+            "s3:AbortMultipartUpload",
+            "s3:PutObjectTagging",
+            "s3:GetObjectTagging",
+            "s3:DeleteObjectTagging"
+          ],
+          "Resource": [
+            "arn:aws:s3:::*",
+            "arn:aws:s3:::*/*"
+          ]
+        }
+      ]
+    }
+  
+  # ---- 匿名访问配置（仅开发环境） ----
+  anonymous-policy.json: |
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Deny",
+          "Principal": {"AWS": ["*"]},
+          "Action": ["s3:*"],
+          "Resource": ["arn:aws:s3:::*", "arn:aws:s3:::*/*"]
+        }
+      ]
+    }
+
+---
+# =============================================================================
+# Secret - MinIO 凭证
+# =============================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-secret
+  namespace: minio-system
+  labels:
+    app: minio
+    component: secret
+type: Opaque
+data:
+  # Root 用户名和密码
+  # echo -n 'minioadmin' | base64
+  root-user: bWluaW9hZG1pbg==
+  # echo -n 'MinIO@Production2024!' | base64
+  root-password: TWluaU9AUEt0aXZpb24yMDI0IQ==
+  # 访问密钥（用于客户端）
+  access-key: QWVzVGVzdEFjY2Vzc0tleTIwMjQh
+  secret-key: U2VjcmV0VGVzdFNlY3JldEtleTIwMjQh
+
+---
+# =============================================================================
+# StatefulSet - MinIO 集群（4节点分布式）
+# =============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  namespace: minio-system
+  labels:
+    app: minio
+    component: server
+spec:
+  serviceName: minio-headless
+  # 分布式部署至少需要4个节点
+  replicas: 4
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+        component: server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9000"
+        prometheus.io/path: "/minio/v2/metrics/cluster"
+    spec:
+      # 安全上下文
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+      
+      # 反亲和性 - 确保 Pod 分散在不同节点
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - minio
+              topologyKey: kubernetes.io/hostname
+      
+      containers:
+        # ---- MinIO 主容器 ----
+        - name: minio
+          image: minio/minio:RELEASE.2024-01-16T16-07-38Z
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              # 设置环境变量
+              export MINIO_ROOT_USER="${MINIO_ROOT_USER}"
+              export MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD}"
+              export MINIO_BROWSER="${MINIO_BROWSER:-on}"
+              export MINIO_PROMETHEUS_AUTH_TYPE="${MINIO_PROMETHEUS_AUTH_TYPE:-public}"
+              export MINIO_IDENTITY_OPENID_CONFIG_URL="${MINIO_OPENID_URL:-}"
+              
+              # 启动 MinIO（分布式模式自动检测）
+              exec minio server \
+                --address ":9000" \
+                --console-address ":9001" \
+                /data
+          ports:
+            - name: api
+              containerPort: 9000
+              protocol: TCP
+            - name: console
+              containerPort: 9001
+              protocol: TCP
+          env:
+            # ---- 环境变量 ----
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio-secret
+                  key: root-user
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio-secret
+                  key: root-password
+            - name: MINIO_BROWSER
+              value: "on"
+            - name: MINIO_PROMETHEUS_AUTH_TYPE
+              value: "public"
+            - name: MINIO_VOLUMES
+              value: "/data"
+            - name: MINIO_BROWSER_REDIRECT_URL
+              value: "http://minio-console.minio-system.svc.cluster.local:9001"
+            - name: TZ
+              value: "Asia/Shanghai"
+          
+          # ---- 资源限制 ----
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          
+          # ---- 就绪探针 ----
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: api
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          
+          # ---- 存活探针 ----
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: api
+              scheme: HTTP
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 15
+            failureThreshold: 5
+          
+          # ---- 启动探针 ----
+          startupProbe:
+            httpGet:
+              path: /minio/health/cluster
+              port: api
+              scheme: HTTP
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 30
+          
+          # ---- 卷挂载 ----
+          volumeMounts:
+            - name: minio-data
+              mountPath: /data
+            - name: minio-start-script
+              mountPath: /usr/local/bin/start.sh
+              subPath: start.sh
+          
+          # ---- 优雅终止 ----
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    # 优雅关闭 MinIO
+                    kill -TERM $(pidof minio) || true
+                    sleep 10
+      
+      # ---- 初始化容器 ----
+      initContainers:
+        - name: init-permissions
+          image: busybox:1.36
+          command: ['sh', '-c', 'chown -R 1000:1000 /data']
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: minio-data
+              mountPath: /data
+      
+      volumes:
+        - name: minio-start-script
+          configMap:
+            name: minio-config
+            defaultMode: 0755
+            items:
+              - key: start.sh
+                path: start.sh
+  
+  # ---- 持久化存储 ----
+  volumeClaimTemplates:
+    - metadata:
+        name: minio-data
+        labels:
+          app: minio
+          component: storage
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: standard
+        resources:
+          requests:
+            # 每个节点至少 100GB
+            storage: 100Gi
+
+---
+# =============================================================================
+# Service - Headless Service（用于 StatefulSet DNS）
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-headless
+  namespace: minio-system
+  labels:
+    app: minio
+    component: headless
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app: minio
+  ports:
+    - name: api
+      port: 9000
+      targetPort: api
+      protocol: TCP
+    - name: console
+      port: 9001
+      targetPort: console
+      protocol: TCP
+
+---
+# =============================================================================
+# Service - API 访问（ClusterIP）
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-api
+  namespace: minio-system
+  labels:
+    app: minio
+    component: api
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9000"
+    prometheus.io/path: "/minio/v2/metrics/cluster"
+spec:
+  type: ClusterIP
+  selector:
+    app: minio
+  ports:
+    - name: api
+      port: 9000
+      targetPort: api
+      protocol: TCP
+    - name: console
+      port: 9001
+      targetPort: console
+      protocol: TCP
+
+---
+# =============================================================================
+# Service - Console（NodePort 暴露管理界面）
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-console
+  namespace: minio-system
+  labels:
+    app: minio
+    component: console
+spec:
+  type: NodePort
+  selector:
+    app: minio
+  ports:
+    - name: console
+      port: 9001
+      targetPort: console
+      nodePort: 31901
+      protocol: TCP
+    - name: api
+      port: 9000
+      targetPort: api
+      nodePort: 31900
+      protocol: TCP
+
+---
+# =============================================================================
+# Ingress - 外部访问（可选）
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: minio-ingress
+  namespace: minio-system
+  labels:
+    app: minio
+  annotations:
+    # Nginx Ingress 配置
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    # 大文件上传支持
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # CORS 配置
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+spec:
+  ingressClassName: nginx
+  rules:
+    # API 访问
+    - host: minio-api.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: minio-api
+                port:
+                  name: api
+    # Console 访问
+    - host: minio-console.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: minio-api
+                port:
+                  name: console
+  tls:
+    - hosts:
+        - minio-api.example.com
+        - minio-console.example.com
+      secretName: minio-tls-secret
+
+---
+# =============================================================================
+# PodDisruptionBudget
+# =============================================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: minio-pdb
+  namespace: minio-system
+  labels:
+    app: minio
+spec:
+  # 至少保持 3 个节点可用（分布式模式）
+  minAvailable: 3
+  selector:
+    matchLabels:
+      app: minio
+
+---
+# =============================================================================
+# NetworkPolicy - 网络安全
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: minio-network-policy
+  namespace: minio-system
+  labels:
+    app: minio
+spec:
+  podSelector:
+    matchLabels:
+      app: minio
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 允许集群内应用访问 API
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              minio-access: "true"
+      ports:
+        - port: 9000
+          protocol: TCP
+    # 允许 Console 访问
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - port: 9001
+          protocol: TCP
+        - port: 9000
+          protocol: TCP
+    # 集群内部通信
+    - from:
+        - podSelector:
+            matchLabels:
+              app: minio
+      ports:
+        - port: 9000
+          protocol: TCP
+        - port: 9001
+          protocol: TCP
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# =============================================================================
+# ServiceMonitor - Prometheus 服务发现（如果使用 Prometheus Operator）
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: minio
+  namespace: minio-system
+  labels:
+    app: minio
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: minio
+  namespaceSelector:
+    matchNames:
+      - minio-system
+  endpoints:
+    - port: api
+      path: /minio/v2/metrics/cluster
+      interval: 30s
+      scrapeTimeout: 10s
+
+---
+# =============================================================================
+# PrometheusRule - 告警规则
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: minio-alerts
+  namespace: minio-system
+  labels:
+    app: minio
+    release: prometheus
+spec:
+  groups:
+    - name: minio
+      rules:
+        # MinIO 节点离线
+        - alert: MinIONodeDown
+          expr: minio_cluster_nodes_offline > 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "MinIO 节点离线"
+            description: "MinIO 集群中有 {{ $value }} 个节点离线"
+        
+        # 存储使用率过高
+        - alert: MinIOStorageHigh
+          expr: minio_cluster_disk_free_bytes / minio_cluster_disk_total_bytes < 0.2
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "MinIO 存储使用率超过 80%"
+            description: "MinIO 存储使用率已超过 80%，剩余空间不足"
+        
+        # 请求延迟过高
+        - alert: MinIOHighLatency
+          expr: minio_cluster_request_duration_seconds > 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "MinIO 请求延迟过高"
+            description: "MinIO 平均请求延迟超过 1 秒"

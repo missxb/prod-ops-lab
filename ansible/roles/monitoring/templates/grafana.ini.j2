@@ -1,0 +1,98 @@
+; ansible/roles/monitoring/templates/grafana.ini.j2
+; Grafana 配置文件 - 由 Ansible 自动管理
+
+[paths]
+data = {{ grafana_data_dir | default('/data/grafana') }}
+logs = {{ grafana_data_dir | default('/data/grafana') }}/logs
+plugins = {{ grafana_data_dir | default('/data/grafana') }}/plugins
+
+[server]
+protocol = http
+http_port = {{ grafana_port | default(3000) }}
+domain = {{ inventory_hostname }}
+root_url = %(protocol)s://%(domain)s:%(http_port)s/
+serve_from_sub_path = false
+
+[database]
+type = sqlite3
+path = {{ grafana_data_dir | default('/data/grafana') }}/grafana.db
+
+[security]
+admin_user = {{ grafana_admin_user | default('admin') }}
+admin_password = {{ grafana_admin_password | default('Grafana@Admin2024!') }}
+disable_gravatar = true
+cookie_secure = false
+cookie_samesite = lax
+allow_embedding = true
+
+[auth]
+disable_login_form = false
+disable_signout_menu = false
+disable_signout_redirect_url =
+
+[auth.anonymous]
+enabled = false
+
+[auth.basic]
+enabled = true
+
+[users]
+allow_sign_up = false
+allow_org_create = false
+auto_assign_org = true
+auto_assign_org_role = Viewer
+default_theme = dark
+
+[log]
+mode = console file
+level = info
+filters = rendering:debug
+
+[log.console]
+level = info
+format = json
+
+[log.file]
+level = info
+format = json
+log_rotate = true
+max_lines = 1000000
+max_size_shift = 28
+daily_rotate = true
+max_days = 7
+
+[dashboards]
+default_home_dashboard_path = {{ grafana_data_dir | default('/data/grafana') }}/dashboards/home.json
+
+[plugins]
+allow_loading_unsigned_plugins =
+grafana_image_renderer_rendering_url =
+
+[feature_toggles]
+enable = publicDashboards correlations
+
+[unified_alerting]
+enabled = true
+min_interval_seconds = 10
+
+[alerting]
+enabled = true
+
+[metrics]
+enabled = true
+interval_seconds = 60
+
+[metrics.environment]
+environment = production
+
+[external_image_storage]
+provider =
+
+[smtp]
+enabled = true
+host = {{ gitlab_smtp_server | default('smtp.company.com') }}:{{ gitlab_smtp_port | default(587) }}
+user = {{ gitlab_smtp_user | default('alertmanager@company.com') }}
+password = {{ gitlab_smtp_password | default('smtp_password') }}
+from_address = grafana@{{ gitlab_smtp_domain | default('company.com') }}
+from_name = Grafana
+starttls_policy = MandatoryStartTLS

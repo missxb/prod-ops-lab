@@ -1,0 +1,58 @@
+# ansible/roles/logging/templates/fluentd-filter.conf.j2
+# Fluentd 过滤配置 - 由 Ansible 自动管理
+
+# Kubernetes Pod 日志过滤
+<filter kubernetes.**>
+  @type record_transformer
+  enable_ruby true
+  <record>
+    hostname "#{Socket.gethostname}"
+    environment "#{ENV['ENVIRONMENT'] || 'production'}"
+    cluster "{{ cluster_name | default('enterprise-cloud') }}"
+    namespace "${record.dig('kubernetes', 'namespace_name') || 'unknown'}"
+    pod_name "${record.dig('kubernetes', 'pod_name') || 'unknown'}"
+    container_name "${record.dig('kubernetes', 'container_name') || 'unknown'}"
+    container_id "${record.dig('kubernetes', 'container_id') || 'unknown'}"
+    pod_id "${record.dig('kubernetes', 'pod_id') || 'unknown'}"
+    docker_id "${record.dig('kubernetes', 'docker_id') || 'unknown'}"
+    labels "#{record.dig('kubernetes', 'labels') || {}}"
+    annotations "#{record.dig('kubernetes', 'annotations') || {}}"
+  </record>
+</filter>
+
+# 日志级别提取
+<filter kubernetes.**>
+  @type record_transformer
+  enable_ruby true
+  <record>
+    log_level "${case record['log']
+      when /ERROR/i then 'error'
+      when /WARN/i then 'warning'
+      when /INFO/i then 'info'
+      when /DEBUG/i then 'debug'
+      else 'unknown'
+    end}"
+  </record>
+</filter>
+
+# 系统日志过滤
+<filter system.**>
+  @type record_transformer
+  enable_ruby true
+  <record>
+    hostname "#{Socket.gethostname}"
+    environment "#{ENV['ENVIRONMENT'] || 'production'}"
+    cluster "{{ cluster_name | default('enterprise-cloud') }}"
+    source "${tag}"
+  </record>
+</filter>
+
+# 日志清理
+<filter **>
+  @type record_transformer
+  enable_ruby true
+  remove_keys $.kubernetes.master_url,$.kubernetes.pod_id
+  <record>
+    timestamp "${Time.now.iso8601}"
+  </record>
+</filter>

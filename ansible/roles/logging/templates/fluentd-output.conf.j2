@@ -1,0 +1,70 @@
+# ansible/roles/logging/templates/fluentd-output.conf.j2
+# Fluentd 输出配置 - 由 Ansible 自动管理
+
+# Elasticsearch 输出
+<match **>
+  @type elasticsearch
+  host localhost
+  port {{ elasticsearch_port | default(9200) }}
+  logstash_format true
+  logstash_prefix logs
+  logstash_dateformat %Y.%m.%d
+  include_tag_key true
+  tag_key @log_name
+  flush_interval 5s
+  retry_max_interval 30s
+  chunk_limit_size 8m
+  queue_limit_length 128
+  overflow_action block
+  reload_connections false
+  reconnect_on_error true
+  reload_on_failure true
+  
+  # 缓冲配置
+  <buffer>
+    @type file
+    path /data/fluentd/buffer
+    flush_mode interval
+    flush_interval 5s
+    retry_type exponential_backoff
+    retry_forever true
+    retry_max_interval 30s
+    chunk_limit_size 8m
+    total_limit_size 2g
+    overflow_action block
+    flush_thread_count 4
+  </buffer>
+</match>
+
+# 错误日志单独输出 (可选)
+<match kubernetes.**>
+  @type elasticsearch
+  host localhost
+  port {{ elasticsearch_port | default(9200) }}
+  logstash_format true
+  logstash_prefix error-logs
+  logstash_dateformat %Y.%m.%d
+  include_tag_key true
+  tag_key @log_name
+  flush_interval 5s
+  
+  # 过滤错误日志
+  <filter>
+    @type grep
+    <regexp>
+      key log_level
+      pattern /error|critical|fatal/i
+    </regexp>
+  </filter>
+  
+  <buffer>
+    @type file
+    path /data/fluentd/buffer-error
+    flush_mode interval
+    flush_interval 5s
+    retry_type exponential_backoff
+    retry_forever true
+    chunk_limit_size 4m
+    total_limit_size 1g
+  </buffer>
+</match>

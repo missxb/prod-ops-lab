@@ -1,0 +1,32 @@
+---
+# ansible/roles/monitoring/handlers/main.yml - 监控系统 Handlers
+
+- name: restart node-exporter
+  ansible.builtin.systemd:
+    name: node-exporter
+    state: restarted
+    daemon_reload: true
+
+- name: restart prometheus
+  ansible.builtin.systemd:
+    name: prometheus
+    state: restarted
+    daemon_reload: true
+
+- name: restart alertmanager
+  ansible.builtin.systemd:
+    name: alertmanager
+    state: restarted
+    daemon_reload: true
+
+- name: restart grafana
+  ansible.builtin.systemd:
+    name: grafana-server
+    state: restarted
+    daemon_reload: true
+
+- name: reload prometheus
+  ansible.builtin.uri:
+    url: "http://localhost:{{ prometheus_port | default(9090) }}/-/reload"
+    method: POST
+    status_code: 204

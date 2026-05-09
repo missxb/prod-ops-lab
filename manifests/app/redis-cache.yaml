@@ -1,0 +1,749 @@
+# =============================================================================
+# Redis 缓存应用 - 生产级配置
+# =============================================================================
+# 包含：Redis Master/Slave部署、ConfigMap配置、Service暴露、持久化存储
+# 使用 Redis Sentinel 实现高可用自动故障转移
+# =============================================================================
+
+---
+# Namespace for Redis deployment
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: redis-system
+  labels:
+    name: redis-system
+    purpose: cache
+    environment: production
+
+---
+# =============================================================================
+# Redis ConfigMap - 统一配置管理
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: redis-system
+  labels:
+    app: redis
+    component: config
+data:
+  # Redis 主配置文件
+  redis.conf: |
+    # ---- 基础配置 ----
+    # 绑定地址（仅允许集群内访问）
+    bind 0.0.0.0
+    protected-mode yes
+    port 6379
+    
+    # ---- 认证配置 ----
+    requirepass ${REDIS_PASSWORD:-ChangeMeInProduction}
+    masterauth ${REDIS_PASSWORD:-ChangeMeInProduction}
+    
+    # ---- 内存管理 ----
+    # 最大内存限制（根据实际节点资源调整）
+    maxmemory 256mb
+    # 内存淘汰策略：LRU 算法，优先淘汰最近最少使用的 key
+    maxmemory-policy allkeys-lru
+    # LRU 采样精度（10 是推荐值）
+    maxmemory-samples 10
+    
+    # ---- 持久化配置 ----
+    # AOF 持久化（更安全，每次写操作都追加到文件）
+    appendonly yes
+    appendfsync everysec
+    auto-aof-rewrite-percentage 100
+    auto-aof-rewrite-min-size 64mb
+    
+    # RDB 快照（定期全量备份）
+    save 900 1
+    save 300 10
+    save 60 10000
+    dbfilename dump.rdb
+    dir /data
+    
+    # ---- 性能优化 ----
+    # 关闭 TIME 命令（安全考虑）
+    rename-command TIME ""
+    # 开启慢日志（便于性能分析）
+    slowlog-log-slower-than 10000
+    slowlog-max-len 128
+    
+    # ---- 网络配置 ----
+    tcp-backlog 511
+    tcp-keepalive 300
+    timeout 0
+    
+    # ---- 日志配置 ----
+    loglevel notice
+    logfile ""
+    
+    # ---- 监控配置 ----
+    # 启用 Redis 监控（用于 Prometheus 采集）
+    # 注意：redis-exporter 需要单独部署
+
+  # Sentinel 配置文件
+  sentinel.conf: |
+    # ---- Sentinel 基础配置 ----
+    port 26379
+    bind 0.0.0.0
+    protected-mode no
+    
+    # ---- 监控的主节点 ----
+    # 格式：sentinel monitor <master-name> <ip> <port> <quorum>
+    # quorum：需要多少个 Sentinel 同意才能判定主节点失败
+    sentinel monitor redis-master redis-master 6379 2
+    
+    # 主节点认证密码
+    sentinel auth-pass redis-master ${REDIS_PASSWORD:-ChangeMeInProduction}
+    
+    # ---- 故障判定超时 ----
+    # 多少毫秒无响应则判定主观下线（默认30秒）
+    sentinel down-after-milliseconds redis-master 10000
+    
+    # ---- 故障转移超时 ----
+    # 故障转移操作的超时时间（默认180秒）
+    sentinel failover-timeout redis-master 180000
+    
+    # ---- 并行同步数量 ----
+    # 故障转移时，新主节点可以有多少个从节点同时同步
+    sentinel parallel-syncs redis-master 1
+    
+    # ---- 日志配置 ----
+    loglevel notice
+    logfile ""
+
+---
+# =============================================================================
+# Redis Secret - 敏感配置
+# =============================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: redis-secret
+  namespace: redis-system
+  labels:
+    app: redis
+    component: secret
+type: Opaque
+data:
+  # 密码需要 base64 编码：echo -n 'YourPassword' | base64
+  # 以下为示例密码 "RedisProd2024!" 的 base64 编码
+  redis-password: UmVkaXNQcm9kMjAyNCE=
+  # Sentinel 密码（与 Redis 相同）
+  sentinel-password: UmVkaXNQcm9kMjAyNCE=
+
+---
+# =============================================================================
+# Redis Master StatefulSet - 主节点
+# =============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-master
+  namespace: redis-system
+  labels:
+    app: redis
+    component: master
+    role: master
+spec:
+  serviceName: redis-master
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+      role: master
+  template:
+    metadata:
+      labels:
+        app: redis
+        role: master
+        component: server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9121"
+        prometheus.io/path: "/metrics"
+    spec:
+      # 初始化容器 - 设置正确的权限
+      initContainers:
+        - name: init-data-dir
+          image: busybox:1.36
+          command: ['sh', '-c', 'chown -R 999:999 /data']
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+      
+      containers:
+        # Redis 主容器
+        - name: redis
+          image: redis:7.2-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - redis-server
+            - /etc/redis/redis.conf
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            - --masterauth
+            - $(REDIS_PASSWORD)
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: redis-password
+            - name: TZ
+              value: "Asia/Shanghai"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          # 就绪探针 - 检查 Redis 是否可以接受连接
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "redis-cli -a $REDIS_PASSWORD ping | grep PONG"
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # 存活探针 - 检查 Redis 是否存活
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "redis-cli -a $REDIS_PASSWORD ping | grep PONG"
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          # 启动探针 - 等待 Redis 启动
+          startupProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "redis-cli -a $REDIS_PASSWORD ping | grep PONG"
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+            - name: redis-config
+              mountPath: /etc/redis
+              readOnly: true
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - "redis-cli -a $REDIS_PASSWORD shutdown"
+      
+      # Redis Exporter 用于 Prometheus 监控
+      - name: redis-exporter
+        image: oliver006/redis_exporter:v1.58.0
+        imagePullPolicy: IfNotPresent
+        ports:
+          - name: metrics
+            containerPort: 9121
+            protocol: TCP
+        env:
+          - name: REDIS_ADDR
+            value: "redis://127.0.0.1:6379"
+          - name: REDIS_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: redis-secret
+                key: redis-password
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: metrics
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      
+      volumes:
+        - name: redis-config
+          configMap:
+            name: redis-config
+            items:
+              - key: redis.conf
+                path: redis.conf
+  
+  # 持久化存储
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+        labels:
+          app: redis
+          component: storage
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        # 根据实际 StorageClass 调整
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 10Gi
+
+---
+# =============================================================================
+# Redis Slave StatefulSet - 从节点（可水平扩展）
+# =============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-slave
+  namespace: redis-system
+  labels:
+    app: redis
+    component: slave
+    role: slave
+spec:
+  serviceName: redis-slave
+  replicas: 2
+  selector:
+    matchLabels:
+      app: redis
+      role: slave
+  template:
+    metadata:
+      labels:
+        app: redis
+        role: slave
+        component: server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9121"
+        prometheus.io/path: "/metrics"
+    spec:
+      initContainers:
+        - name: init-data-dir
+          image: busybox:1.36
+          command: ['sh', '-c', 'chown -R 999:999 /data']
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+      
+      containers:
+        - name: redis
+          image: redis:7.2-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - redis-server
+            - /etc/redis/redis.conf
+            - --replicaof
+            - redis-master
+            - "6379"
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            - --masterauth
+            - $(REDIS_PASSWORD)
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: redis-password
+            - name: TZ
+              value: "Asia/Shanghai"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "redis-cli -a $REDIS_PASSWORD ping | grep PONG"
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "redis-cli -a $REDIS_PASSWORD ping | grep PONG"
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+            - name: redis-config
+              mountPath: /etc/redis
+              readOnly: true
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - "redis-cli -a $REDIS_PASSWORD shutdown"
+      
+      - name: redis-exporter
+        image: oliver006/redis_exporter:v1.58.0
+        imagePullPolicy: IfNotPresent
+        ports:
+          - name: metrics
+            containerPort: 9121
+            protocol: TCP
+        env:
+          - name: REDIS_ADDR
+            value: "redis://127.0.0.1:6379"
+          - name: REDIS_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: redis-secret
+                key: redis-password
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+      
+      volumes:
+        - name: redis-config
+          configMap:
+            name: redis-config
+            items:
+              - key: redis.conf
+                path: redis.conf
+  
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+        labels:
+          app: redis
+          component: storage
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 10Gi
+
+---
+# =============================================================================
+# Sentinel StatefulSet - 故障转移监控
+# =============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-sentinel
+  namespace: redis-system
+  labels:
+    app: redis
+    component: sentinel
+spec:
+  serviceName: redis-sentinel
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis
+      component: sentinel
+  template:
+    metadata:
+      labels:
+        app: redis
+        component: sentinel
+    spec:
+      containers:
+        - name: sentinel
+          image: redis:7.2-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - redis-sentinel
+            - /etc/redis/sentinel.conf
+          ports:
+            - name: sentinel
+              containerPort: 26379
+              protocol: TCP
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: redis-password
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "redis-cli -p 26379 ping | grep PONG"
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "redis-cli -p 26379 ping | grep PONG"
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          volumeMounts:
+            - name: sentinel-config
+              mountPath: /etc/redis
+              readOnly: true
+      volumes:
+        - name: sentinel-config
+          configMap:
+            name: redis-config
+            items:
+              - key: sentinel.conf
+                path: sentinel.conf
+
+---
+# =============================================================================
+# Service - 主节点（读写入口）
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-master
+  namespace: redis-system
+  labels:
+    app: redis
+    component: master
+    role: master
+spec:
+  type: ClusterIP
+  # 不自动选择标签（由 StatefulSet 管理）
+  selector:
+    app: redis
+    role: master
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+      protocol: TCP
+  sessionAffinity: None
+
+---
+# =============================================================================
+# Service - 从节点（只读入口，负载均衡）
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-slave
+  namespace: redis-system
+  labels:
+    app: redis
+    component: slave
+    role: slave
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+    role: slave
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+      protocol: TCP
+  sessionAffinity: ClientIP
+  # 会话亲和性：同一客户端总是访问同一个从节点
+  # 对于缓存场景很有用（避免缓存未命中）
+
+---
+# =============================================================================
+# Service - Sentinel（客户端发现入口）
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-sentinel
+  namespace: redis-system
+  labels:
+    app: redis
+    component: sentinel
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+    component: sentinel
+  ports:
+    - name: sentinel
+      port: 26379
+      targetPort: sentinel
+      protocol: TCP
+
+---
+# =============================================================================
+# PodDisruptionBudget - 确保故障转移期间的可用性
+# =============================================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis-master-pdb
+  namespace: redis-system
+  labels:
+    app: redis
+    component: master
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: redis
+      role: master
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis-slave-pdb
+  namespace: redis-system
+  labels:
+    app: redis
+    component: slave
+spec:
+  # 至少保留 50% 的从节点
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: redis
+      role: slave
+
+---
+# =============================================================================
+# NetworkPolicy - 网络安全策略
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-network-policy
+  namespace: redis-system
+  labels:
+    app: redis
+spec:
+  podSelector:
+    matchLabels:
+      app: redis
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 允许集群内其他命名空间访问 Redis
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              redis-access: "true"
+      ports:
+        - port: 6379
+          protocol: TCP
+    # 允许同命名空间内的 Sentinel 访问
+    - from:
+        - podSelector:
+            matchLabels:
+              app: redis
+              component: sentinel
+      ports:
+        - port: 6379
+          protocol: TCP
+    # 允许 Prometheus 抓取指标
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - port: 9121
+          protocol: TCP
+  egress:
+    # 允许 DNS 解析
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# =============================================================================
+# HorizontalPodAutoscaler - 自动扩缩容（可选）
+# =============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: redis-slave-hpa
+  namespace: redis-system
+  labels:
+    app: redis
+    component: slave
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: redis-slave
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+    scaleDown:
+      stabilizationWindowSeconds: 600
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 300

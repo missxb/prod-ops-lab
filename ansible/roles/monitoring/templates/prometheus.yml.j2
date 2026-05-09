@@ -1,0 +1,85 @@
+# ansible/roles/monitoring/templates/prometheus.yml.j2
+# Prometheus 主配置文件 - 由 Ansible 自动管理
+
+global:
+  # 全局抓取间隔
+  scrape_interval: {{ prometheus_scrape_interval | default('30s') }}
+  # 规则评估间隔
+  evaluation_interval: {{ prometheus_evaluation_interval | default('30s') }}
+  # 外部标签
+  external_labels:
+    cluster: {{ cluster_name | default('enterprise-cloud') }}
+    environment: {{ environment | default('production') }}
+
+# 告警配置
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - "localhost:{{ alertmanager_port | default(9093) }}"
+
+# 规则文件
+rule_files:
+  - "{{ prometheus_config_dir | default('/etc/prometheus') }}/rules/*.yml"
+
+# 抓取配置
+scrape_configs:
+  # Prometheus 自身监控
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:{{ prometheus_port | default(9090) }}"]
+
+  # Node Exporter
+  - job_name: "node-exporter"
+    static_configs:
+      - targets:
+{% for host in groups['monitoring'] | default([]) %}
+          - "{{ hostvars[host]['ansible_host'] | default(host) }}:{{ node_exporter_port | default(9100) }}"
+{% endfor %}
+{% for host in groups['workers'] | default([]) %}
+          - "{{ hostvars[host]['ansible_host'] | default(host) }}:{{ node_exporter_port | default(9100) }}"
+{% endfor %}
+
+  # Kubernetes 节点
+  - job_name: "kubernetes-nodes"
+    kubernetes_sd_configs:
+      - role: node
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: "(.+):10250"
+        replacement: "${1}:{{ node_exporter_port | default(9100) }}"
+        target_label: __address__
+
+  # Kubernetes Pods
+  - job_name: "kubernetes-pods"
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        target_label: __address__
+        regex: (.+)
+        replacement: ${1}
+
+  # Alertmanager
+  - job_name: "alertmanager"
+    static_configs:
+      - targets:
+          - "localhost:{{ alertmanager_port | default(9093) }}"
+
+  # Grafana
+  - job_name: "grafana"
+    static_configs:
+      - targets:
+          - "localhost:{{ grafana_port | default(3000) }}"
+
+  # Elasticsearch
+  - job_name: "elasticsearch"
+    static_configs:
+      - targets:
+          - "localhost:{{ elasticsearch_port | default(9200) }}"
+    metrics_path: /_prometheus/metrics
+    scrape_interval: 60s

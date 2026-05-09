@@ -1,0 +1,41 @@
+---
+# ansible/roles/logging/defaults/main.yml - 日志系统默认变量
+
+# Elasticsearch
+elasticsearch_version: "8.12.2"
+elasticsearch_port: 9200
+elasticsearch_transport_port: 9300
+elasticsearch_data_dir: "/data/elasticsearch"
+elasticsearch_config_dir: "/etc/elasticsearch"
+elasticsearch_cluster_name: "enterprise-logs"
+elasticsearch_heap_size: "4g"
+elasticsearch_max_lock_memory: "4g"
+
+# Fluentd
+fluentd_version: "1.16"
+fluentd_port: 24224
+fluentd_monitor_port: 24220
+fluentd_data_dir: "/data/fluentd"
+fluentd_config_dir: "/etc/fluentd"
+
+# Kibana
+kibana_version: "8.12.2"
+kibana_port: 5601
+kibana_config_dir: "/etc/kibana"
+kibana_data_dir: "/data/kibana"
+
+# Fluentd 输出配置
+fluentd_outputs:
+  - type: "elasticsearch"
+    host: "localhost"
+    port: "{{ elasticsearch_port }}"
+    logstash_format: true
+    logstash_prefix: "logs"
+    logstash_dateformat: "%Y.%m.%d"
+    include_tag_key: true
+    tag_key: "@log_name"
+    flush_interval: "5s"
+    retry_max_interval: "30s"
+    chunk_limit_size: "8m"
+    queue_limit_length: 128
+    overflow_action: "block"

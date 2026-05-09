@@ -1,0 +1,24 @@
+---
+# ansible/roles/logging/handlers/main.yml - 日志系统 Handlers
+
+- name: restart elasticsearch
+  ansible.builtin.systemd:
+    name: elasticsearch
+    state: restarted
+    daemon_reload: true
+
+- name: restart fluentd
+  ansible.builtin.systemd:
+    name: fluentd
+    state: restarted
+    daemon_reload: true
+
+- name: restart kibana
+  ansible.builtin.systemd:
+    name: kibana
+    state: restarted
+    daemon_reload: true
+
+- name: reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true

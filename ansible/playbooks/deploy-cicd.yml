@@ -1,0 +1,489 @@
+###############################################################################
+# ansible/playbooks/deploy-cicd.yml - 部署 CI/CD 系统
+#
+# 功能:
+#   - 部署 GitLab 代码仓库
+#   - 部署 Jenkins 持续集成
+#   - 部署 Harbor 容器镜像仓库
+#   - 配置 CI/CD 流水线集成
+#   - 配置 Webhook 和触发器
+#   - 配置安全认证
+#
+# 架构:
+#   Developer --> GitLab (Code) --> Jenkins (Build) --> Harbor (Images) --> K8s
+#
+# 用法:
+#   ansible-playbook -i inventory/hosts.yml playbooks/deploy-cicd.yml
+#   ansible-playbook -i inventory/hosts.yml playbooks/deploy-cicd.yml --tags "gitlab"
+#   ansible-playbook -i inventory/hosts.yml playbooks/deploy-cicd.yml --tags "jenkins"
+#   ansible-playbook -i inventory/hosts.yml playbooks/deploy-cicd.yml --tags "harbor"
+###############################################################################
+---
+- name: 企业云原生平台 - 部署 CI/CD 系统
+  hosts: masters[0]
+  become: true
+  gather_facts: true
+  any_errors_fatal: false
+
+  vars:
+    # ======================== GitLab 配置 ========================
+    gitlab_version: "16.10.0"
+    gitlab_port: 80
+    gitlab_ssl_port: 443
+    gitlab_ssh_port: 2222
+    gitlab_data_dir: "/data/gitlab"
+    gitlab_config_dir: "/etc/gitlab"
+    gitlab_log_dir: "/var/log/gitlab"
+    gitlab_registry_port: 5005
+    gitlab_runner_version: "16.10.0"
+
+    # GitLab 管理员配置
+    gitlab_root_password: "GitLab@Admin2024!"
+    gitlab_root_email: "admin@company.com"
+    gitlab_external_url: "https://gitlab.company.com"
+
+    # GitLab 备份配置
+    gitlab_backup_enabled: true
+    gitlab_backup_schedule: "0 2 * * *"
+    gitlab_backup_keep_time: 604800  # 7天
+
+    # GitLab SMTP 配置
+    gitlab_smtp_enabled: true
+    gitlab_smtp_server: "smtp.company.com"
+    gitlab_smtp_port: 587
+    gitlab_smtp_user: "gitlab@company.com"
+    gitlab_smtp_password: "smtp_password"
+    gitlab_smtp_domain: "company.com"
+    gitlab_smtp_authentication: "login"
+    gitlab_smtp_enable_starttls_auto: true
+
+    # ======================== Jenkins 配置 ========================
+    jenkins_version: "2.440.2"
+    jenkins_port: 8080
+    jenkins_agent_port: 50000
+    jenkins_data_dir: "/data/jenkins"
+    jenkins_config_dir: "/etc/jenkins"
+
+    # Jenkins 管理员配置
+    jenkins_admin_user: "admin"
+    jenkins_admin_password: "Jenkins@Admin2024!"
+    jenkins_admin_email: "admin@company.com"
+
+    # Jenkins 插件
+    jenkins_plugins:
+      - git
+      - workflow-aggregator
+      - pipeline-stage-view
+      - docker-workflow
+      - kubernetes
+      - configuration-as-code
+      - job-dsl
+      - credentials-binding
+      - ssh-slaves
+      - matrix-auth
+      - role-strategy
+      - blueocean
+      - pipeline-utility-steps
+      - aws-cloud
+      - google-cloud-sdk
+      - github-branch-source
+      - multibranch-pipeline
+
+    # Jenkins Kubernetes Agent 配置
+    jenkins_k8s_namespace: "jenkins"
+    jenkins_k8s_service_account: "jenkins-agent"
+    jenkins_k8s_image: "jenkins/inbound-agent:latest"
+
+    # ======================== Harbor 配置 ========================
+    harbor_version: "2.10.1"
+    harbor_port: 443
+    harbor_http_port: 80
+    harbor_data_dir: "/data/harbor"
+    harbor_config_dir: "/etc/harbor"
+    harbor_database_dir: "/data/harbor/database"
+    harbor_registry_dir: "/data/harbor/registry"
+    harbor_chartmuseum_dir: "/data/harbor/chartmuseum"
+
+    # Harbor 管理员配置
+    harbor_admin_password: "Harbor@Admin2024!"
+    harbor_admin_email: "admin@company.com"
+    harbor_external_url: "https://harbor.company.com"
+
+    # Harbor 仓库配置
+    harbor_storage_quota: 50  # GB
+    harbor_robot_account: "robot"
+    harbor_robot_description: "Automated CI/CD robot account"
+
+    # Harbor Webhook 配置
+    harbor_webhook_enabled: true
+    harbor_webhook_endpoint: "http://jenkins:8080/generic-webhook-trigger/invoke"
+
+    # ======================== 通用配置 ========================
+    dns_domain: "company.com"
+    enable_ssl: false
+    enable_backup: true
+    backup_dir: "/data/backup/cicd"
+
+  pre_tasks:
+    - name: 显示部署信息
+      ansible.builtin.debug:
+        msg: |
+          ============================================================
+          部署 CI/CD 系统
+          GitLab:  {{ gitlab_version }} (端口: {{ gitlab_port }})
+          Jenkins: {{ jenkins_version }} (端口: {{ jenkins_port }})
+          Harbor:  {{ harbor_version }} (端口: {{ harbor_port }})
+          目标: {{ inventory_hostname }}
+          ============================================================
+
+    - name: 检查系统资源
+      ansible.builtin.assert:
+        that:
+          - ansible_memtotal_mb >= 8192
+          - ansible_processor_vcpus >= 4
+        fail_msg: "CI/CD 节点资源不足 (内存: {{ ansible_memtotal_mb }}MB, CPU: {{ ansible_processor_vcpus }}核)"
+        success_msg: "系统资源满足 CI/CD 节点要求"
+      tags: [precheck]
+
+  tasks:
+    # ======================== 部署 GitLab ========================
+    - name: 部署 GitLab
+      block:
+        - name: 创建 GitLab 目录
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            mode: '0755'
+          loop:
+            - "{{ gitlab_data_dir }}"
+            - "{{ gitlab_config_dir }}"
+            - "{{ gitlab_log_dir }}"
+            - "{{ backup_dir }}/gitlab"
+          tags: [gitlab, dirs]
+
+        - name: 配置 GitLab 外部 URL
+          ansible.builtin.lineinfile:
+            path: /etc/environment
+            regexp: '^GITLAB_'
+            line: "GITLAB_OMNIBUS_CONFIG=external_url '{{ gitlab_external_url }}'"
+            create: true
+          tags: [gitlab, config]
+
+        - name: 配置 GitLab Omnibus 配置
+          ansible.builtin.template:
+            src: gitlab.rb.j2
+            dest: "{{ gitlab_config_dir }}/gitlab.rb"
+            mode: '0600'
+          tags: [gitlab, config]
+
+        - name: 创建 GitLab docker-compose
+          ansible.builtin.template:
+            src: docker-compose-gitlab.yml.j2
+            dest: "{{ gitlab_config_dir }}/docker-compose.yml"
+            mode: '0644'
+          tags: [gitlab, docker]
+
+        - name: 启动 GitLab
+          community.docker.docker_compose:
+            project_src: "{{ gitlab_config_dir }}"
+            state: present
+            pull: always
+          register: gitlab_start
+          tags: [gitlab, service]
+
+        - name: 等待 GitLab 就绪
+          ansible.builtin.uri:
+            url: "http://localhost:{{ gitlab_port }}/-/health"
+            method: GET
+            status_code: 200
+          register: gitlab_health
+          until: gitlab_health.status == 200
+          retries: 60
+          delay: 30
+          ignore_errors: true
+          tags: [gitlab, verify]
+
+        - name: 配置 GitLab Runner
+          ansible.builtin.command: |
+            gitlab-runner register \
+              --non-interactive \
+              --url "{{ gitlab_external_url }}" \
+              --token "{{ gitlab_runner_token | default('') }}" \
+              --executor "kubernetes" \
+              --kubernetes-namespace "{{ jenkins_k8s_namespace }}" \
+              --kubernetes-image "{{ jenkins_k8s_image }}"
+          register: runner_result
+          changed_when: "'Running' in runner_result.stdout or runner_result.rc == 0"
+          ignore_errors: true
+          tags: [gitlab, runner]
+
+        - name: 配置 GitLab 备份
+          ansible.builtin.cron:
+            name: "GitLab backup"
+            minute: "0"
+            hour: "2"
+            job: "docker exec gitlab gitlab-backup create CRON=1 && docker exec gitlab crond -f"
+            user: root
+          when: gitlab_backup_enabled | bool
+          tags: [gitlab, backup]
+      tags: [gitlab]
+
+    # ======================== 部署 Jenkins ========================
+    - name: 部署 Jenkins
+      block:
+        - name: 创建 Jenkins 目录
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            mode: '0755'
+          loop:
+            - "{{ jenkins_data_dir }}"
+            - "{{ jenkins_config_dir }}"
+            - "{{ backup_dir }}/jenkins"
+          tags: [jenkins, dirs]
+
+        - name: 创建 Jenkins 管理员密码文件
+          ansible.builtin.copy:
+            content: "{{ jenkins_admin_password }}"
+            dest: "{{ jenkins_data_dir }}/secrets/initialAdminPassword"
+            mode: '0600'
+          ignore_errors: true
+          tags: [jenkins, secrets]
+
+        - name: 创建 Jenkins Dockerfile
+          ansible.builtin.template:
+            src: Dockerfile.jenkins.j2
+            dest: "{{ jenkins_config_dir }}/Dockerfile"
+            mode: '0644'
+          tags: [jenkins, dockerfile]
+
+        - name: 创建 Jenkins docker-compose
+          ansible.builtin.template:
+            src: docker-compose-jenkins.yml.j2
+            dest: "{{ jenkins_config_dir }}/docker-compose.yml"
+            mode: '0644'
+          tags: [jenkins, docker]
+
+        - name: 启动 Jenkins
+          community.docker.docker_compose:
+            project_src: "{{ jenkins_config_dir }}"
+            state: present
+            pull: always
+          register: jenkins_start
+          tags: [jenkins, service]
+
+        - name: 等待 Jenkins 就绪
+          ansible.builtin.uri:
+            url: "http://localhost:{{ jenkins_port }}/login"
+            method: GET
+            status_code: 200
+          register: jenkins_health
+          until: jenkins_health.status == 200
+          retries: 60
+          delay: 15
+          ignore_errors: true
+          tags: [jenkins, verify]
+
+        - name: 安装 Jenkins 插件
+          ansible.builtin.shell: |
+            for plugin in {{ jenkins_plugins | join(' ') }}; do
+              jenkins-plugin-cli --plugins "$plugin" || true
+            done
+          args:
+            chdir: "{{ jenkins_data_dir }}"
+          register: plugins_result
+          changed_when: "'Installed' in plugins_result.stdout or plugins_result.rc == 0"
+          ignore_errors: true
+          tags: [jenkins, plugins]
+
+        - name: 配置 Jenkins Pipeline
+          ansible.builtin.template:
+            src: Jenkinsfile.j2
+            dest: "{{ jenkins_data_dir }}/Jenkinsfile"
+            mode: '0644'
+          ignore_errors: true
+          tags: [jenkins, pipeline]
+
+        - name: 配置 Jenkins 备份
+          ansible.builtin.cron:
+            name: "Jenkins backup"
+            minute: "0"
+            hour: "3"
+            job: "tar -czf {{ backup_dir }}/jenkins/jenkins-$(date +\\%Y\\%m\\%d).tar.gz {{ jenkins_data_dir }}"
+            user: root
+          tags: [jenkins, backup]
+      tags: [jenkins]
+
+    # ======================== 部署 Harbor ========================
+    - name: 部署 Harbor
+      block:
+        - name: 创建 Harbor 目录
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            mode: '0755'
+          loop:
+            - "{{ harbor_data_dir }}"
+            - "{{ harbor_config_dir }}"
+            - "{{ harbor_database_dir }}"
+            - "{{ harbor_registry_dir }}"
+            - "{{ harbor_chartmuseum_dir }}"
+            - "{{ backup_dir }}/harbor"
+          tags: [harbor, dirs]
+
+        - name: 下载 Harbor 安装包
+          ansible.builtin.get_url:
+            url: "https://github.com/goharbor/harbor/releases/download/v{{ harbor_version }}/harbor-offline-installer-v{{ harbor_version }}.tgz"
+            dest: "/tmp/harbor-offline-installer-v{{ harbor_version }}.tgz"
+            mode: '0644'
+          tags: [harbor, download]
+
+        - name: 解压 Harbor
+          ansible.builtin.unarchive:
+            src: "/tmp/harbor-offline-installer-v{{ harbor_version }}.tgz"
+            dest: /opt/
+            remote_src: true
+            creates: "/opt/harbor-{{ harbor_version }}"
+          tags: [harbor, install]
+
+        - name: 生成 Harbor 配置
+          ansible.builtin.template:
+            src: harbor.yml.j2
+            dest: "/opt/harbor-{{ harbor_version }}/harbor.yml"
+            mode: '0644'
+          tags: [harbor, config]
+
+        - name: 安装 Harbor
+          ansible.builtin.command: |
+            ./install.sh \
+              --with-trivy \
+              --with-chartmuseum \
+              --with-notary
+          args:
+            chdir: "/opt/harbor-{{ harbor_version }}"
+          register: harbor_install
+          changed_when: "'installed' in harbor_install.stdout or harbor_install.rc == 0"
+          tags: [harbor, install]
+
+        - name: 等待 Harbor 就绪
+          ansible.builtin.uri:
+            url: "http://localhost:{{ harbor_http_port }}/api/v2.0/health"
+            method: GET
+            status_code: 200
+          register: harbor_health
+          until: harbor_health.status == 200
+          retries: 30
+          delay: 10
+          ignore_errors: true
+          tags: [harbor, verify]
+
+        - name: 创建 Harbor 机器人账号
+          ansible.builtin.uri:
+            url: "http://localhost:{{ harbor_http_port }}/api/v2.0/robots"
+            method: POST
+            user: "admin"
+            password: "{{ harbor_admin_password }}"
+            body_format: json
+            body:
+              name: "{{ harbor_robot_account }}"
+              description: "{{ harbor_robot_description }}"
+              duration: 30
+              level: "project"
+              permissions:
+                - namespace: "library"
+                  kind: "project"
+                  access:
+                    - resource: "repository"
+                      action: "pull"
+                    - resource: "repository"
+                      action: "push"
+          register: robot_result
+          ignore_errors: true
+          tags: [harbor, robot]
+
+        - name: 配置 Harbor Webhook
+          ansible.builtin.uri:
+            url: "http://localhost:{{ harbor_http_port }}/api/v2.0/systemlevel/webhook/policies"
+            method: POST
+            user: "admin"
+            password: "{{ harbor_admin_password }}"
+            body_format: json
+            body:
+              name: "jenkins-trigger"
+              event_types:
+                - "QUOTA_EXCEED"
+                - "QUOTA_WARN"
+                - "REPLICATION"
+                - "TAG_RETENTION"
+                - "SCANNING"
+                - "GC"
+              targets:
+                - type: "http"
+                  endpoint: "{{ harbor_webhook_endpoint }}"
+                  skip_cert_verify: true
+          when: harbor_webhook_enabled | bool
+          ignore_errors: true
+          tags: [harbor, webhook]
+
+        - name: 配置 Harbor 备份
+          ansible.builtin.cron:
+            name: "Harbor backup"
+            minute: "0"
+            hour: "4"
+            job: "tar -czf {{ backup_dir }}/harbor/harbor-$(date +\\%Y\\%m\\%d).tar.gz {{ harbor_data_dir }} /opt/harbor-{{ harbor_version }}"
+            user: root
+          tags: [harbor, backup]
+      tags: [harbor]
+
+    # ======================== 配置防火墙 ========================
+    - name: 配置 CI/CD 防火墙
+      block:
+        - name: 开放 CI/CD 端口
+          community.general.firewalld:
+            port: "{{ item.port }}/{{ item.protocol | default('tcp') }}"
+            permanent: true
+            state: enabled
+            immediate: true
+          loop:
+            - { port: "{{ gitlab_port }}", protocol: 'tcp' }
+            - { port: "{{ gitlab_ssl_port }}", protocol: 'tcp' }
+            - { port: "{{ gitlab_ssh_port }}", protocol: 'tcp' }
+            - { port: "{{ jenkins_port }}", protocol: 'tcp' }
+            - { port: "{{ jenkins_agent_port }}", protocol: 'tcp' }
+            - { port: "{{ harbor_port }}", protocol: 'tcp' }
+            - { port: "{{ harbor_http_port }}", protocol: 'tcp' }
+          ignore_errors: true
+          tags: [firewall]
+      tags: [firewall]
+
+  post_tasks:
+    - name: 显示 CI/CD 系统状态
+      ansible.builtin.debug:
+        msg: |
+          ============================================================
+          CI/CD 系统部署完成!
+          GitLab:  http://{{ inventory_hostname }}:{{ gitlab_port }}
+          Jenkins: http://{{ inventory_hostname }}:{{ jenkins_port }}
+          Harbor:  http://{{ inventory_hostname }}:{{ harbor_http_port }}
+          ============================================================
+          GitLab 管理员: root / {{ gitlab_root_password }}
+          Jenkins 管理员: {{ jenkins_admin_user }} / {{ jenkins_admin_password }}
+          Harbor 管理员: admin / {{ harbor_admin_password }}
+          ============================================================
+      tags: [always]
+
+  handlers:
+    - name: restart gitlab
+      community.docker.docker_compose:
+        project_src: "{{ gitlab_config_dir }}"
+        state: restarted
+
+    - name: restart jenkins
+      community.docker.docker_compose:
+        project_src: "{{ jenkins_config_dir }}"
+        state: restarted
+
+    - name: restart harbor
+      ansible.builtin.command: "docker-compose restart"
+      args:
+        chdir: "/opt/harbor-{{ harbor_version }}"

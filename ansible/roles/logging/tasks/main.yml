@@ -1,0 +1,368 @@
+###############################################################################
+# ansible/roles/logging/tasks/main.yml - 日志 Role
+#
+# 功能:
+#   - 安装 Elasticsearch 集群
+#   - 配置 Fluentd 日志采集
+#   - 配置 Kibana 日志可视化
+#   - 配置日志索引和生命周期管理
+#   - 配置日志查询和分析
+#
+# 依赖: common role
+# 适用节点: monitoring 组
+###############################################################################
+
+# ======================== 安装 Elasticsearch ========================
+- name: 创建 elasticsearch 系统用户
+  ansible.builtin.user:
+    name: elasticsearch
+    shell: /sbin/nologin
+    system: true
+    create_home: false
+    state: present
+  tags: [logging, user]
+
+- name: 安装 Elasticsearch 依赖
+  ansible.builtin.package:
+    name:
+      - java-17-openjdk-headless
+      - unzip
+    state: present
+  tags: [logging, deps]
+
+- name: 配置 Elasticsearch 仓库
+  ansible.builtin.yum_repository:
+    name: elasticsearch
+    description: Elasticsearch Repository
+    baseurl: "https://artifacts.elastic.co/packages/{{ elasticsearch_version | default('8.12.2') | regex_replace('\\.[0-9]+$', '') }}/yum"
+    gpgcheck: true
+    gpgkey: "https://artifacts.elastic.co/GPG-KEY-elasticsearch"
+    enabled: true
+  when: ansible_os_family == 'RedHat'
+  ignore_errors: true
+  tags: [logging, repo]
+
+- name: 安装 Elasticsearch
+  ansible.builtin.package:
+    name: "elasticsearch-{{ elasticsearch_version | default('8.12.2') }}"
+    state: present
+    update_cache: true
+  ignore_errors: true
+  tags: [logging, install]
+
+- name: 创建 Elasticsearch 数据目录
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: elasticsearch
+    group: elasticsearch
+    mode: '0755'
+  loop:
+    - "{{ elasticsearch_data_dir | default('/data/elasticsearch') }}"
+    - "{{ elasticsearch_data_dir | default('/data/elasticsearch') }}/data"
+    - "{{ elasticsearch_data_dir | default('/data/elasticsearch') }}/logs"
+    - "{{ elasticsearch_config_dir | default('/etc/elasticsearch') }}"
+  tags: [logging, dirs]
+
+- name: 配置 Elasticsearch
+  ansible.builtin.template:
+    src: elasticsearch.yml.j2
+    dest: "{{ elasticsearch_config_dir | default('/etc/elasticsearch') }}/elasticsearch.yml"
+    owner: elasticsearch
+    group: elasticsearch
+    mode: '0644'
+  notify: restart elasticsearch
+  tags: [logging, config]
+
+- name: 配置 Elasticsearch JVM
+  ansible.builtin.template:
+    src: jvm.options.j2
+    dest: "{{ elasticsearch_config_dir | default('/etc/elasticsearch') }}/jvm.options.d/heap.options"
+    owner: elasticsearch
+    group: elasticsearch
+    mode: '0644'
+  notify: restart elasticsearch
+  tags: [logging, jvm]
+
+- name: 配置 Elasticsearch systemd 限制
+  ansible.builtin.copy:
+    content: |
+      [Service]
+      LimitMEMLOCK=infinity
+      LimitNOFILE=65536
+      LimitNPROC=4096
+    dest: /etc/systemd/system/elasticsearch.service.d/limits.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - reload systemd
+    - restart elasticsearch
+  tags: [logging, systemd]
+
+- name: 启动 Elasticsearch
+  ansible.builtin.systemd:
+    name: elasticsearch
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: [logging, service]
+
+- name: 等待 Elasticsearch 就绪
+  ansible.builtin.uri:
+    url: "http://localhost:{{ elasticsearch_port | default(9200) }}/_cluster/health?wait_for_status=yellow&timeout=30s"
+    method: GET
+    status_code: 200
+  register: es_health
+  until: es_health.status == 200 and (es_health.json.status == 'green' or es_health.json.status == 'yellow')
+  retries: 60
+  delay: 10
+  ignore_errors: true
+  tags: [logging, verify]
+
+- name: 创建日志索引模板
+  ansible.builtin.uri:
+    url: "http://localhost:{{ elasticsearch_port | default(9200) }}/_index_template/logs-template"
+    method: PUT
+    body_format: json
+    body:
+      index_patterns: ["logs-*"]
+      template:
+        settings:
+          number_of_shards: 3
+          number_of_replicas: 1
+          refresh_interval: "5s"
+          codec: "best_compression"
+        mappings:
+          properties:
+            "@timestamp":
+              type: "date"
+            "level":
+              type: "keyword"
+            "message":
+              type: "text"
+              analyzer: "standard"
+            "host":
+              type: "keyword"
+            "service":
+              type: "keyword"
+            "environment":
+              type: "keyword"
+            "cluster":
+              type: "keyword"
+      priority: 200
+  register: template_result
+  ignore_errors: true
+  tags: [logging, template]
+
+- name: 配置索引生命周期管理
+  ansible.builtin.uri:
+    url: "http://localhost:{{ elasticsearch_port | default(9200) }}/_ilm/policy/logs-policy"
+    method: PUT
+    body_format: json
+    body:
+      policy:
+        phases:
+          hot:
+            min_age: "0ms"
+            actions:
+              rollover:
+                max_primary_shard_size: "30gb"
+                max_age: "7d"
+              set_priority:
+                priority: 100
+          warm:
+            min_age: "7d"
+            actions:
+              shrink:
+                number_of_shards: 1
+              forcemerge:
+                max_num_segments: 1
+              set_priority:
+                priority: 50
+          cold:
+            min_age: "30d"
+            actions:
+              freeze: {}
+              set_priority:
+                priority: 0
+          delete:
+            min_age: "90d"
+            actions:
+              delete: {}
+  register: ilm_result
+  ignore_errors: true
+  tags: [logging, ilm]
+
+# ======================== 安装 Fluentd ========================
+- name: 创建 fluentd 系统用户
+  ansible.builtin.user:
+    name: fluentd
+    shell: /sbin/nologin
+    system: true
+    create_home: false
+    state: present
+  tags: [logging, user]
+
+- name: 安装 Fluentd 依赖
+  ansible.builtin.package:
+    name:
+      - ruby
+      - ruby-devel
+      - gcc
+      - make
+      - openssl-devel
+      - zlib-devel
+    state: present
+  tags: [logging, deps]
+
+- name: 安装 Fluentd via gem
+  ansible.builtin.command: "gem install fluentd --no-document"
+  register: fluentd_gem
+  changed_when: "'1 gem installed' in fluentd_gem.stdout or fluentd_gem.rc == 0"
+  ignore_errors: true
+  tags: [logging, install]
+
+- name: 创建 Fluentd 目录
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: fluentd
+    group: fluentd
+    mode: '0755'
+  loop:
+    - "{{ fluentd_data_dir | default('/data/fluentd') }}"
+    - "{{ fluentd_config_dir | default('/etc/fluentd') }}"
+    - "{{ fluentd_config_dir | default('/etc/fluentd') }}/conf.d"
+    - /var/log/fluentd
+  tags: [logging, dirs]
+
+- name: 生成 Fluentd 主配置
+  ansible.builtin.template:
+    src: fluentd.conf.j2
+    dest: "{{ fluentd_config_dir | default('/etc/fluentd') }}/fluent.conf"
+    owner: fluentd
+    group: fluentd
+    mode: '0644'
+  notify: restart fluentd
+  tags: [logging, config]
+
+- name: 生成 Fluentd 过滤配置
+  ansible.builtin.template:
+    src: fluentd-filter.conf.j2
+    dest: "{{ fluentd_config_dir | default('/etc/fluentd') }}/conf.d/filter.conf"
+    owner: fluentd
+    group: fluentd
+    mode: '0644'
+  notify: restart fluentd
+  tags: [logging, filter]
+
+- name: 生成 Fluentd 输出配置
+  ansible.builtin.template:
+    src: fluentd-output.conf.j2
+    dest: "{{ fluentd_config_dir | default('/etc/fluentd') }}/conf.d/output.conf"
+    owner: fluentd
+    group: fluentd
+    mode: '0644'
+  notify: restart fluentd
+  tags: [logging, output]
+
+- name: 创建 Fluentd systemd 服务
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Description=Fluentd
+      Documentation=https://www.fluentd.org/
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User=fluentd
+      Group=fluentd
+      ExecStart=/usr/local/bin/fluentd \
+        --config {{ fluentd_config_dir | default('/etc/fluentd') }}/fluent.conf \
+        --log {{ fluentd_data_dir | default('/data/fluentd') }}/fluentd.log \
+        --log-level info \
+        --no-supervisor
+      Restart=always
+      RestartSec=5
+      SyslogIdentifier=fluentd
+      LimitNOFILE=65536
+
+      [Install]
+      WantedBy=multi-user.target
+    dest: /etc/systemd/system/fluentd.service
+    mode: '0644'
+  notify: restart fluentd
+  tags: [logging, systemd]
+
+- name: 启动 Fluentd
+  ansible.builtin.systemd:
+    name: fluentd
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: [logging, service]
+
+# ======================== 安装 Kibana ========================
+- name: 配置 Kibana 仓库
+  ansible.builtin.yum_repository:
+    name: kibana
+    description: Kibana Repository
+    baseurl: "https://artifacts.elastic.co/packages/{{ kibana_version | default('8.12.2') | regex_replace('\\.[0-9]+$', '') }}/yum"
+    gpgcheck: true
+    gpgkey: "https://artifacts.elastic.co/GPG-KEY-elasticsearch"
+    enabled: true
+  when: ansible_os_family == 'RedHat'
+  ignore_errors: true
+  tags: [logging, repo]
+
+- name: 安装 Kibana
+  ansible.builtin.package:
+    name: "kibana-{{ kibana_version | default('8.12.2') }}"
+    state: present
+    update_cache: true
+  ignore_errors: true
+  tags: [logging, install]
+
+- name: 创建 Kibana 数据目录
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: kibana
+    group: kibana
+    mode: '0755'
+  loop:
+    - "{{ kibana_data_dir | default('/data/kibana') }}"
+  tags: [logging, dirs]
+
+- name: 配置 Kibana
+  ansible.builtin.template:
+    src: kibana.yml.j2
+    dest: "{{ kibana_config_dir | default('/etc/kibana') }}/kibana.yml"
+    owner: kibana
+    group: kibana
+    mode: '0644'
+  notify: restart kibana
+  tags: [logging, config]
+
+- name: 启动 Kibana
+  ansible.builtin.systemd:
+    name: kibana
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: [logging, service]
+
+- name: 等待 Kibana 就绪
+  ansible.builtin.uri:
+    url: "http://localhost:{{ kibana_port | default(5601) }}/api/status"
+    method: GET
+    status_code: 200
+  register: kibana_health
+  until: kibana_health.status == 200
+  retries: 60
+  delay: 10
+  ignore_errors: true
+  tags: [logging, verify]

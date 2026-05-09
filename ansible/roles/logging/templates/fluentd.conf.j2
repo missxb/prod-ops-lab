@@ -1,0 +1,87 @@
+# ansible/roles/logging/templates/fluentd.conf.j2
+# Fluentd 主配置文件 - 由 Ansible 自动管理
+
+# 全局配置
+@include conf.d/*.conf
+
+# 监控端口
+<system>
+  log_level info
+  workers 4
+  <log>
+    format json
+    time_format %Y-%m-%dT%H:%M:%S.%NZ
+  </log>
+</system>
+
+# 输入配置
+# Kubernetes 容器日志
+<source>
+  @type tail
+  path /var/log/containers/*.log
+  pos_file /var/log/fluentd-containers.log.pos
+  tag kubernetes.*
+  read_from_head true
+  <parse>
+    @type json
+    time_key time
+    time_format %Y-%m-%dT%H:%M:%S.%NZ
+    keep_time_key true
+  </parse>
+</source>
+
+# 系统日志
+<source>
+  @type tail
+  path /var/log/syslog
+  pos_file /var/log/fluentd-syslog.log.pos
+  tag system.syslog
+  <parse>
+    @type syslog
+  </parse>
+</source>
+
+# 系统消息
+<source>
+  @type tail
+  path /var/log/messages
+  pos_file /var/log/fluentd-messages.log.pos
+  tag system.messages
+  <parse>
+    @type syslog
+  </parse>
+</source>
+
+# 内核日志
+<source>
+  @type tail
+  path /var/log/kern.log
+  pos_file /var/log/fluentd-kern.log.pos
+  tag system.kern
+  <parse>
+    @type syslog
+  </parse>
+</source>
+
+# Fluentd 监控
+<source>
+  @type monitor_agent
+  bind 0.0.0.0
+  port {{ fluentd_monitor_port | default(24220) }}
+</source>
+
+# Prometheus 指标输出
+<source>
+  @type prometheus
+  port 24231
+  metrics_path /metrics
+  <metrics>
+    name fluentd_total_status_count
+    type counter
+    desc Total number of status code
+    <labels>
+      host ${hostname}
+      status ${status}
+    </labels>
+  </metrics>
+</source>

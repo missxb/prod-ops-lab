@@ -1,0 +1,186 @@
+# ansible/roles/monitoring/templates/prometheus-alerts.yml.j2
+# Prometheus 告警规则 - 由 Ansible 自动管理
+
+groups:
+  # ======================== 基础设施告警 ========================
+  - name: infrastructure
+    rules:
+{% for rule in alert_rules | default([]) %}
+      - alert: {{ rule.alert }}
+        expr: {{ rule.expr }}
+        for: {{ rule.for | default('5m') }}
+        labels:
+          severity: {{ rule.severity | default('warning') }}
+        annotations:
+          summary: "{{ rule.summary | default(rule.alert) }}"
+          description: "{{ rule.description | default('') }}"
+{% endfor %}
+
+      # 实例宕机
+      - alert: InstanceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "实例宕机: {{ '{{' }} $labels.instance {{ '}}' }}"
+          description: "实例 {{ '{{' }} $labels.instance {{ '}}' }} (job={{ '{{' }} $labels.job {{ '}}' }}) 已宕机超过1分钟"
+
+      # CPU 使用率过高
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CPU 使用率过高"
+          description: "实例 {{ '{{' }} $labels.instance {{ '}}' }} CPU 使用率超过80%，当前值: {{ '{{' }} $value | printf \"%.1f\" {{ '}}' }}%"
+
+      # 内存使用率过高
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "内存使用率过高"
+          description: "实例 {{ '{{' }} $labels.instance {{ '}}' }} 内存使用率超过85%，当前值: {{ '{{' }} $value | printf \"%.1f\" {{ '}}' }}%"
+
+      # 磁盘使用率过高
+      - alert: HighDiskUsage
+        expr: (1 - (node_filesystem_avail_bytes{fstype!="tmpfs"} / node_filesystem_size_bytes{fstype!="tmpfs"})) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "磁盘使用率过高"
+          description: "实例 {{ '{{' }} $labels.instance {{ '}}' }} 磁盘 {{ '{{' }} $labels.mountpoint {{ '}}' }} 使用率超过85%"
+
+      # 磁盘即将满
+      - alert: DiskWillFull
+        expr: predict_linear(node_filesystem_avail_bytes{fstype!="tmpfs"}[1h], 3600 * 24 * 7) < 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "磁盘即将满"
+          description: "实例 {{ '{{' }} $labels.instance {{ '}}' }} 磁盘 {{ '{{' }} $labels.mountpoint {{ '}}' }} 预计7天内将满"
+
+      # 网络丢包
+      - alert: HighNetworkPacketDrop
+        expr: rate(node_network_receive_drop_total[5m]) > 100 or rate(node_network_transmit_drop_total[5m]) > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "网络丢包率过高"
+          description: "实例 {{ '{{' }} $labels.instance {{ '}}' }} 网络接口 {{ '{{' }} $labels.device {{ '}}' }} 丢包率过高"
+
+  # ======================== Kubernetes 告警 ========================
+  - name: kubernetes
+    rules:
+      # Pod 重启
+      - alert: PodCrashLooping
+        expr: rate(kube_pod_container_status_restarts_total[15m]) * 60 * 5 > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pod 频繁重启"
+          description: "Pod {{ '{{' }} $labels.namespace {{ '}}' }}/{{ '{{' }} $labels.pod {{ '}}' }} 频繁重启"
+
+      # Pod 未就绪
+      - alert: PodNotReady
+        expr: kube_pod_status_phase{phase=~"Pending|Unknown"} > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pod 未就绪"
+          description: "Pod {{ '{{' }} $labels.namespace {{ '}}' }}/{{ '{{' }} $labels.pod {{ '}}' }} 未就绪状态超过10分钟"
+
+      # 节点未就绪
+      - alert: NodeNotReady
+        expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "节点未就绪"
+          description: "节点 {{ '{{' }} $labels.node {{ '}}' }} 未就绪状态超过5分钟"
+
+      # 节点资源不足
+      - alert: NodeResourcesLow
+        expr: (kube_node_status_allocatable_cpu - kube_node_status_allocatable_cpu * 0.8) / kube_node_status_allocatable_cpu < 0.2 or (kube_node_status_allocatable_memory - kube_node_status_allocatable_memory * 0.8) / kube_node_status_allocatable_memory < 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "节点资源不足"
+          description: "节点 {{ '{{' }} $labels.node {{ '}}' }} 资源不足"
+
+  # ======================== 应用告警 ========================
+  - name: application
+    rules:
+      # HTTP 错误率
+      - alert: HighHTTPErrorRate
+        expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HTTP 错误率过高"
+          description: "HTTP 5xx 错误率超过5%，当前值: {{ '{{' }} $value | printf \"%.1f\" {{ '}}' }}%"
+
+      # 请求延迟
+      - alert: HighRequestLatency
+        expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "请求延迟过高"
+          description: "P99 请求延迟超过2秒"
+
+  # ======================== 监控系统告警 ========================
+  - name: monitoring
+    rules:
+      # Prometheus 宕机
+      - alert: PrometheusDown
+        expr: up{job="prometheus"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus 宕机"
+          description: "Prometheus 实例已宕机"
+
+      # Alertmanager 宕机
+      - alert: AlertmanagerDown
+        expr: up{job="alertmanager"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Alertmanager 宕机"
+          description: "Alertmanager 实例已宕机"
+
+      # Grafana 宕机
+      - alert: GrafanaDown
+        expr: up{job="grafana"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Grafana 宕机"
+          description: "Grafana 实例已宕机"
+
+      # Elasticsearch 宕机
+      - alert: ElasticsearchDown
+        expr: up{job="elasticsearch"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Elasticsearch 宕机"
+          description: "Elasticsearch 实例已宕机"

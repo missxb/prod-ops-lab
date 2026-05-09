@@ -1,0 +1,53 @@
+# ansible/roles/logging/templates/elasticsearch.yml.j2
+# Elasticsearch 配置文件 - 由 Ansible 自动管理
+
+# 集群名称
+cluster.name: {{ elasticsearch_cluster_name | default('enterprise-logs') }}
+
+# 节点名称
+node.name: {{ inventory_hostname }}
+
+# 节点角色
+node.roles: {{ elasticsearch_node_roles | default(['master', 'data']) }}
+
+# 数据路径
+path.data: {{ elasticsearch_data_dir | default('/data/elasticsearch') }}/data
+path.logs: {{ elasticsearch_data_dir | default('/data/elasticsearch') }}/logs
+
+# 网络配置
+network.host: 0.0.0.0
+http.port: {{ elasticsearch_port | default(9200) }}
+transport.port: {{ elasticsearch_transport_port | default(9300) }}
+
+# 发现配置
+discovery.seed_hosts:
+{% for node in elasticsearch_nodes | default([]) %}
+  - "{{ node.host }}"
+{% endfor %}
+
+cluster.initial_master_nodes:
+{% for node in elasticsearch_nodes | default([]) if 'master' in node.role %}
+  - "{{ node.name }}"
+{% endfor %}
+
+# 内存锁定
+bootstrap.memory_lock: true
+
+# 索引配置
+action.auto_create_index: true
+action.destructive_requires_name: true
+
+# 路径回收
+path.repo: ["/data/elasticsearch/backup"]
+
+# 安全配置 (生产环境应启用)
+xpack.security.enabled: {{ elasticsearch_security_enabled | default(false) | lower }}
+xpack.security.enrollment.enabled: {{ elasticsearch_security_enrollment | default(false) | lower }}
+
+# 监控配置
+xpack.monitoring.collection.enabled: true
+
+# 性能优化
+indices.memory.index_buffer_size: 20%
+thread_pool.write.queue_size: 1000
+thread_pool.search.queue_size: 1000

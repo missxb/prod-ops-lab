@@ -1,0 +1,17 @@
+# ansible/roles/monitoring/templates/grafana-datasource.yml.j2
+# Grafana 数据源配置 - 由 Ansible 自动管理
+
+apiVersion: 1
+
+datasources:
+{% for datasource in grafana_datasources | default([]) %}
+  - name: {{ datasource.name }}
+    type: {{ datasource.type }}
+    url: {{ datasource.url }}
+    access: {{ datasource.access | default('proxy') }}
+    isDefault: {{ datasource.isDefault | default(false) | lower }}
+    editable: true
+    jsonData:
+      timeInterval: "{{ datasource.timeInterval | default('15s') }}"
+      httpMethod: {{ datasource.httpMethod | default('POST') }}
+{% endfor %}

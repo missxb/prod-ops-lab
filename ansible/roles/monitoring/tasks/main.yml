@@ -1,0 +1,359 @@
+###############################################################################
+# ansible/roles/monitoring/tasks/main.yml - 监控 Role
+#
+# 功能:
+#   - 安装 Prometheus 时序数据库
+#   - 配置 Grafana 可视化面板
+#   - 配置 Alertmanager 告警管理
+#   - 安装 Node Exporter 系统监控
+#   - 配置告警规则
+#   - 配置持久化存储
+#
+# 依赖: common role
+# 适用节点: monitoring 组
+###############################################################################
+
+# ======================== 安装 Node Exporter ========================
+- name: 创建 prometheus 系统用户
+  ansible.builtin.user:
+    name: prometheus
+    shell: /sbin/nologin
+    system: true
+    create_home: false
+    state: present
+  tags: [monitoring, user]
+
+- name: 下载 Node Exporter
+  ansible.builtin.get_url:
+    url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version | default('1.7.0') }}/node_exporter-{{ node_exporter_version | default('1.7.0') }}.linux-amd64.tar.gz"
+    dest: "/tmp/node_exporter-{{ node_exporter_version | default('1.7.0') }}.linux-amd64.tar.gz"
+    mode: '0644'
+  tags: [monitoring, download]
+
+- name: 解压 Node Exporter
+  ansible.builtin.unarchive:
+    src: "/tmp/node_exporter-{{ node_exporter_version | default('1.7.0') }}.linux-amd64.tar.gz"
+    dest: /usr/local/bin/
+    remote_src: true
+    extra_opts:
+      - --strip-components=1
+    creates: /usr/local/bin/node_exporter
+  tags: [monitoring, install]
+
+- name: 创建 Node Exporter systemd 服务
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Description=Node Exporter
+      Documentation=https://prometheus.io/docs/guides/node-exporter/
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User=prometheus
+      Group=prometheus
+      ExecStart=/usr/local/bin/node_exporter \
+        --web.listen-address=:{{ node_exporter_port | default(9100) }} \
+        --collector.systemd \
+        --collector.processes \
+        --collector.tcpstat \
+        --no-collector.wifi \
+        --no-collector.infiniband \
+        --no-collector.nfs \
+        --no-collector.nfsd \
+        --no-collector.mdadm
+      Restart=always
+      RestartSec=5
+      SyslogIdentifier=node_exporter
+
+      [Install]
+      WantedBy=multi-user.target
+    dest: /etc/systemd/system/node-exporter.service
+    mode: '0644'
+  notify: restart node-exporter
+  tags: [monitoring, config]
+
+- name: 启动 Node Exporter
+  ansible.builtin.systemd:
+    name: node-exporter
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: [monitoring, service]
+
+# ======================== 安装 Prometheus ========================
+- name: 创建 Prometheus 目录
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: prometheus
+    group: prometheus
+    mode: '0755'
+  loop:
+    - "{{ prometheus_data_dir | default('/data/prometheus') }}"
+    - "{{ prometheus_config_dir | default('/etc/prometheus') }}"
+    - "{{ prometheus_config_dir | default('/etc/prometheus') }}/rules"
+    - "{{ prometheus_config_dir | default('/etc/prometheus') }}/file_sd"
+  tags: [monitoring, dirs]
+
+- name: 下载 Prometheus
+  ansible.builtin.get_url:
+    url: "https://github.com/prometheus/prometheus/releases/download/v{{ prometheus_version | default('2.51.0') }}/prometheus-{{ prometheus_version | default('2.51.0') }}.linux-amd64.tar.gz"
+    dest: "/tmp/prometheus-{{ prometheus_version | default('2.51.0') }}.linux-amd64.tar.gz"
+    mode: '0644'
+  tags: [monitoring, download]
+
+- name: 解压 Prometheus
+  ansible.builtin.unarchive:
+    src: "/tmp/prometheus-{{ prometheus_version | default('2.51.0') }}.linux-amd64.tar.gz"
+    dest: /usr/local/bin/
+    remote_src: true
+    extra_opts:
+      - --strip-components=1
+    creates: /usr/local/bin/prometheus
+  tags: [monitoring, install]
+
+- name: 生成 Prometheus 配置
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: "{{ prometheus_config_dir | default('/etc/prometheus') }}/prometheus.yml"
+    owner: prometheus
+    group: prometheus
+    mode: '0644'
+  notify: restart prometheus
+  tags: [monitoring, config]
+
+- name: 生成 Prometheus 告警规则
+  ansible.builtin.template:
+    src: prometheus-alerts.yml.j2
+    dest: "{{ prometheus_config_dir | default('/etc/prometheus') }}/rules/alerts.yml"
+    owner: prometheus
+    group: prometheus
+    mode: '0644'
+  notify: restart prometheus
+  tags: [monitoring, rules]
+
+- name: 创建 Prometheus systemd 服务
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Description=Prometheus
+      Documentation=https://prometheus.io/docs/
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User=prometheus
+      Group=prometheus
+      ExecStart=/usr/local/bin/prometheus \
+        --config.file={{ prometheus_config_dir | default('/etc/prometheus') }}/prometheus.yml \
+        --storage.tsdb.path={{ prometheus_data_dir | default('/data/prometheus') }} \
+        --storage.tsdb.retention.time={{ prometheus_retention_days | default(30) }}d \
+        --storage.tsdb.retention.size={{ prometheus_retention_size | default('50GB') }} \
+        --web.listen-address=:{{ prometheus_port | default(9090) }} \
+        --web.enable-lifecycle \
+        --web.enable-admin-api \
+        --web.external-url=http://{{ inventory_hostname }}:{{ prometheus_port | default(9090) }}
+      Restart=always
+      RestartSec=5
+      SyslogIdentifier=prometheus
+
+      [Install]
+      WantedBy=multi-user.target
+    dest: /etc/systemd/system/prometheus.service
+    mode: '0644'
+  notify: restart prometheus
+  tags: [monitoring, config]
+
+- name: 启动 Prometheus
+  ansible.builtin.systemd:
+    name: prometheus
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: [monitoring, service]
+
+- name: 等待 Prometheus 就绪
+  ansible.builtin.uri:
+    url: "http://localhost:{{ prometheus_port | default(9090) }}/-/ready"
+    method: GET
+    status_code: 200
+  register: prometheus_health
+  until: prometheus_health.status == 200
+  retries: 30
+  delay: 5
+  ignore_errors: true
+  tags: [monitoring, verify]
+
+# ======================== 安装 Alertmanager ========================
+- name: 创建 Alertmanager 目录
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: prometheus
+    group: prometheus
+    mode: '0755'
+  loop:
+    - "{{ alertmanager_data_dir | default('/data/alertmanager') }}"
+    - "{{ alertmanager_config_dir | default('/etc/alertmanager') }}"
+  tags: [monitoring, dirs]
+
+- name: 下载 Alertmanager
+  ansible.builtin.get_url:
+    url: "https://github.com/prometheus/alertmanager/releases/download/v{{ alertmanager_version | default('0.27.0') }}/alertmanager-{{ alertmanager_version | default('0.27.0') }}.linux-amd64.tar.gz"
+    dest: "/tmp/alertmanager-{{ alertmanager_version | default('0.27.0') }}.linux-amd64.tar.gz"
+    mode: '0644'
+  tags: [monitoring, download]
+
+- name: 解压 Alertmanager
+  ansible.builtin.unarchive:
+    src: "/tmp/alertmanager-{{ alertmanager_version | default('0.27.0') }}.linux-amd64.tar.gz"
+    dest: /usr/local/bin/
+    remote_src: true
+    extra_opts:
+      - --strip-components=1
+    creates: /usr/local/bin/alertmanager
+  tags: [monitoring, install]
+
+- name: 生成 Alertmanager 配置
+  ansible.builtin.template:
+    src: alertmanager.yml.j2
+    dest: "{{ alertmanager_config_dir | default('/etc/alertmanager') }}/alertmanager.yml"
+    owner: prometheus
+    group: prometheus
+    mode: '0644'
+  notify: restart alertmanager
+  tags: [monitoring, config]
+
+- name: 创建 Alertmanager systemd 服务
+  ansible.builtin.copy:
+    content: |
+      [Unit]
+      Description=Alertmanager
+      Documentation=https://prometheus.io/docs/alerting/
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User=prometheus
+      Group=prometheus
+      ExecStart=/usr/local/bin/alertmanager \
+        --config.file={{ alertmanager_config_dir | default('/etc/alertmanager') }}/alertmanager.yml \
+        --storage.path={{ alertmanager_data_dir | default('/data/alertmanager') }} \
+        --web.listen-address=:{{ alertmanager_port | default(9093) }} \
+        --web.external-url=http://{{ inventory_hostname }}:{{ alertmanager_port | default(9093) }}
+      Restart=always
+      RestartSec=5
+      SyslogIdentifier=alertmanager
+
+      [Install]
+      WantedBy=multi-user.target
+    dest: /etc/systemd/system/alertmanager.service
+    mode: '0644'
+  notify: restart alertmanager
+  tags: [monitoring, config]
+
+- name: 启动 Alertmanager
+  ansible.builtin.systemd:
+    name: alertmanager
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: [monitoring, service]
+
+- name: 等待 Alertmanager 就绪
+  ansible.builtin.uri:
+    url: "http://localhost:{{ alertmanager_port | default(9093) }}/-/ready"
+    method: GET
+    status_code: 200
+  register: alertmanager_health
+  until: alertmanager_health.status == 200
+  retries: 30
+  delay: 5
+  ignore_errors: true
+  tags: [monitoring, verify]
+
+# ======================== 安装 Grafana ========================
+- name: 配置 Grafana 仓库
+  ansible.builtin.yum_repository:
+    name: grafana
+    description: Grafana Repository
+    baseurl: "https://rpm.grafana.com"
+    gpgcheck: true
+    gpgkey: "https://rpm.grafana.com/gpg.key"
+    enabled: true
+  when: ansible_os_family == 'RedHat'
+  ignore_errors: true
+  tags: [monitoring, repo]
+
+- name: 安装 Grafana
+  ansible.builtin.package:
+    name: "grafana-{{ grafana_version | default('10.4.1') }}"
+    state: present
+    update_cache: true
+  ignore_errors: true
+  tags: [monitoring, install]
+
+- name: 创建 Grafana 数据目录
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: grafana
+    group: grafana
+    mode: '0755'
+  loop:
+    - "{{ grafana_data_dir | default('/data/grafana') }}"
+    - "{{ grafana_data_dir | default('/data/grafana') }}/dashboards"
+    - "{{ grafana_data_dir | default('/data/grafana') }}/plugins"
+  tags: [monitoring, dirs]
+
+- name: 配置 Grafana
+  ansible.builtin.template:
+    src: grafana.ini.j2
+    dest: /etc/grafana/grafana.ini
+    owner: grafana
+    group: grafana
+    mode: '0644'
+  notify: restart grafana
+  tags: [monitoring, config]
+
+- name: 配置 Prometheus 数据源
+  ansible.builtin.template:
+    src: grafana-datasource.yml.j2
+    dest: /etc/grafana/provisioning/datasources/prometheus.yml
+    owner: grafana
+    group: grafana
+    mode: '0644'
+  notify: restart grafana
+  tags: [monitoring, datasource]
+
+- name: 安装 Grafana 插件
+  ansible.builtin.command: "grafana-cli plugins install {{ item }}"
+  loop: "{{ grafana_plugins | default([]) }}"
+  register: grafana_plugins_install
+  changed_when: "'installed' in grafana_plugins_install.stdout or grafana_plugins_install.rc == 0"
+  ignore_errors: true
+  tags: [monitoring, plugins]
+
+- name: 启动 Grafana
+  ansible.builtin.systemd:
+    name: grafana-server
+    enabled: true
+    state: started
+    daemon_reload: true
+  tags: [monitoring, service]
+
+- name: 等待 Grafana 就绪
+  ansible.builtin.uri:
+    url: "http://localhost:{{ grafana_port | default(3000) }}/api/health"
+    method: GET
+    status_code: 200
+  register: grafana_health
+  until: grafana_health.status == 200
+  retries: 30
+  delay: 5
+  ignore_errors: true
+  tags: [monitoring, verify]

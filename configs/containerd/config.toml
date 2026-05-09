@@ -1,0 +1,238 @@
+# containerd配置文件 - 生产环境标准配置
+# 配置路径: /etc/containerd/config.toml
+# 版本: 2 (containerd 1.6+)
+
+# ============================================
+# 全局配置版本
+# ============================================
+version = 2
+
+# ============================================
+# Root配置 - containerd根目录
+# ============================================
+[plugins."io.containerd.grpc.v1.cri".containerd]
+  # containerd运行时目录
+  root = "/var/lib/containerd"
+  
+  # 状态信息目录
+  state = "/run/containerd"
+  
+  # 默认运行时
+  default_runtime_name = "runc"
+  
+  # 是否启用特权容器（生产环境建议禁用）
+  disable_snapshot_annotations = true
+  
+  # 启用Untrusted平台（安全增强）
+  # disable_untrusted = true
+
+# ============================================
+# 镜像配置
+# ============================================
+[plugins."io.containerd.grpc.v1.cri".registry]
+  # 镜像配置路径
+  config_path = "/etc/containerd/certs.d"
+  
+  # 镜像拉取配置
+  [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
+    # Docker Hub镜像加速器
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."docker.io"]
+      endpoint = [
+        "https://mirror.ccs.tencentyun.com",
+        "https://docker.m.daocloud.io",
+        "https://dockerhub.azk8s.cn",
+        "https://hub-mirror.c.163.com",
+        "https://docker.io"
+      ]
+    
+    # GCR镜像加速器
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."gcr.io"]
+      endpoint = [
+        "https://gcr.io",
+        "https://gcr-mirror.k8s.io"
+      ]
+    
+    # K8s镜像仓库
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."registry.k8s.io"]
+      endpoint = [
+        "https://registry.k8s.io",
+        "https://k8s.m.daocloud.io"
+      ]
+    
+    # Quay.io镜像加速器
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."quay.io"]
+      endpoint = [
+        "https://quay.io",
+        "https://quay.m.daocloud.io"
+      ]
+  
+  # 镜像证书配置
+  [plugins."io.containerd.grpc.v1.cri".registry.configs]
+    # 中国镜像源配置
+    [plugins."io.containerd.grpc.v1.cri".registry.configs."mirror.ccs.tencentyun.com"]
+      [plugins."io.containerd.grpc.v1.cri".registry.configs."mirror.ccs.tencentyun.com".tls]
+        insecure_skip_verify = true
+      
+      [plugins."io.containerd.grpc.v1.cri".registry.configs."mirror.ccs.tencentyun.com".auth]
+        username = ""
+        password = ""
+
+# ============================================
+# 容器运行时配置
+# ============================================
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+  # 默认runc运行时
+  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+    runtime_type = "io.containerd.runc.v2"
+    
+    # 运行时参数
+    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+      # Cgroup驱动（与kubelet保持一致）
+      SystemdCgroup = true
+      
+      # 是否使用systemd作为容器的PID 1
+      SystemdCgroup = true
+      
+      # 是否使用rootless模式
+      # Rootless = true
+      
+      # 静默日志输出
+      # SilentLogs = true
+      
+      # 默认的seccomp配置
+      # SeccompProfile = "/etc/containerd/seccomp.json"
+      
+      # 容器运行时日志级别
+      # LogLevel = "warn"
+  
+  # Kata Containers运行时（可选）
+  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata]
+    runtime_type = "io.containerd.kata.v2"
+    
+    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.kata.options]
+      # Kata容器配置
+      # KernelPath = "/opt/kata/share/kata-containers/vmlinuz.container"
+      # ImagePath = "/opt/kata/share/kata-containers/kata-containers.img"
+
+# ============================================
+# 调试配置
+# ============================================
+[plugins."io.containerd.grpc.v1.cri".containerd]
+  # 启用调试日志
+  debug_level = "warn"
+  
+  # 日志格式
+  log_format = "text"
+
+# ============================================
+# CNI网络插件配置
+# ============================================
+[plugins."io.containerd.grpc.v1.cri".cni]
+  # CNI插件目录
+  bin_dir = "/opt/cni/bin"
+  
+  # CNI配置目录
+  conf_dir = "/etc/cni/net.d"
+  
+  # CNI最大配置数量
+  max_conf_num = 1000
+  
+  # CNI配置前缀
+  conf_template = ""
+  
+  # 是否使用CNI事件监听器
+  # use_event_stream = true
+
+# ============================================
+# 设备插件配置
+# ============================================
+[plugins."io.containerd.grpc.v1.cri"]
+  # 设备插件目录
+  device_ownership_from_security_context = false
+  
+  # 是否禁用TCP流
+  # disable_tcp_stream = false
+
+# ============================================
+# 沙箱配置
+# ============================================
+[plugins."io.containerd.grpc.v1.cri".sandbox]
+  # 沙箱镜像
+  sandbox_image = "registry.k8s.io/pause:3.9"
+  
+  # 沙箱容器运行时
+  sandbox_containerd_shim_path = ""
+  
+  # 沙箱超时时间
+  sandbox_run_timeout = 0
+
+# ============================================
+# 镜像代理配置（Pull时的认证）
+# ============================================
+[plugins."io.containerd.grpc.v1.cri".registry]
+  # 是否禁用代理
+  # no_proxy = ["localhost", "127.0.0.1", "*.cluster.local"]
+  
+  # 代理配置
+  # [plugins."io.containerd.grpc.v1.cri".registry.proxy]
+  #   http_proxy = "http://proxy.example.com:8080"
+  #   https_proxy = "https://proxy.example.com:8443"
+  #   no_proxy = ["localhost", "127.0.0.1"]
+
+# ============================================
+# 镜像拉取并发控制
+# ============================================
+[plugins."io.containerd.grpc.v1.cri".containerd]
+  # 最大并发拉取数
+  max_concurrent_downloads = 10
+  
+  # 镜像拉取超时时间
+  # max_pull_timeout = 10m
+  
+  # 镜像拉取并发数
+  # concurrent_pulls = 10
+
+# ============================================
+# 容器日志配置
+# ============================================
+[plugins."io.containerd.grpc.v1.cri".containerd_log_level]
+  # 日志级别: trace, debug, info, warn, error, fatal, panic
+  level = "warn"
+  
+  # 日志格式: text, json
+  format = "text"
+  
+  # 日志路径
+  path = "/var/log/containerd/containerd.log"
+  
+  # 日志文件大小限制
+  max_size = "100M"
+  
+  # 最大日志文件数
+  max_file = 10
+
+# ============================================
+# 健康检查配置
+# ============================================
+[plugins."io.containerd.grpc.v1.cri".containerd_healthcheck]
+  # 健康检查间隔
+  interval = "10s"
+  
+  # 健康检查超时
+  timeout = "5s"
+  
+  # 健康检查阈值
+  threshold = 3
+
+# ============================================
+# 资源限制配置
+# ============================================
+[plugins."io.containerd.grpc.v1.cri".containerd]
+  # 容器默认资源限制
+  default_limits = {
+    memory_limit = 0,           # 0表示不限制
+    pids_limit = 4096,
+    cpu_shares = 1024,
+    cpu_quota = 0,              # 0表示不限制
+    cpuset = ""
+  }

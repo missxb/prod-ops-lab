@@ -1,0 +1,1191 @@
+# =============================================================================
+# 高级 Fluentd 配置 - 生产级日志收集
+# =============================================================================
+# 包含：多源日志收集、过滤器配置、输出路由、缓冲区配置
+# 支持：Kubernetes日志、应用日志、系统日志、审计日志
+# =============================================================================
+
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: logging
+  labels:
+    name: logging
+    purpose: logging
+    environment: production
+
+---
+# =============================================================================
+# ConfigMap - Fluentd 主配置（fluent.conf）
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluentd-config
+  namespace: logging
+  labels:
+    app: fluentd
+    component: config
+data:
+  # =============================================================================
+  # Fluentd 主配置文件
+  # =============================================================================
+  fluent.conf: |
+    # =========================================================================
+    # Fluentd 高级配置 - 企业级日志收集系统
+    # =========================================================================
+    
+    # ---- 全局配置 ----
+    # 关闭系统配置和转发配置
+    <system>
+      log_level info
+      # 使用多线程处理（提高性能）
+      <log>
+        format json
+        time_format %Y-%m-%dT%H:%M:%S.%NZ
+      </log>
+    </system>
+    
+    # ---- HTTP 监控端点 ----
+    <source>
+      @type monitor_agent
+      bind 0.0.0.0
+      port 24220
+    </source>
+    
+    # ---- Prometheus 指标端点 ----
+    <source>
+      @type prometheus
+      port 24231
+      metrics_path /metrics
+    </source>
+    
+    <source>
+      @type prometheus_output_monitor
+      interval 10
+      <labels>
+        hostname ${hostname}
+        service fluentd
+      </labels>
+    </source>
+    
+    # ---- Fluentd 自身监控 ----
+    <source>
+      @type internal
+      @id internal_metrics
+    </source>
+    
+    # =========================================================================
+    # 输入源配置（多源日志收集）
+    # =========================================================================
+    
+    # ---- 1. Kubernetes 容器日志 ----
+    <source>
+      @type tail
+      @id kubernetes_containers
+      path /var/log/containers/*.log
+      pos_file /var/log/fluentd-containers.log.pos
+      tag kubernetes.*
+      exclude_path ["/var/log/containers/fluentd-*"]
+      read_from_head true
+      <parse>
+        @type multi_format
+        <pattern>
+          format json
+          time_key time
+          time_format %Y-%m-%dT%H:%M:%S.%NZ
+          keep_time_key true
+        </pattern>
+        <pattern>
+          format regexp
+          expression /^(?<time>.+) (?<stream>stdout|stderr) [^ ]* (?<log>.*)$/
+          time_format %Y-%m-%dT%H:%M:%S.%NZ
+        </pattern>
+      </parse>
+      # 缓冲区配置
+      <buffer>
+        @type file
+        path /var/log/fluentd/kubernetes.containers.buffer
+        flush_mode interval
+        flush_thread_count 4
+        flush_interval 5s
+        retry_type exponential_backoff
+        retry_forever true
+        retry_max_interval 300s
+        chunk_limit_size 8M
+        queue_limit_length 256
+        total_limit_size 4G
+        overflow_action block
+        compress gzip
+      </buffer>
+    </source>
+    
+    # ---- 2. Kubernetes 系统日志 ----
+    <source>
+      @type tail
+      @id kubernetes_system
+      path /var/log/syslog,/var/log/messages,/var/log/kern.log
+      pos_file /var/log/fluentd-system.log.pos
+      tag system.*
+      <parse>
+        @type syslog
+      </parse>
+      <buffer>
+        @type file
+        path /var/log/fluentd/system.buffer
+        flush_mode interval
+        flush_thread_count 2
+        flush_interval 10s
+        retry_type exponential_backoff
+        retry_forever true
+        chunk_limit_size 4M
+        queue_limit_length 128
+        total_limit_size 2G
+        overflow_action drop_oldest_chunk
+        compress gzip
+      </buffer>
+    </source>
+    
+    # ---- 3. Nginx 访问日志 ----
+    <source>
+      @type tail
+      @id nginx_access
+      path /var/log/nginx/access.log
+      pos_file /var/log/fluentd/nginx.access.log.pos
+      tag nginx.access
+      <parse>
+        @type nginx
+      </parse>
+      <buffer>
+        @type file
+        path /var/log/fluentd/nginx.access.buffer
+        flush_mode interval
+        flush_thread_count 2
+        flush_interval 5s
+        retry_type exponential_backoff
+        retry_forever true
+        chunk_limit_size 4M
+        queue_limit_length 128
+        total_limit_size 2G
+        overflow_action block
+        compress gzip
+      </buffer>
+    </source>
+    
+    # ---- 4. Nginx 错误日志 ----
+    <source>
+      @type tail
+      @id nginx_error
+      path /var/log/nginx/error.log
+      pos_file /var/log/fluentd/nginx.error.log.pos
+      tag nginx.error
+      <parse>
+        @type nginx_error
+      </parse>
+      <buffer>
+        @type file
+        path /var/log/fluentd/nginx.error.buffer
+        flush_mode interval
+        flush_thread_count 2
+        flush_interval 10s
+        retry_type exponential_backoff
+        retry_forever true
+        chunk_limit_size 4M
+        queue_limit_length 128
+        total_limit_size 2G
+        overflow_action drop_oldest_chunk
+        compress gzip
+      </buffer>
+    </source>
+    
+    # ---- 5. 应用日志（JSON 格式） ----
+    <source>
+      @type tail
+      @id app_json_logs
+      path /var/log/app/*.log,/var/log/application/*.log
+      pos_file /var/log/fluentd/app.json.log.pos
+      tag app.json
+      exclude_path ["/var/log/app/access.log"]
+      read_from_head true
+      <parse>
+        @type json
+        time_key timestamp
+        time_format %Y-%m-%dT%H:%M:%S.%L%z
+        keep_time_key true
+      </parse>
+      <buffer>
+        @type file
+        path /var/log/fluentd/app.json.buffer
+        flush_mode interval
+        flush_thread_count 4
+        flush_interval 5s
+        retry_type exponential_backoff
+        retry_forever true
+        chunk_limit_size 8M
+        queue_limit_length 256
+        total_limit_size 4G
+        overflow_action block
+        compress gzip
+      </buffer>
+    </source>
+    
+    # ---- 6. 审计日志 ----
+    <source>
+      @type tail
+      @id audit_logs
+      path /var/log/audit/audit.log
+      pos_file /var/log/fluentd/audit.log.pos
+      tag audit.*
+      <parse>
+        @type json
+        time_key timestamp
+        time_format %Y-%m-%dT%H:%M:%S.%L%z
+      </parse>
+      <buffer>
+        @type file
+        path /var/log/fluentd/audit.buffer
+        flush_mode interval
+        flush_thread_count 2
+        flush_interval 5s
+        retry_type exponential_backoff
+        retry_forever true
+        chunk_limit_size 4M
+        queue_limit_length 128
+        total_limit_size 2G
+        overflow_action block
+        compress gzip
+      </buffer>
+    </source>
+    
+    # ---- 7. 容器日志（通过 socket） ----
+    <source>
+      @type forward
+      @id container_forward
+      port 24224
+      bind 0.0.0.0
+      <parse>
+        @type json
+      </parse>
+      <security>
+        self_hostname fluentd
+        shared_key ${FLUENTD_SHARED_KEY}
+      </security>
+      <transport>
+        tcp
+      </transport>
+    </source>
+    
+    # ---- 8. TCP/UDP 系统日志 ----
+    <source>
+      @type syslog
+      @id syslog_input
+      port 5140
+      bind 0.0.0.0
+      tag syslog
+      <transport>
+        tcp
+      </transport>
+      <parse>
+        message_format auto
+        with_priority true
+      </parse>
+    </source>
+    
+    # ---- 9. HTTP 日志收集端点 ----
+    <source>
+      @type http
+      @id http_input
+      port 9880
+      bind 0.0.0.0
+      <parse>
+        @type json
+      </parse>
+    </source>
+    
+    # =========================================================================
+    # 过滤器配置（日志增强和处理）
+    # =========================================================================
+    
+    # ---- 1. Kubernetes 元数据过滤 ----
+    <filter kubernetes.**>
+      @type kubernetes_metadata
+      @id filter_kube_metadata
+      kubernetes_url "https://#{ENV['KUBERNETES_SERVICE_HOST']}:#{ENV['KUBERNETES_SERVICE_PORT']}"
+      verify_ssl true
+      ca_file /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      bearer_token_file /var/run/secrets/kubernetes.io/serviceaccount/token
+      # 标签缓存（减少 API 调用）
+      cache_size 1000
+      # 缓存 TTL
+      cache_ttl 3600
+      # 忽略的标签
+      skip_labels false
+      skip_container_metadata false
+      skip_master_url true
+      skip_namespace_metadata false
+      skip_service_metadata false
+      # 标签映射
+      <labels>
+        app
+        version
+        component
+        tier
+        environment
+      </labels>
+      # 注解映射
+      <annotations>
+        prometheus.io/scrape
+        prometheus.io/port
+        prometheus.io/path
+      </annotations>
+    </filter>
+    
+    # ---- 2. JSON 解析增强 ----
+    <filter app.json.**>
+      @type parser
+      @id filter_json_parse
+      key_name log
+      reserve_data true
+      remove_key_name_field false
+      replace_invalid_sequence true
+      <parse>
+        @type json
+        time_key timestamp
+        time_format %Y-%m-%dT%H:%M:%S.%L%z
+      </parse>
+    </filter>
+    
+    # ---- 3. 日志级别识别 ----
+    <filter **>
+      @type record_transformer
+      @id filter_log_level
+      enable_ruby true
+      <record>
+        log_level ${record["level"] || record["severity"] || record["log_level"] || 
+                   case record["log"]
+                   when /ERROR|FATAL|CRITICAL/ then "error"
+                   when /WARN|WARNING/ then "warning"
+                   when /INFO/ then "info"
+                   when /DEBUG|TRACE/ then "debug"
+                   else "unknown"
+                   end}
+      </record>
+      # 保留原始字段
+      remove_keys 
+    </filter>
+    
+    # ---- 4. 时间戳标准化 ----
+    <filter **>
+      @type record_transformer
+      @id filter_timestamp
+      enable_ruby true
+      <record>
+        timestamp ${Time.now.iso8601(3)}
+        hostname ${Socket.gethostname}
+        environment ${ENV['ENVIRONMENT'] || 'production'}
+        cluster ${ENV['CLUSTER_NAME'] || 'unknown'}
+      </record>
+    </filter>
+    
+    # ---- 5. IP 地址提取 ----
+    <filter nginx.access>
+      @type parser
+      @id filter_nginx_parse
+      key_name log
+      reserve_data true
+      <parse>
+        @type nginx
+      </parse>
+    </filter>
+    
+    <filter nginx.access>
+      @type geoip
+      @id filter_geoip
+      geoip_lookup_keys remote_addr
+      <record>
+        country_code ${connection.remote_host}
+      </record>
+      <cache>
+        @type memory
+        flush_interval 60s
+      </cache>
+    </filter>
+    
+    # ---- 6. 敏感信息脱敏 ----
+    <filter **>
+      @type record_transformer
+      @id filter_mask_sensitive
+      enable_ruby true
+      <record>
+        log ${record["log"].to_s.gsub(/password["\s:=]+["']?[^"'\s]+["']?/i, 'password=***REDACTED***')
+                  .gsub(/token["\s:=]+["']?[^"'\s]+["']?/i, 'token=***REDACTED***')
+                  .gsub(/key["\s:=]+["']?[^"'\s]+["']?/i, 'key=***REDACTED***')
+                  .gsub(/secret["\s:=]+["']?[^"'\s]+["']?/i, 'secret=***REDACTED***')
+                  .gsub(/\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b/, '****-****-****-****')}
+      </record>
+    </filter>
+    
+    # ---- 7. 日志大小限制 ----
+    <filter **>
+      @type record_transformer
+      @id filter_size_limit
+      enable_ruby true
+      <record>
+        log ${record["log"].to_s.length > 10000 ? record["log"].to_s[0, 10000] + "... [TRUNCATED]" : record["log"]}
+        truncated ${record["log"].to_s.length > 10000}
+      </record>
+    </filter>
+    
+    # ---- 8. 错误日志增强 ----
+    <filter **>
+      @type record_transformer
+      @id filter_error_enhance
+      enable_ruby true
+      <record>
+        is_error ${["error", "fatal", "critical", "critical"].include?(record["log_level"].to_s.downcase)}
+        is_warning ${["warn", "warning"].include?(record["log_level"].to_s.downcase)}
+        severity_score ${case record["log_level"].to_s.downcase
+                       when "debug" then 0
+                       when "info" then 1
+                       when "warning" then 2
+                       when "error" then 3
+                       when "fatal", "critical" then 4
+                       else 1
+                       end}
+      </record>
+    </filter>
+    
+    # ---- 9. 丢弃调试日志（生产环境可选） ----
+    # <filter **>
+    #   @type grep
+    #   @id filter_drop_debug
+    #   <exclude>
+    #     key log_level
+    #     pattern /^debug$/
+    #   </exclude>
+    # </filter>
+    
+    # ---- 10. 性能监控日志 ----
+    <filter kubernetes.**>
+      @type record_transformer
+      @id filter_add_metadata
+      <record>
+        log_source kubernetes
+        collect_type container
+        fluentd_time ${Time.now.iso8601}
+      </record>
+    </filter>
+    
+    # =========================================================================
+    # 输出路由配置（基于日志内容的智能路由）
+    # =========================================================================
+    
+    # ---- 主路由配置 ----
+    <match **>
+      @type copy
+      
+      # ---- 输出1: Elasticsearch ----
+      <store>
+        @type elasticsearch
+        @id output_elasticsearch
+        host elasticsearch.logging.svc.cluster.local
+        port 9200
+        scheme http
+        index_name fluentd-${tag_parts[0]}-${tag_parts[1]}-${time}
+        type_name _doc
+        logstash_format true
+        logstash_prefix fluentd
+        logstash_dateformat %Y.%m.%d
+        include_tag_key true
+        type_name fluentd
+        # 连接池配置
+        pool_max 30
+        pool_idle_timeout 10
+        # 重试配置
+        reload_connections true
+        reload_on_failure true
+        resurrect_after 5
+        # 超时配置
+        request_timeout 30s
+        <buffer>
+          @type file
+          path /var/log/fluentd/elasticsearch.buffer
+          flush_mode interval
+          flush_thread_count 8
+          flush_interval 5s
+          retry_type exponential_backoff
+          retry_forever true
+          retry_max_interval 300s
+          chunk_limit_size 8M
+          queue_limit_length 512
+          total_limit_size 8G
+          overflow_action block
+          compress gzip
+        </buffer>
+      </store>
+      
+      # ---- 输出2: S3 存储 ----
+      <store>
+        @type s3
+        @id output_s3
+        aws_key_id ${AWS_ACCESS_KEY_ID}
+        aws_sec_key ${AWS_SECRET_ACCESS_KEY}
+        s3_bucket ${S3_BUCKET:-fluentd-logs}
+        s3_region ${AWS_REGION:-us-east-1}
+        s3_endpoint ${S3_ENDPOINT:-https://s3.amazonaws.com}
+        path logs/${tag_parts[0]}/${tag_parts[1]}/%Y/%m/%d
+        output_format json
+        store_as gzip
+        # 时间戳格式
+        time_slice_format %Y%m%d-%H%M
+        time_slice_wait 10m
+        # 缓冲区配置
+        <buffer time>
+          @type file
+          path /var/log/fluentd/s3.buffer
+          flush_mode interval
+          flush_thread_count 4
+          flush_interval 10m
+          retry_type exponential_backoff
+          retry_forever true
+          chunk_limit_size 32M
+          total_limit_size 16G
+          compress gzip
+        </buffer>
+      </store>
+      
+      # ---- 输出3: 本地文件（备份） ----
+      <store>
+        @type file
+        @id output_file
+        path /var/log/fluentd/backup/${tag_parts[0]}_${tag_parts[1]}
+        append true
+        time_slice_format %Y%m%d
+        time_slice_wait 10m
+        time_format %Y-%m-%dT%H:%M:%S.%NZ
+        compress gzip
+        <buffer>
+          @type file
+          path /var/log/fluentd/file.buffer
+          flush_mode interval
+          flush_thread_count 2
+          flush_interval 30s
+          retry_type exponential_backoff
+          retry_forever true
+          chunk_limit_size 16M
+          total_limit_size 8G
+          compress gzip
+        </buffer>
+      </store>
+    </match>
+    
+    # ---- 错误日志单独路由到告警系统 ----
+    <match **.error>
+      @type forward
+      
+      # 主节点
+      <server>
+        name alert-processor-1
+        host alert-processor.logging.svc.cluster.local
+        port 24224
+        weight 60
+        heartbeat_type tcp
+        <security>
+          self_hostname fluentd
+          shared_key ${FLUENTD_SHARED_KEY}
+        </security>
+      </server>
+      
+      # 备用节点
+      <server>
+        name alert-processor-2
+        host alert-processor-2.logging.svc.cluster.local
+        port 24224
+        weight 60
+        heartbeat_type tcp
+        <security>
+          self_hostname fluentd
+          shared_key ${FLUENTD_SHARED_KEY}
+        </security>
+      </server>
+      
+      # 缓冲区配置
+      <buffer>
+        @type file
+        path /var/log/fluentd/alert.buffer
+        flush_mode interval
+        flush_thread_count 2
+        flush_interval 1s
+        retry_type exponential_backoff
+        retry_forever true
+        chunk_limit_size 4M
+        queue_limit_length 64
+        total_limit_size 1G
+        overflow_action drop_oldest_chunk
+      </buffer>
+    </match>
+    
+    # ---- 审计日志路由到独立存储 ----
+    <match audit.**>
+      @type elasticsearch
+      @id output_audit_elasticsearch
+      host elasticsearch.logging.svc.cluster.local
+      port 9200
+      scheme http
+      index_name audit-${time}
+      type_name _doc
+      logstash_format true
+      logstash_prefix audit
+      logstash_dateformat %Y.%m.%d
+      include_tag_key true
+      type_name audit
+      <buffer>
+        @type file
+        path /var/log/fluentd/audit.buffer
+        flush_mode interval
+        flush_thread_count 4
+        flush_interval 5s
+        retry_type exponential_backoff
+        retry_forever true
+        chunk_limit_size 8M
+        queue_limit_length 128
+        total_limit_size 4G
+        overflow_action block
+        compress gzip
+      </buffer>
+    </match>
+    
+    # ---- Nginx 日志路由 ----
+    <match nginx.**>
+      @type elasticsearch
+      @id output_nginx_elasticsearch
+      host elasticsearch.logging.svc.cluster.local
+      port 9200
+      scheme http
+      index_name nginx-${tag_parts[0]}-${time}
+      type_name _doc
+      logstash_format true
+      logstash_prefix nginx
+      logstash_dateformat %Y.%m.%d
+      include_tag_key true
+      type_name nginx
+      <buffer>
+        @type file
+        path /var/log/fluentd/nginx.buffer
+        flush_mode interval
+        flush_thread_count 4
+        flush_interval 5s
+        retry_type exponential_backoff
+        retry_forever true
+        chunk_limit_size 8M
+        queue_limit_length 128
+        total_limit_size 4G
+        overflow_action block
+        compress gzip
+      </buffer>
+    </match>
+    
+    # ---- 系统日志路由 ----
+    <match system.**>
+      @type elasticsearch
+      @id output_system_elasticsearch
+      host elasticsearch.logging.svc.cluster.local
+      port 9200
+      scheme http
+      index_name system-${tag_parts[0]}-${time}
+      type_name _doc
+      logstash_format true
+      logstash_prefix system
+      logstash_dateformat %Y.%m.%d
+      include_tag_key true
+      type_name system
+      <buffer>
+        @type file
+        path /var/log/fluentd/system.buffer
+        flush_mode interval
+        flush_thread_count 2
+        flush_interval 10s
+        retry_type exponential_backoff
+        retry_forever true
+        chunk_limit_size 8M
+        queue_limit_length 128
+        total_limit_size 4G
+        overflow_action drop_oldest_chunk
+        compress gzip
+      </buffer>
+    </match>
+    
+    # ---- 错误处理 ----
+    <match **>
+      @type null
+      @id output_null
+    </match>
+
+---
+# =============================================================================
+# ConfigMap - Fluentd 插件配置
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluentd-plugins
+  namespace: logging
+  labels:
+    app: fluentd
+    component: plugins
+data:
+  # ---- Dockerfile 内容（用于自定义镜像） ----
+  Dockerfile: |
+    FROM fluent/fluentd-kubernetes-daemonset:v1.16-debian-elasticsearch8-1
+    
+    # 安装额外插件
+    USER root
+    RUN gem install \
+        fluent-plugin-prometheus \
+        fluent-plugin-elasticsearch \
+        fluent-plugin-s3 \
+        fluent-plugin-record-modifier \
+        fluent-plugin-kubernetes_metadata \
+        fluent-plugin-multi-format-parser \
+        fluent-plugin-grep \
+        fluent-plugin-rewrite-tag-filter \
+        fluent-plugin-geoip \
+        fluent-plugin-concat \
+        fluent-plugin-forward \
+        fluent-plugin-http \
+        fluent-plugin-syslog \
+        --no-document
+    
+    # 创建必要目录
+    RUN mkdir -p /var/log/fluentd && \
+        chown -R fluent:fluent /var/log/fluentd
+    
+    USER fluent
+
+---
+# =============================================================================
+# Secret - Fluentd 配置
+# =============================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fluentd-secret
+  namespace: logging
+  labels:
+    app: fluentd
+    component: secret
+type: Opaque
+data:
+  # S3 访问密钥（需要 base64 编码）
+  aws-access-key-id: QVdBQ0NFU1NLRVlJRA==
+  aws-secret-access-key: QVdTRUNSRVRLRVlE
+  # Fluentd 共享密钥
+  fluentd-shared-key: Zmx1ZW50ZC1zaGFyZWQta2V5LTMyY2hhcnM=
+  # Elasticsearch 密码（如果需要认证）
+  elasticsearch-password: ZWxhc3RpY3NlYXJjaC1wYXNzd29yZA==
+
+---
+# =============================================================================
+# ServiceAccount
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluentd
+  namespace: logging
+  labels:
+    app: fluentd
+
+---
+# ClusterRole - 日志收集权限
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluentd
+  labels:
+    app: fluentd
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - namespaces
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - daemonsets
+      - replicasets
+      - statefulsets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources:
+      - nodes/proxy
+    verbs: ["get"]
+
+---
+# ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fluentd
+  labels:
+    app: fluentd
+subjects:
+  - kind: ServiceAccount
+    name: fluentd
+    namespace: logging
+roleRef:
+  kind: ClusterRole
+  name: fluentd
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# =============================================================================
+# DaemonSet - Fluentd 日志收集器
+# =============================================================================
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluentd
+  namespace: logging
+  labels:
+    app: fluentd
+    component: daemonset
+spec:
+  selector:
+    matchLabels:
+      app: fluentd
+  template:
+    metadata:
+      labels:
+        app: fluentd
+        component: daemonset
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "24231"
+        prometheus.io/path: "/metrics"
+        # 禁止 Fluentd 收集自身日志（避免循环）
+        fluentd.io/exclude: "true"
+    spec:
+      serviceAccountName: fluentd
+      # 安全上下文
+      securityContext:
+        runAsUser: 0  # 需要 root 权限访问日志目录
+      
+      # 调度约束
+      nodeSelector:
+        # 可选：只在特定节点上运行
+        # node-role: worker
+      
+      # 容忍度 - 确保在所有节点上运行
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+      
+      # 优先级
+      priorityClassName: system-cluster-critical
+      
+      containers:
+        # ---- Fluentd 主容器 ----
+        - name: fluentd
+          image: fluent/fluentd-kubernetes-daemonset:v1.16-debian-elasticsearch8-1
+          imagePullPolicy: IfNotPresent
+          
+          # 环境变量
+          env:
+            # Elasticsearch 配置
+            - name: FLUENT_ELASTICSEARCH_HOST
+              value: "elasticsearch.logging.svc.cluster.local"
+            - name: FLUENT_ELASTICSEARCH_PORT
+              value: "9200"
+            - name: FLUENT_ELASTICSEARCH_SCHEME
+              value: "http"
+            - name: FLUENT_ELASTICSEARCH_USER
+              value: "elastic"
+            - name: FLUENT_ELASTICSEARCH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fluentd-secret
+                  key: elasticsearch-password
+            - name: FLUENT_ELASTICSEARCH_SSL_VERIFY
+              value: "true"
+            - name: FLUENT_ELASTICSEARCH_SSL_VERSION
+              value: "TLSv1_2"
+            - name: FLUENT_ELASTICSEARCH_LOGSTASH_PREFIX
+              value: "fluentd"
+            - name: FLUENT_ELASTICSEARCH_LOGSTASH_DATEFORMAT
+              value: "%Y.%m.%d"
+            - name: FLUENT_ELASTICSEARCH_BUFFER_TYPE
+              value: "file"
+            - name: FLUENT_ELASTICSEARCH_BUFFER_PATH
+              value: "/var/log/fluentd-buffers/kubernetes.buffer"
+            - name: FLUENT_ELASTICSEARCH_BUFFER_FLUSH_INTERVAL
+              value: "5s"
+            - name: FLUENT_ELASTICSEARCH_BUFFER_CHUNK_LIMIT_SIZE
+              value: "8M"
+            - name: FLUENT_ELASTICSEARCH_BUFFER_TOTAL_LIMIT_SIZE
+              value: "8G"
+            
+            # S3 配置
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: fluentd-secret
+                  key: aws-access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: fluentd-secret
+                  key: aws-secret-access-key
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: S3_BUCKET
+              value: "fluentd-logs"
+            
+            # Fluentd 共享密钥
+            - name: FLUENTD_SHARED_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: fluentd-secret
+                  key: fluentd-shared-key
+            
+            # 环境信息
+            - name: ENVIRONMENT
+              value: "production"
+            - name: CLUSTER_NAME
+              value: "production-cluster"
+            
+            # 时区
+            - name: TZ
+              value: "Asia/Shanghai"
+          
+          # 资源限制
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          
+          # 就绪探针
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 24231
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          
+          # 存活探针
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 24231
+            initialDelaySeconds: 60
+            periodSeconds: 60
+            timeoutSeconds: 15
+            failureThreshold: 5
+          
+          # 卷挂载
+          volumeMounts:
+            # 容器日志目录
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+            # Docker 容器日志
+            - name: containers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+            # Fluentd 缓冲区
+            - name: buffer
+              mountPath: /var/log/fluentd-buffers
+            # 自定义配置
+            - name: config-volume
+              mountPath: /fluentd/etc/
+              readOnly: true
+            # 应用日志目录
+            - name: app-logs
+              mountPath: /var/log/app
+              readOnly: true
+            # Nginx 日志目录
+            - name: nginx-logs
+              mountPath: /var/log/nginx
+              readOnly: true
+      
+      # 初始化容器
+      initContainers:
+        - name: init-permissions
+          image: busybox:1.36
+          command: ['sh', '-c', 'mkdir -p /var/log/fluentd-buffers && chmod 777 /var/log/fluentd-buffers']
+          volumeMounts:
+            - name: buffer
+              mountPath: /var/log/fluentd-buffers
+      
+      # 卷定义
+      volumes:
+        # 容器日志目录
+        - name: varlog
+          hostPath:
+            path: /var/log
+            type: Directory
+        # Docker 容器日志
+        - name: containers
+          hostPath:
+            path: /var/lib/docker/containers
+            type: Directory
+        # Fluentd 缓冲区（hostPath 持久化）
+        - name: buffer
+          hostPath:
+            path: /var/log/fluentd-buffers
+            type: DirectoryOrCreate
+        # 自定义配置
+        - name: config-volume
+          configMap:
+            name: fluentd-config
+        # 应用日志目录
+        - name: app-logs
+          hostPath:
+            path: /var/log/app
+            type: DirectoryOrCreate
+        # Nginx 日志目录
+        - name: nginx-logs
+          hostPath:
+            path: /var/log/nginx
+            type: DirectoryOrCreate
+      
+      # 更新策略
+      updateStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxUnavailable: 1
+
+---
+# =============================================================================
+# Service - Fluentd 监控
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: fluentd
+  namespace: logging
+  labels:
+    app: fluentd
+    component: service
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "24231"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app: fluentd
+  ports:
+    - name: monitor-agent
+      port: 24220
+      targetPort: 24220
+      protocol: TCP
+    - name: forward
+      port: 24224
+      targetPort: 24224
+      protocol: TCP
+    - name: prometheus
+      port: 24231
+      targetPort: 24231
+      protocol: TCP
+    - name: syslog
+      port: 5140
+      targetPort: 5140
+      protocol: TCP
+    - name: http
+      port: 9880
+      targetPort: 9880
+      protocol: TCP
+
+---
+# =============================================================================
+# ServiceMonitor - Prometheus 服务发现（如果使用 Prometheus Operator）
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: fluentd
+  namespace: logging
+  labels:
+    app: fluentd
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: fluentd
+  namespaceSelector:
+    matchNames:
+      - logging
+  endpoints:
+    - port: prometheus
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+
+---
+# =============================================================================
+# PrometheusRule - Fluentd 告警规则
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: fluentd-alerts
+  namespace: logging
+  labels:
+    app: fluentd
+    release: prometheus
+spec:
+  groups:
+    - name: fluentd
+      rules:
+        # Fluentd 副本不可用
+        - alert: FluentdDaemonSetNotReady
+          expr: kube_daemonset_status_number_ready{namespace="logging", daemonset="fluentd"} < kube_daemonset_status_desired_number_scheduled{namespace="logging", daemonset="fluentd"}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Fluentd DaemonSet 有副本未就绪"
+            description: "Fluentd DaemonSet 有 {{ $value }} 个副本未就绪"
+        
+        # Fluentd 缓冲区使用率过高
+        - alert: FluentdBufferHigh
+          expr: fluentd_output_status_buffer_total_byte_size > 10737418240
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Fluentd 缓冲区使用率过高"
+            description: "Fluentd 缓冲区使用率已超过 10GB"
+        
+        # Fluentd 输出延迟过高
+        - alert: FluentdOutputHighLatency
+          expr: fluentd_output_status_retry_count > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Fluentd 输出重试次数过多"
+            description: "Fluentd 输出重试次数超过阈值"
+        
+        # Fluentd 错误率过高
+        - alert: FluentdHighErrorRate
+          expr: rate(fluentd_output_status_num_errors_total[5m]) > 0.1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Fluentd 错误率过高"
+            description: "Fluentd 输出错误率超过 0.1/秒"

@@ -1,0 +1,29 @@
+# ansible/roles/logging/templates/jvm.options.j2
+# Elasticsearch JVM 选项 - 由 Ansible 自动管理
+
+# 堆内存配置
+-Xms{{ elasticsearch_heap_size | default('4g') }}
+-Xmx{{ elasticsearch_heap_size | default('4g') }}
+
+# GC 配置
+-XX:+UseG1GC
+-XX:MaxGCPauseMillis=50
+-XX:InitiatingHeapOccupancyPercent=30
+-XX:G1ReservePercent=15
+
+# 内存锁定
+-XX:+AlwaysPreTouch
+
+# 错误处理
+-XX:+HeapDumpOnOutOfMemoryError
+-XX:HeapDumpPath={{ elasticsearch_data_dir | default('/data/elasticsearch') }}/logs/heapdump.hprof
+-XX:ErrorFile={{ elasticsearch_data_dir | default('/data/elasticsearch') }}/logs/hs_err_pid%p.log
+
+# 性能优化
+-XX:+UseStringDeduplication
+-XX:+ParallelRefProcEnabled
+-XX:-OmitStackTraceInFastThrow
+
+# 线程配置
+-XX:+UseThreadPriorities
+-XX:ThreadPriorityPolicy=42

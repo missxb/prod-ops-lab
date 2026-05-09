@@ -1,0 +1,43 @@
+# ansible/roles/logging/templates/kibana.yml.j2
+# Kibana 配置文件 - 由 Ansible 自动管理
+
+# 服务器配置
+server.port: {{ kibana_port | default(5601) }}
+server.host: "0.0.0.0"
+server.name: "{{ inventory_hostname }}"
+server.basePath: ""
+server.rewriteBasePath: false
+
+# Elasticsearch 连接
+elasticsearch.hosts:
+  - "http://localhost:{{ elasticsearch_port | default(9200) }}"
+
+# Kibana 数据目录
+path.data: {{ kibana_data_dir | default('/data/kibana') }}
+
+# 日志配置
+logging.dest: {{ kibana_data_dir | default('/data/kibana') }}/kibana.log
+logging.verbose: false
+logging.quiet: true
+logging.silent: false
+
+# 监控配置
+xpack.monitoring.ui.container.elasticsearch.enabled: true
+xpack.monitoring.ui.container.logstash.enabled: false
+
+# 安全配置
+xpack.security.enabled: false
+xpack.security.encryptionKey: "{{ kibana_encryption_key | default('a]random32charact3rstring') }}"
+xpack.reporting.encryptionKey: "{{ kibana_reporting_key | default('b]random32charact3rstring') }}"
+xpack.encryptedSavedObjects.encryptionKey: "{{ kibana_saved_objects_key | default('c]random32charact3rstring') }}"
+
+# 语言配置
+i18n.locale: "zh-CN"
+
+# 仪表板配置
+dashboard.defaultPath: "/app/dashboards"
+
+# 功能配置
+xpack.discoverEnhancedAppSettings.enabled: true
+xpack.security.session.idleTimeout: "1h"
+xpack.security.session.lifespan: "24h"

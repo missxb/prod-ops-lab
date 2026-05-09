@@ -1,0 +1,847 @@
+# =============================================================================
+# RabbitMQ 消息队列 - 生产级集群配置
+# =============================================================================
+# 包含：RabbitMQ集群部署、配置管理、持久化存储、监控端点
+# 基于 RabbitMQ 3.12+ 和 Erlang/OTP
+# =============================================================================
+
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rabbitmq-system
+  labels:
+    name: rabbitmq-system
+    purpose: messaging
+    environment: production
+
+---
+# =============================================================================
+# ConfigMap - RabbitMQ 配置
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rabbitmq-config
+  namespace: rabbitmq-system
+  labels:
+    app: rabbitmq
+    component: config
+data:
+  # ---- 集群配置 ----
+  enabled_plugins: |
+    [
+      rabbitmq_management,
+      rabbitmq_prometheus,
+      rabbitmq_peer_discovery_k8s,
+      rabbitmq_shovel,
+      rabbitmq_shovel_management,
+      rabbitmq_tracing
+    ]
+  
+  # ---- rabbitmq.conf 配置文件 ----
+  rabbitmq.conf: |
+    ## ---- 集群发现 ----
+    cluster_formation.peer_discovery_backend = k8s
+    cluster_formation.k8s.host = kubernetes.default.svc.cluster.local
+    cluster_formation.k8s.address_type = hostname
+    cluster_formation.node_cleanup.interval = 10
+    cluster_formation.node_cleanup.only_log_warning = true
+    
+    ## ---- 集群名称 ----
+    cluster_name = rabbitmq-cluster
+    
+    ## ---- 内存管理 ----
+    ## RabbitMQ 内存水位线（可用内存的百分比）
+    vm_memory_high_watermark.relative = 0.6
+    ## 磁盘空间告警阈值（可用磁盘空间字节数）
+    vm_memory_high_watermark_paging_ratio = 0.75
+    disk_free_limit.absolute = 2GB
+    
+    ## ---- 连接限制 ----
+    ## 每个连接的通道限制
+    channel_max = 128
+    ## 最大连接数（0 表示无限制）
+    # heartbeat = 60
+    heartbeat = 30
+    
+    ## ---- 管理插件 ----
+    management.listener.port = 15672
+    management.listener.ssl = false
+    
+    ## ---- Prometheus 监控端点 ----
+    prometheus.return_per_object_metrics = true
+    prometheus.tcp.port = 15692
+    
+    ## ---- 队列配置 ----
+    ## 默认队列类型（quorum 队列更可靠）
+    default_queue_type = quorum
+    
+    ## ---- 日志配置 ----
+    log.console = true
+    log.console.level = info
+    log.file.level = warning
+    
+    ## ---- 网络配置 ----
+    tcp_listen_options.backlog = 256
+    tcp_listen_options.nodelay = true
+    tcp_listen_options.sndbuf = 196608
+    tcp_listen_options.recbuf = 196608
+    
+    ## ---- 消息持久化 ----
+    queue_master_locator = min-masters
+    
+    ## ---- 超时配置 ----
+    collector_metrics_interval = 30000
+    
+    ## ---- 远程管理 ----
+    management.load_definitions = /etc/rabbitmq/definitions.json
+    
+    ## ---- 安全配置 ----
+    ## 禁用不必要的默认用户
+    # loopback_users.guest = true
+  
+  # ---- 队列定义文件（自动创建） ----
+  definitions.json: |
+    {
+      "vhosts": [
+        {"name": "/"},
+        {"name": "production"},
+        {"name": "staging"},
+        {"name": "development"}
+      ],
+      "users": [
+        {
+          "name": "admin",
+          "password_hash": "",
+          "hashing_algorithm": "rabbit_password_hashing_sha256",
+          "tags": "administrator"
+        },
+        {
+          "name": "app_user",
+          "password_hash": "",
+          "hashing_algorithm": "rabbit_password_hashing_sha256",
+          "tags": "management"
+        }
+      ],
+      "permissions": [
+        {
+          "user": "admin",
+          "vhost": "/",
+          "configure": ".*",
+          "write": ".*",
+          "read": ".*"
+        },
+        {
+          "user": "app_user",
+          "vhost": "production",
+          "configure": ".*",
+          "write": ".*",
+          "read": ".*"
+        }
+      ],
+      "exchanges": [
+        {
+          "name": "events",
+          "vhost": "production",
+          "type": "topic",
+          "durable": true,
+          "auto_delete": false,
+          "arguments": {}
+        },
+        {
+          "name": "commands",
+          "vhost": "production",
+          "type": "direct",
+          "durable": true,
+          "auto_delete": false,
+          "arguments": {}
+        },
+        {
+          "name": "notifications",
+          "vhost": "production",
+          "type": "fanout",
+          "durable": true,
+          "auto_delete": false,
+          "arguments": {}
+        },
+        {
+          "name": "dlx",
+          "vhost": "production",
+          "type": "direct",
+          "durable": true,
+          "auto_delete": false,
+          "arguments": {}
+        }
+      ],
+      "queues": [
+        {
+          "name": "events.user.registered",
+          "vhost": "production",
+          "type": "quorum",
+          "durable": true,
+          "auto_delete": false,
+          "arguments": {
+            "x-dead-letter-exchange": "dlx",
+            "x-delivery-limit": 5,
+            "x-queue-leader-locator": "balanced"
+          }
+        },
+        {
+          "name": "events.user.updated",
+          "vhost": "production",
+          "type": "quorum",
+          "durable": true,
+          "auto_delete": false,
+          "arguments": {
+            "x-dead-letter-exchange": "dlx"
+          }
+        },
+        {
+          "name": "commands.process-order",
+          "vhost": "production",
+          "type": "quorum",
+          "durable": true,
+          "auto_delete": false,
+          "arguments": {
+            "x-dead-letter-exchange": "dlx",
+            "x-delivery-limit": 3
+          }
+        },
+        {
+          "name": "dlq.dead-letter",
+          "vhost": "production",
+          "type": "quorum",
+          "durable": true,
+          "auto_delete": false,
+          "arguments": {}
+        }
+      ],
+      "bindings": [
+        {
+          "source": "events",
+          "vhost": "production",
+          "destination": "events.user.registered",
+          "destination_type": "queue",
+          "routing_key": "user.registered",
+          "arguments": {}
+        },
+        {
+          "source": "events",
+          "vhost": "production",
+          "destination": "events.user.updated",
+          "destination_type": "queue",
+          "routing_key": "user.updated",
+          "arguments": {}
+        },
+        {
+          "source": "commands",
+          "vhost": "production",
+          "destination": "commands.process-order",
+          "destination_type": "queue",
+          "routing_key": "process-order",
+          "arguments": {}
+        },
+        {
+          "source": "dlx",
+          "vhost": "production",
+          "destination": "dlq.dead-letter",
+          "destination_type": "queue",
+          "routing_key": "",
+          "arguments": {}
+        }
+      ]
+    }
+  
+  # ---- 普通用户配置 ----
+  rabbitmq-env.conf: |
+    ## 环境变量配置
+    RABBITMQ_USE_LONGNAME=true
+    RABBITMQ_NODENAME=rabbit@$(HOSTNAME).rabbitmq-nodes.rabbitmq-system.svc.cluster.local
+
+---
+# =============================================================================
+# Secret - RabbitMQ 凭证
+# =============================================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rabbitmq-secret
+  namespace: rabbitmq-system
+  labels:
+    app: rabbitmq
+    component: secret
+type: Opaque
+data:
+  # 密码需要 base64 编码
+  # echo -n 'AdminPassword123!' | base64
+  rabbitmq-admin-password: QWRtaW5QYXNzd29yZDEyMyE=
+  rabbitmq-erlang-cookie: YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=
+  rabbitmq-app-password: QXBwVXNlclBhc3N3b3JkITEyMyE=
+  rabbitmq-concat-cookie: YXBwX3VzZXJfY29va2llX3NlY3JldA==
+
+---
+# =============================================================================
+# ServiceAccount - 用于 K8s API 自动发现
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rabbitmq
+  namespace: rabbitmq-system
+  labels:
+    app: rabbitmq
+
+---
+# Role - Kubernetes API 访问权限
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rabbitmq-peer-discovery-role
+  namespace: rabbitmq-system
+  labels:
+    app: rabbitmq
+rules:
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rabbitmq-peer-discovery-binding
+  namespace: rabbitmq-system
+  labels:
+    app: rabbitmq
+subjects:
+  - kind: ServiceAccount
+    name: rabbitmq
+    namespace: rabbitmq-system
+roleRef:
+  kind: Role
+  name: rabbitmq-peer-discovery-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# =============================================================================
+# StatefulSet - RabbitMQ 集群
+# =============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+  namespace: rabbitmq-system
+  labels:
+    app: rabbitmq
+    component: server
+spec:
+  serviceName: rabbitmq-nodes
+  replicas: 3
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+        component: server
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "15692"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: rabbitmq
+      
+      # 安全上下文
+      securityContext:
+        fsGroup: 999
+        runAsUser: 999
+        runAsGroup: 999
+        runAsNonRoot: true
+      
+      # 容忍度 - 允许在有污点的节点上运行（可选）
+      tolerations:
+        - key: "dedicated"
+          operator: "Equal"
+          value: "rabbitmq"
+          effect: "NoSchedule"
+      
+      # 反亲和性 - 确保 RabbitMQ Pod 分散在不同节点
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - rabbitmq
+                topologyKey: kubernetes.io/hostname
+        # 节点亲和性 - 优先调度到指定节点（可选）
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 50
+              preference:
+                matchExpressions:
+                  - key: node-role
+                    operator: In
+                    values:
+                      - middleware
+      
+      containers:
+        # ---- RabbitMQ 主容器 ----
+        - name: rabbitmq
+          image: rabbitmq:3.12-management-alpine
+          imagePullPolicy: IfNotPresent
+          
+          # 容器安全上下文
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 999
+            capabilities:
+              drop:
+                - ALL
+          
+          ports:
+            - name: amqp
+              containerPort: 5672
+              protocol: TCP
+            - name: management
+              containerPort: 15672
+              protocol: TCP
+            - name: prometheus
+              containerPort: 15692
+              protocol: TCP
+            - name: clustering
+              containerPort: 25672
+              protocol: TCP
+          
+          env:
+            # ---- 节点名称 ----
+            - name: RABBITMQ_NODENAME
+              value: "rabbit@$(HOSTNAME).rabbitmq-nodes.rabbitmq-system.svc.cluster.local"
+            - name: RABBITMQ_USE_LONGNAME
+              value: "true"
+            
+            # ---- 集群配置 ----
+            - name: RABBITMQ_ERLANG_COOKIE
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-secret
+                  key: rabbitmq-erlang-cookie
+            
+            # ---- 管理员密码 ----
+            - name: RABBITMQ_DEFAULT_USER
+              value: "admin"
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-secret
+                  key: rabbitmq-admin-password
+            - name: RABBITMQ_DEFAULT_VHOST
+              value: "/"
+            
+            # ---- 资源限制 ----
+            - name: RABBITMQ_VM_MEMORY_HIGH_WATERMARK
+              value: "0.6"
+            - name: RABBITMQ_DISK_FREE_LIMIT
+              value: "2GB"
+            
+            # ---- 时区 ----
+            - name: TZ
+              value: "Asia/Shanghai"
+          
+          # ---- 资源限制 ----
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          
+          # ---- 就绪探针 ----
+          readinessProbe:
+            exec:
+              command:
+                - rabbitmq-diagnostics
+                - -q
+                - check_running
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 15
+            failureThreshold: 3
+          
+          # ---- 存活探针 ----
+          livenessProbe:
+            exec:
+              command:
+                - rabbitmq-diagnostics
+                - -q
+                - check_running
+            initialDelaySeconds: 60
+            periodSeconds: 60
+            timeoutSeconds: 30
+            failureThreshold: 5
+          
+          # ---- 启动探针 ----
+          startupProbe:
+            exec:
+              command:
+                - rabbitmq-diagnostics
+                - -q
+                - check_running
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 60
+          
+          # ---- 卷挂载 ----
+          volumeMounts:
+            - name: rabbitmq-data
+              mountPath: /var/lib/rabbitmq
+            - name: rabbitmq-config
+              mountPath: /etc/rabbitmq/rabbitmq.conf
+              subPath: rabbitmq.conf
+              readOnly: true
+            - name: rabbitmq-plugins
+              mountPath: /etc/rabbitmq/enabled_plugins
+              subPath: enabled_plugins
+              readOnly: true
+            - name: rabbitmq-env
+              mountPath: /etc/rabbitmq/rabbitmq-env.conf
+              subPath: rabbitmq-env.conf
+              readOnly: true
+            - name: rabbitmq-definitions
+              mountPath: /etc/rabbitmq/definitions.json
+              subPath: definitions.json
+              readOnly: true
+          
+          # ---- 优雅终止 ----
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - rabbitmqctl
+                  - stop_app
+      
+      volumes:
+        - name: rabbitmq-config
+          configMap:
+            name: rabbitmq-config
+            items:
+              - key: rabbitmq.conf
+                path: rabbitmq.conf
+        - name: rabbitmq-plugins
+          configMap:
+            name: rabbitmq-config
+            items:
+              - key: enabled_plugins
+                path: enabled_plugins
+        - name: rabbitmq-env
+          configMap:
+            name: rabbitmq-config
+            items:
+              - key: rabbitmq-env.conf
+                path: rabbitmq-env.conf
+        - name: rabbitmq-definitions
+          configMap:
+            name: rabbitmq-config
+            items:
+              - key: definitions.json
+                path: definitions.json
+  
+  # ---- 持久化存储 ----
+  volumeClaimTemplates:
+    - metadata:
+        name: rabbitmq-data
+        labels:
+          app: rabbitmq
+          component: storage
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 20Gi
+
+---
+# =============================================================================
+# Service - NodePort（管理界面）
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq-management
+  namespace: rabbitmq-system
+  labels:
+    app: rabbitmq
+    component: management
+spec:
+  type: NodePort
+  selector:
+    app: rabbitmq
+  ports:
+    - name: management
+      port: 15672
+      targetPort: management
+      nodePort: 31672
+      protocol: TCP
+  sessionAffinity: ClientIP
+
+---
+# =============================================================================
+# Service - 内部访问（ClusterIP）
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq-nodes
+  namespace: rabbitmq-system
+  labels:
+    app: rabbitmq
+    component: nodes
+spec:
+  type: ClusterIP
+  # Headless Service 用于 StatefulSet
+  clusterIP: None
+  selector:
+    app: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: amqp
+      protocol: TCP
+    - name: management
+      port: 15672
+      targetPort: management
+      protocol: TCP
+    - name: prometheus
+      port: 15692
+      targetPort: prometheus
+      protocol: TCP
+    - name: clustering
+      port: 25672
+      targetPort: clustering
+      protocol: TCP
+
+---
+# =============================================================================
+# Service - AMQP 客户端访问
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: rabbitmq-system
+  labels:
+    app: rabbitmq
+    component: amqp
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "15692"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  selector:
+    app: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: amqp
+      protocol: TCP
+    - name: amqp-tls
+      port: 5671
+      targetPort: amqp
+      protocol: TCP
+  sessionAffinity: None
+
+---
+# =============================================================================
+# PodDisruptionBudget
+# =============================================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rabbitmq-pdb
+  namespace: rabbitmq-system
+  labels:
+    app: rabbitmq
+spec:
+  # 至少保持 2 个节点可用
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: rabbitmq
+
+---
+# =============================================================================
+# NetworkPolicy - 网络安全
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-network-policy
+  namespace: rabbitmq-system
+  labels:
+    app: rabbitmq
+spec:
+  podSelector:
+    matchLabels:
+      app: rabbitmq
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 允许集群内应用访问 AMQP 端口
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              rabbitmq-access: "true"
+      ports:
+        - port: 5672
+          protocol: TCP
+    # 允许管理界面访问
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - port: 15672
+          protocol: TCP
+        - port: 15692
+          protocol: TCP
+    # 集群内部通信
+    - from:
+        - podSelector:
+            matchLabels:
+              app: rabbitmq
+      ports:
+        - port: 5672
+          protocol: TCP
+        - port: 4369
+          protocol: TCP
+        - port: 25672
+          protocol: TCP
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # 集群内部通信
+    - to:
+        - podSelector:
+            matchLabels:
+              app: rabbitmq
+      ports:
+        - port: 5672
+          protocol: TCP
+        - port: 4369
+          protocol: TCP
+        - port: 25672
+          protocol: TCP
+
+---
+# =============================================================================
+# ServiceMonitor - Prometheus 服务发现（如果使用 Prometheus Operator）
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: rabbitmq
+  namespace: rabbitmq-system
+  labels:
+    app: rabbitmq
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: rabbitmq
+  namespaceSelector:
+    matchNames:
+      - rabbitmq-system
+  endpoints:
+    - port: prometheus
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+
+---
+# =============================================================================
+# PrometheusRule - 告警规则（如果使用 Prometheus Operator）
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: rabbitmq-alerts
+  namespace: rabbitmq-system
+  labels:
+    app: rabbitmq
+    release: prometheus
+spec:
+  groups:
+    - name: rabbitmq
+      rules:
+        # RabbitMQ 节点下线
+        - alert: RabbitMQNodeDown
+          expr: rabbitmq_identity_info == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "RabbitMQ 节点 {{ $labels.instance }} 已下线"
+            description: "RabbitMQ 节点 {{ $labels.instance }} 已经超过2分钟不可用"
+        
+        # 队列消息积压
+        - alert: RabbitMQQueueDepthHigh
+          expr: rabbitmq_queue_messages > 10000
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "队列 {{ $labels.queue }} 消息积压"
+            description: "队列 {{ $labels.queue }} 中有 {{ $value }} 条消息等待处理"
+        
+        # 消费者数量为零
+        - alert: RabbitMQNoConsumers
+          expr: rabbitmq_queue_consumers == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "队列 {{ $labels.queue }} 没有消费者"
+            description: "队列 {{ $labels.queue }} 已经超过10分钟没有任何消费者"
+        
+        # 内存使用过高
+        - alert: RabbitMQHighMemory
+          expr: rabbitmq_process_resident_memory_bytes / rabbitmq_resident_memory_limit_bytes > 0.8
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "RabbitMQ 内存使用过高"
+            description: "RabbitMQ 内存使用率已超过 80%"
+        
+        # 磁盘空间不足
+        - alert: RabbitMQDiskSpaceLow
+          expr: rabbitmq_disk_space_available / rabbitmq_disk_space_available_limit < 0.2
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "RabbitMQ 磁盘空间不足"
+            description: "RabbitMQ 可用磁盘空间已低于 20%"
