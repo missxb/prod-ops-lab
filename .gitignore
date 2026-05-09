@@ -1,0 +1,43 @@
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.iml
+
+# Secrets (never commit)
+*.key
+*.pem
+*.crt
+*.p12
+.env
+.env.local
+secrets.yaml
+
+# Kubernetes secrets (generated)
+*-secret.yaml
+
+# Helm charts dependencies
+charts/
+*.tgz
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Ansible
+*.retry
+ansible.cfg

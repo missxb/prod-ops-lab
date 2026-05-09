@@ -1,0 +1,68 @@
+# =============================================================================
+# Kibana 可视化平台配置
+# 企业级云原生运维平台 - 日志系统
+# =============================================================================
+
+# ===== 服务器配置 =====
+server.name: kibana
+server.host: "0.0.0.0"
+server.port: 5601
+server.publicBaseUrl: ""
+
+# ===== Elasticsearch 连接 =====
+elasticsearch.hosts: ["http://elasticsearch.logging.svc.cluster.local:9200"]
+elasticsearch.username: "elastic"
+elasticsearch.password: "${ELASTICSEARCH_PASSWORD}"
+elasticsearch.ssl.verificationMode: none
+
+# ===== 监控配置 =====
+monitoring.ui.container.elasticsearch.enabled: true
+monitoring.ui.enabled: true
+
+# ===== 日志配置 =====
+logging.root.level: info
+logging.appenders.file.type: file
+logging.appenders.file.fileName: /usr/share/kibana/logs/kibana.log
+logging.appenders.file.layout.type: json
+
+# ===== 性能优化 =====
+ops.interval: 30000
+i18n.locale: "zh-CN"
+i18n.fallbackLocale: "en"
+
+# ===== 仪表板配置 =====
+dashboard.allowByValueEmbeddables: true
+discover:sampleSize: 500
+search:queryLanguage: kuery
+csv:separator: ","
+csv:quoteValues: true
+
+# ===== 安全配置 =====
+xpack.security.enabled: false
+xpack.encryptedSavedObjects.encryptionKey: "encryption-key-for-saved-objects"
+xpack.reporting.encryptionKey: "encryption-key-for-reporting"
+xpack.security.encryptionKey: "encryption-key-for-security"
+
+# ===== 功能配置 =====
+# 允许所有功能
+xpack.security.session.idleTimeout: "1h"
+xpack.security.session.lifespan: "24h"
+
+# ===== 快照配置 =====
+xpack.snapshotRestore.enabled: false
+
+# ===== 告警配置 =====
+xpack.actions.allowedHosts: ["*"]
+xpack.alerting.enabled: true
+xpack.eventLog.enabled: true
+xpack.monitoring.enabled: true
+
+# ===== API 配置 =====
+console.enabled: true
+api.enabled: true
+
+# ===== 默认索引模式 =====
+defaultIndex: "kubernetes-*"
+
+# ===== 时间字段 =====
+timeFieldName: "@timestamp"

@@ -1,0 +1,280 @@
+###############################################################################
+# MySQL 主节点配置
+# 项目: 企业级云原生运维平台
+# 功能: 主从复制主节点，半同步复制，GTID模式
+###############################################################################
+
+[mysqld]
+# ==================== 基本配置 ====================
+# 服务器ID（集群中必须唯一）
+# 主节点通常设置为1
+server-id = 1
+
+# 端口
+port = 3306
+
+# 绑定地址（允许远程连接）
+# 0.0.0.0: 监听所有接口
+# 127.0.0.1: 仅本地
+bind-address = 0.0.0.0
+
+# 数据目录
+datadir = /var/lib/mysql
+
+# PID文件
+pid-file = /var/run/mysqld/mysqld.pid
+
+# Socket文件
+socket = /var/run/mysqld/mysqld.sock
+
+# 错误日志
+log-error = /var/log/mysql/error.log
+
+# ==================== 日志配置 ====================
+# 二进制日志（主从复制必需）
+# 格式: 文件名前缀
+log-bin = /var/log/mysql/mysql-bin
+
+# 二进制日志格式
+# ROW: 记录行变化（推荐，最安全，数据一致性最好）
+# STATEMENT: 记录SQL语句（可能不一致，如NOW()）
+# MIXED: 混合模式（默认STATEMENT，不安全时切换为ROW）
+binlog_format = ROW
+
+# 二进制日志过期天数（自动清理旧日志）
+expire_logs_days = 7
+
+# 二进制日志缓存大小（每个会话独立）
+binlog_cache_size = 4M
+
+# 单个二进制日志文件最大大小
+# 超过后自动创建新文件
+max_binlog_size = 256M
+
+# 二进制日志同步策略
+# 1: 每次事务提交时同步到磁盘（最安全，性能最低）
+# 0: 由操作系统决定何时刷盘（最快，可能丢1秒数据）
+# N: 每N次事务同步一次
+sync_binlog = 1
+
+# 二进制日志校验和
+binlog_checksum = CRC32
+
+# ==================== GTID配置 ====================
+# GTID（全局事务标识符）配置
+# 每个事务都有全局唯一ID，便于故障转移和复制管理
+
+# 启用GTID模式
+gtid_mode = ON
+
+# 强制GTID一致性
+# 阻止不兼容GTID的语句执行
+enforce_gtid_consistency = ON
+
+# GTID过期时间（秒，默认2周）
+gtid_purge_interval = 86400
+
+# ==================== 半同步复制配置 ====================
+# 半同步复制：主节点等待至少一个从节点确认后才返回成功
+# 优点：数据更安全
+# 缺点：性能降低
+
+# 加载半同步复制插件
+# 主节点需要master插件
+plugin-load = "rpl_semi_sync_master=semisync_master.so;rpl_semi_sync_slave=semisync_slave.so"
+
+# 启用半同步复制
+rpl_semi_sync_master_enabled = ON
+
+# 半同步复制超时时间（毫秒）
+# 超时后降级为异步复制
+# 建议1-10秒
+rpl_semi_sync_master_timeout = 3000
+
+# 等待的从节点数量
+# 1: 等待1个从节点确认（推荐）
+# 0: 不等待
+rpl_semi_sync_master_wait_for_slave_count = 1
+
+# 从节点全部断开后，自动降级为异步复制
+rpl_semi_sync_master_enabled_after_no_slave = ON
+
+# 半同步复制等待位置
+# AFTER_SYNC: 在刷盘后等待（更安全）
+# AFTER_COMMIT: 在提交后等待（默认）
+rpl_semi_sync_master_wait_point = AFTER_SYNC
+
+# ==================== InnoDB配置 ====================
+# InnoDB缓冲池大小
+# 建议为物理内存的70-80%
+# 例如：8G内存的服务器设置5-6G
+innodb_buffer_pool_size = 1G
+
+# 缓冲池实例数
+# 减少锁竞争，建议等于CPU核心数
+innodb_buffer_pool_instances = 4
+
+# InnoDB日志文件大小
+# 越大写入性能越好，但恢复时间越长
+innodb_log_file_size = 256M
+
+# InnoDB日志缓冲区大小
+innodb_log_buffer_size = 64M
+
+# InnoDB刷新策略
+# 1: 每次事务提交时刷日志（最安全）
+# 0: 每秒刷一次（最快）
+# 2: 每次事务提交写入OS缓存，每秒刷盘
+innodb_flush_log_at_trx_commit = 1
+
+# InnoDB I/O容量
+# 设置磁盘I/O能力（IOPS）
+# HDD: 200-400
+# SSD: 2000-10000
+innodb_io_capacity = 1000
+
+# InnoDB I/O容量最大值
+innodb_io_capacity_max = 2000
+
+# InnoDB文件per表
+# 每个表一个.ibd文件
+innodb_file_per_table = 1
+
+# InnoDB页面大小
+innodb_page_size = 16384
+
+# InnoDB线程并发数
+innodb_thread_concurrency = 0
+
+# InnoDB死锁检测
+innodb_deadlock_detect = ON
+
+# InnoDB锁等待超时（秒）
+innodb_lock_wait_timeout = 50
+
+# InnoDB自适应哈希索引
+innodb_adaptive_hash_index = ON
+
+# ==================== 连接配置 ====================
+# 最大连接数
+# 根据应用需求设置，过多会消耗内存
+max_connections = 500
+
+# 最大用户连接数（防止单个用户占满连接）
+max_user_connections = 400
+
+# 最大允许数据包大小
+max_allowed_packet = 64M
+
+# 连接超时（秒）
+connect_timeout = 10
+
+# 网络读取超时（秒）
+net_read_timeout = 30
+
+# 网络写入超时（秒）
+net_write_timeout = 60
+
+# 交互超时（秒）
+interactive_timeout = 28800
+
+# 等待超时（秒）
+wait_timeout = 28800
+
+# ==================== 缓存配置 ====================
+# 排序缓冲区大小（每个会话独立）
+sort_buffer_size = 4M
+
+# 连接缓冲区大小（每个会话独立）
+join_buffer_size = 4M
+
+# 顺序读取缓冲区
+read_buffer_size = 2M
+
+# 随机读取缓冲区
+read_rnd_buffer_size = 8M
+
+# 表定义缓存
+table_open_cache = 2000
+
+# 表缓存实例数
+table_open_cache_instances = 16
+
+# 表缓存大小
+table_definition_cache = 1400
+
+# 临时表大小
+tmp_table_size = 64M
+max_heap_table_size = 64M
+
+# ==================== 安全配置 ====================
+# 跳过DNS解析（提升连接速度）
+# 启用后只能使用IP连接，不能使用主机名
+skip-name-resolve
+
+# 跳过外部锁定
+skip-external-locking
+
+# ==================== 字符集配置 ====================
+character-set-server = utf8mb4
+collation-server = utf8mb4_unicode_ci
+
+# ==================== 慢查询日志 ====================
+# 启用慢查询日志
+slow_query_log = 1
+
+# 慢查询日志文件
+slow_query_log_file = /var/log/mysql/slow.log
+
+# 慢查询阈值（秒）
+# 超过此时间的查询记录到慢查询日志
+long_query_time = 2
+
+# 记录不使用索引的查询
+log_queries_not_using_indexes = 1
+
+# 记录慢查询管理语句
+log_slow_admin_statements = 1
+
+# ==================== 复制配置 ====================
+# 从节点并行复制线程数
+# 提高从节点复制性能
+replica_parallel_workers = 4
+
+# 并行复制类型
+# LOGICAL_CLOCK: 基于逻辑时钟（推荐）
+# DATABASE: 基于数据库（不推荐）
+replica_parallel_type = LOGICAL_CLOCK
+
+# 复制心跳间隔（秒）
+# 检测复制延迟
+replica_net_timeout = 30
+
+# 复制信息存储方式
+# TABLE: 存储在表中（推荐，支持崩溃恢复）
+# FILE: 存储在文件中
+master_info_repository = TABLE
+relay_log_info_repository = TABLE
+
+# 中继日志恢复
+relay_log_recovery = ON
+
+# 复制过滤（可选）
+# replicate-do-db = mydb
+# replicate-ignore-db = test
+
+# ==================== 安全选项 ====================
+# 禁用本地文件加载
+local_infile = OFF
+
+# 符号链接
+symbolic-links = 0
+
+[client]
+default-character-set = utf8mb4
+port = 3306
+socket = /var/run/mysqld/mysqld.sock
+
+[mysql]
+default-character-set = utf8mb4
+prompt = '[MySQL] \u@\h [\d]> '

@@ -1,0 +1,190 @@
+# =============================================================================
+# 日志系统命名空间配置
+# 企业级云原生运维平台
+# =============================================================================
+
+# ===== 命名空间 =====
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: logging
+  labels:
+    name: logging
+    environment: production
+    team: platform
+    purpose: logging-stack
+  annotations:
+    description: "ELK 日志系统专用命名空间"
+    managed-by: "deploy-logging.sh"
+
+---
+# ===== ResourceQuota: 命名空间资源配额 =====
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: logging-quota
+  namespace: logging
+spec:
+  hard:
+    requests.cpu: "16"
+    requests.memory: "32Gi"
+    limits.cpu: "32"
+    limits.memory: "64Gi"
+    pods: "50"
+    services: "20"
+    persistentvolumeclaims: "20"
+
+---
+# ===== LimitRange: 命名空间限制范围 =====
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: logging-limits
+  namespace: logging
+spec:
+  limits:
+  - type: Container
+    default:
+      cpu: "1"
+      memory: "2Gi"
+    defaultRequest:
+      cpu: 500m
+      memory: "1Gi"
+    max:
+      cpu: "4"
+      memory: "8Gi"
+    min:
+      cpu: 100m
+      memory: "256Mi"
+  - type: Pod
+    max:
+      cpu: "8"
+      memory: "16Gi"
+
+---
+# ===== NetworkPolicy: 默认拒绝策略 =====
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: logging
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+
+---
+# ===== NetworkPolicy: 允许 DNS =====
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: logging
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+
+---
+# ===== NetworkPolicy: 允许 ELK 内部通信 =====
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-elk-internal
+  namespace: logging
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: elasticsearch
+    - podSelector:
+        matchLabels:
+          app: kibana
+    - podSelector:
+        matchLabels:
+          app: fluentd
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: elasticsearch
+    - podSelector:
+        matchLabels:
+          app: kibana
+    - podSelector:
+        matchLabels:
+          app: fluentd
+
+---
+# ===== ServiceAccount: elasticsearch =====
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: elasticsearch
+  namespace: logging
+  labels:
+    app: elasticsearch
+
+---
+# ===== ServiceAccount: kibana =====
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kibana
+  namespace: logging
+  labels:
+    app: kibana
+
+---
+# ===== ServiceAccount: fluentd =====
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluentd
+  namespace: logging
+  labels:
+    app: fluentd
+
+---
+# ===== ClusterRole: fluentd =====
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluentd
+rules:
+- apiGroups: [""]
+  resources:
+  - pods
+  - namespaces
+  - nodes
+  - nodes/proxy
+  verbs: ["get", "list", "watch"]
+
+---
+# ===== ClusterRoleBinding: fluentd =====
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fluentd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fluentd
+subjects:
+- kind: ServiceAccount
+  name: fluentd
+  namespace: logging

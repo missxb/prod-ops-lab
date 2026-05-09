@@ -1,0 +1,82 @@
+# Grafana 部署清单
+# 使用 Helm 安装 kube-prometheus-stack, 此文件作为补充资源
+---
+# ConfigMap - 额外的 Grafana 插件
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-custom-plugins
+  namespace: monitoring
+  labels:
+    app: grafana
+data:
+  install-plugins.sh: |
+    #!/bin/sh
+    grafana-cli plugins install grafana-piechart-panel
+    grafana-cli plugins install grafana-clock-panel
+    grafana-cli plugins install grafana-simple-json-datasource
+---
+# ConfigMap - Grafana 自定义仪表板 (Kubernetes 网络)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-k8s-network
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    grafana_folder: "Kubernetes"
+data:
+  k8s-network.json: |
+    {
+      "annotations": { "list": [] },
+      "editable": true,
+      "title": "Kubernetes Network",
+      "uid": "k8s-network",
+      "tags": ["kubernetes", "network"],
+      "panels": [
+        {
+          "title": "Network Receive Rate",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "targets": [
+            {
+              "expr": "rate(container_network_receive_bytes_total{namespace!=\"kube-system\"}[5m])",
+              "legendFormat": "{{ namespace }}/{{ pod }}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "Bps" }
+          }
+        },
+        {
+          "title": "Network Transmit Rate",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "targets": [
+            {
+              "expr": "rate(container_network_transmit_bytes_total{namespace!=\"kube-system\"}[5m])",
+              "legendFormat": "{{ namespace }}/{{ pod }}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "Bps" }
+          }
+        }
+      ],
+      "time": { "from": "now-1h", "to": "now" }
+    }
+---
+# PodDisruptionBudget for Grafana
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: grafana-pdb
+  namespace: monitoring
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+      app.kubernetes.io/instance: kube-prometheus-stack

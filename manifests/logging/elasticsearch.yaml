@@ -1,0 +1,446 @@
+# =============================================================================
+# Elasticsearch StatefulSet 部署
+# 企业级云原生运维平台 - 日志系统
+# =============================================================================
+
+# ===== ConfigMap: Elasticsearch 配置 =====
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elasticsearch-config
+  namespace: logging
+  labels:
+    app: elasticsearch
+data:
+  elasticsearch.yml: |
+    cluster.name: logging-cluster
+    node.name: ${HOSTNAME}
+    node.roles: [master, data, ingest]
+    network.host: 0.0.0.0
+    http.port: 9200
+    transport.port: 9300
+    discovery.seed_hosts:
+      - elasticsearch-0.elasticsearch.logging.svc.cluster.local
+      - elasticsearch-1.elasticsearch.logging.svc.cluster.local
+      - elasticsearch-2.elasticsearch.logging.svc.cluster.local
+    cluster.initial_master_nodes:
+      - elasticsearch-0
+      - elasticsearch-1
+      - elasticsearch-2
+    path.data: /usr/share/elasticsearch/data
+    path.logs: /usr/share/elasticsearch/logs
+    bootstrap.memory_lock: true
+    xpack.security.enabled: false
+    xpack.security.enrollment.enabled: false
+    xpack.monitoring.collection.enabled: true
+
+---
+# ===== ConfigMap: JVM 配置 =====
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elasticsearch-jvm
+  namespace: logging
+  labels:
+    app: elasticsearch
+data:
+  jvm.options: |
+    -Xms2g
+    -Xmx2g
+    -XX:+UseG1GC
+    -XX:MaxGCPauseMillis=200
+    -XX:+HeapDumpOnOutOfMemoryError
+    -XX:HeapDumpPath=/usr/share/elasticsearch/data/heapdump.hprof
+    -Djava.io.tmpdir=/usr/share/elasticsearch/data/tmp
+    -XX:+UseCompressedOops
+    -XX:G1ReservePercent=25
+    -XX:InitiatingHeapOccupancyPercent=30
+    -XX:G1HeapRegionSize=4m
+
+---
+# ===== ConfigMap: 初始化脚本 =====
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elasticsearch-init
+  namespace: logging
+  labels:
+    app: elasticsearch
+data:
+  setup-sysctl.sh: |
+    #!/bin/bash
+    sysctl -w vm.max_map_count=262144
+    sysctl -w net.core.somaxconn=65535
+    ulimit -n 65535
+    ulimit -l unlimited
+    chown -R 1000:1000 /usr/share/elasticsearch/data
+
+---
+# ===== Secret: Elasticsearch 凭证 =====
+apiVersion: v1
+kind: Secret
+metadata:
+  name: elasticsearch-credentials
+  namespace: logging
+  labels:
+    app: elasticsearch
+type: Opaque
+data:
+  # 通过脚本生成随机密码
+
+---
+# ===== PersistentVolume: Elasticsearch 数据持久化 =====
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: es-data-pv-0
+  labels:
+    app: elasticsearch
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: elasticsearch-storage
+  hostPath:
+    path: /data/elasticsearch/data-0
+    type: DirectoryOrCreate
+
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: es-data-pv-1
+  labels:
+    app: elasticsearch
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: elasticsearch-storage
+  hostPath:
+    path: /data/elasticsearch/data-1
+    type: DirectoryOrCreate
+
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: es-data-pv-2
+  labels:
+    app: elasticsearch
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: elasticsearch-storage
+  hostPath:
+    path: /data/elasticsearch/data-2
+    type: DirectoryOrCreate
+
+---
+# ===== StorageClass: Elasticsearch 存储类 =====
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: elasticsearch-storage
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+
+---
+# ===== StatefulSet: Elasticsearch 3节点集群 =====
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: elasticsearch
+  namespace: logging
+  labels:
+    app: elasticsearch
+    tier: logging
+spec:
+  serviceName: elasticsearch
+  replicas: 3
+  selector:
+    matchLabels:
+      app: elasticsearch
+  template:
+    metadata:
+      labels:
+        app: elasticsearch
+        tier: logging
+    spec:
+      initContainers:
+      - name: setup-sysctl
+        image: busybox:1.36
+        command: ["sh", "/etc/init/setup-sysctl.sh"]
+        volumeMounts:
+        - name: init-scripts
+          mountPath: /etc/init
+        securityContext:
+          privileged: true
+      - name: fix-permissions
+        image: busybox:1.36
+        command: ["sh", "-c", "chown -R 1000:1000 /usr/share/elasticsearch/data"]
+        volumeMounts:
+        - name: es-data
+          mountPath: /usr/share/elasticsearch/data
+      containers:
+      - name: elasticsearch
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.11.3
+        ports:
+        - containerPort: 9200
+          name: http
+        - containerPort: 9300
+          name: transport
+        env:
+        - name: cluster.name
+          value: "logging-cluster"
+        - name: node.name
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: discovery.seed_hosts
+          value: "elasticsearch-0.elasticsearch,elasticsearch-1.elasticsearch,elasticsearch-2.elasticsearch"
+        - name: cluster.initial_master_nodes
+          value: "elasticsearch-0,elasticsearch-1,elasticsearch-2"
+        - name: ES_JAVA_OPTS
+          value: "-Xms2g -Xmx2g -Djava.net.preferIPv4Stack=true"
+        - name: xpack.security.enabled
+          value: "false"
+        - name: xpack.security.enrollment.enabled
+          value: "false"
+        - name: bootstrap.memory_lock
+          value: "true"
+        - name: ELASTIC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: elasticsearch-credentials
+              key: password
+              optional: true
+        resources:
+          requests:
+            cpu: "1"
+            memory: "4Gi"
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+        readinessProbe:
+          httpGet:
+            path: /_cluster/health
+            port: 9200
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+        livenessProbe:
+          httpGet:
+            path: /_cluster/health
+            port: 9200
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 5
+        volumeMounts:
+        - name: es-data
+          mountPath: /usr/share/elasticsearch/data
+        - name: elasticsearch-config
+          mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
+          subPath: elasticsearch.yml
+        - name: jvm-options
+          mountPath: /usr/share/elasticsearch/config/jvm.options.d/jvm.options
+          subPath: jvm.options
+        - name: init-scripts
+          mountPath: /etc/init
+        - name: es-tmp
+          mountPath: /usr/share/elasticsearch/data/tmp
+      volumes:
+      - name: elasticsearch-config
+        configMap:
+          name: elasticsearch-config
+      - name: jvm-options
+        configMap:
+          name: elasticsearch-jvm
+      - name: init-scripts
+        configMap:
+          name: elasticsearch-init
+          defaultMode: 0755
+      - name: es-tmp
+        emptyDir: {}
+      terminationGracePeriodSeconds: 120
+  volumeClaimTemplates:
+  - metadata:
+      name: es-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: elasticsearch-storage
+      resources:
+        requests:
+          storage: 50Gi
+
+---
+# ===== Service: Elasticsearch Headless Service =====
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+  namespace: logging
+  labels:
+    app: elasticsearch
+spec:
+  ports:
+  - port: 9200
+    name: http
+    targetPort: 9200
+  - port: 9300
+    name: transport
+    targetPort: 9300
+  selector:
+    app: elasticsearch
+  clusterIP: None
+  publishNotReadyAddresses: true
+
+---
+# ===== Service: Elasticsearch Client Service =====
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch-client
+  namespace: logging
+  labels:
+    app: elasticsearch
+spec:
+  ports:
+  - port: 9200
+    name: http
+    targetPort: 9200
+  selector:
+    app: elasticsearch
+
+---
+# ===== NetworkPolicy: Elasticsearch 网络策略 =====
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: elasticsearch-netpol
+  namespace: logging
+spec:
+  podSelector:
+    matchLabels:
+      app: elasticsearch
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: kibana
+    - podSelector:
+        matchLabels:
+          app: fluentd
+    ports:
+    - port: 9200
+      protocol: TCP
+    - port: 9300
+      protocol: TCP
+  egress:
+  - {}  # 允许所有出站
+
+---
+# ===== CronJob: ILM 策略创建 =====
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: elasticsearch-ilm-setup
+  namespace: logging
+  labels:
+    app: elasticsearch
+spec:
+  schedule: "0 0 1 * *"  # 每月1号执行
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: elasticsearch-ilm
+        spec:
+          containers:
+          - name: ilm-setup
+            image: curlimages/curl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              # 创建 ILM 策略: 30天保留
+              curl -X PUT "http://elasticsearch.logging.svc.cluster.local:9200/_ilm/policy/kubernetes-policy" \
+                -H "Content-Type: application/json" \
+                -d '{
+                  "policy": {
+                    "phases": {
+                      "hot": {
+                        "min_age": "0ms",
+                        "actions": {
+                          "rollover": {
+                            "max_primary_shard_size": "30gb",
+                            "max_age": "1d"
+                          },
+                          "set_priority": { "priority": 100 }
+                        }
+                      },
+                      "warm": {
+                        "min_age": "7d",
+                        "actions": {
+                          "shrink": { "number_of_shards": 1 },
+                          "forcemerge": { "max_num_segments": 1 },
+                          "set_priority": { "priority": 50 }
+                        }
+                      },
+                      "cold": {
+                        "min_age": "14d",
+                        "actions": {
+                          "set_priority": { "priority": 0 }
+                        }
+                      },
+                      "delete": {
+                        "min_age": "30d",
+                        "actions": {
+                          "delete": {}
+                        }
+                      }
+                    }
+                  }
+                }'
+
+              # 创建 system-logs ILM 策略
+              curl -X PUT "http://elasticsearch.logging.svc.cluster.local:9200/_ilm/policy/system-logs-policy" \
+                -H "Content-Type: application/json" \
+                -d '{
+                  "policy": {
+                    "phases": {
+                      "hot": {
+                        "min_age": "0ms",
+                        "actions": {
+                          "rollover": {
+                            "max_primary_shard_size": "15gb",
+                            "max_age": "1d"
+                          }
+                        }
+                      },
+                      "delete": {
+                        "min_age": "30d",
+                        "actions": {
+                          "delete": {}
+                        }
+                      }
+                    }
+                  }
+                }'
+
+              echo "ILM policies created successfully"
+          restartPolicy: OnFailure

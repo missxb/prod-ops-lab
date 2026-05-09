@@ -1,0 +1,134 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: enterprise-alert-rules
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+    release: kube-prometheus-stack
+spec:
+  groups:
+    ## 节点宕机告警
+    - name: node.rules
+      rules:
+        - alert: NodeDown
+          expr: up{job="node-exporter"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "节点 {{ $labels.instance }} 宕机"
+            description: "节点 {{ $labels.instance }} 已超过2分钟不可达，请立即检查"
+
+        - alert: NodeHighCPU
+          expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "节点 {{ $labels.instance }} CPU 使用率过高"
+            description: "CPU 使用率超过 85%，当前值: {{ $value }}%"
+
+        - alert: NodeHighMemory
+          expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "节点 {{ $labels.instance }} 内存使用率过高"
+            description: "内存使用率超过 85%，当前值: {{ $value }}%"
+
+        - alert: NodeDiskSpaceHigh
+          expr: (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes) * 100 > 85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "节点 {{ $labels.instance }} 磁盘使用率过高"
+            description: "磁盘 {{ $labels.mountpoint }} 使用率超过 85%，当前值: {{ $value }}%"
+
+        - alert: NodeDiskSpaceCritical
+          expr: (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes) * 100 > 95
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "节点 {{ $labels.instance }} 磁盘即将耗尽"
+            description: "磁盘 {{ $labels.mountpoint }} 使用率超过 95%，当前值: {{ $value }}%"
+
+    ## Pod 告警
+    - name: pod.rules
+      rules:
+        - alert: PodCrashLooping
+          expr: rate(kube_pod_container_status_restarts_total[15m]) * 60 * 5 > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} 频繁重启"
+            description: "Pod 在过去15分钟内重启次数过多"
+
+        - alert: PodHighCPU
+          expr: sum(rate(container_cpu_usage_seconds_total{container!=""}[5m])) by (namespace, pod) * 100 > 80
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} CPU 过高"
+            description: "Pod CPU 使用率超过 80%，当前值: {{ $value }}%"
+
+        - alert: PodHighMemory
+          expr: container_memory_working_set_bytes{container!=""} / container_spec_memory_limit_bytes * 100 > 85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} 内存过高"
+            description: "Pod 内存使用率超过 85%，当前值: {{ $value }}%"
+
+        - alert: PodNotReady
+          expr: kube_pod_status_ready{condition="true"} == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} 长时间未就绪"
+
+    ## Deployment 告警
+    - name: deployment.rules
+      rules:
+        - alert: DeploymentReplicasMismatch
+          expr: kube_deployment_spec_replicas != kube_deployment_status_available_replicas
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} 副本数不匹配"
+
+    ## 集群告警
+    - name: cluster.rules
+      rules:
+        - alert: KubeAPIServerDown
+          expr: absent(up{job="apiserver"} == 1)
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Kubernetes API Server 不可达"
+
+        - alert: KubeNodeNotReady
+          expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "节点 {{ $labels.node }} NotReady"
+
+        - alert: PVCUsageHigh
+          expr: kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes * 100 > 85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PVC {{ $labels.persistentvolumeclaim }} 使用率过高"

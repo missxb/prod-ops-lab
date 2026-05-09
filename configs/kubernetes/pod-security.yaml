@@ -1,0 +1,415 @@
+#===============================================================================
+# Kubernetes Pod Security Policies
+#===============================================================================
+# Pod Security Standards (PSS) - Production grade security
+#===============================================================================
+
+---
+# Pod Security Standards - Baseline (Restricted)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: staging
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: development
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline
+
+---
+# Pod Security Policy - Restricted
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: restricted
+  labels:
+    app.kubernetes.io/name: pod-security-policy
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+spec:
+  privileged: false
+  allowPrivilegeEscalation: false
+  requiredDropCapabilities:
+  - ALL
+  volumes:
+  - 'configMap'
+  - 'emptyDir'
+  - 'projected'
+  - 'secret'
+  - 'downwardAPI'
+  - 'persistentVolumeClaim'
+  hostNetwork: false
+  hostIPC: false
+  hostPID: false
+  runAsUser:
+    rule: 'MustRunAsNonRoot'
+  seLinux:
+    rule: 'RunAsAny'
+  supplementalGroups:
+    rule: 'MustRunAs'
+    ranges:
+    - min: 1
+      max: 65535
+  fsGroup:
+    rule: 'MustRunAs'
+    ranges:
+    - min: 1
+      max: 65535
+
+---
+# Pod Security Policy - Baseline
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: baseline
+  labels:
+    app.kubernetes.io/name: pod-security-policy
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+spec:
+  privileged: false
+  allowPrivilegeEscalation: false
+  volumes:
+  - '*'
+  hostNetwork: false
+  hostIPC: false
+  hostPID: false
+  runAsUser:
+    rule: 'RunAsAny'
+  seLinux:
+    rule: 'RunAsAny'
+  supplementalGroups:
+    rule: 'RunAsAny'
+  fsGroup:
+    rule: 'RunAsAny'
+
+---
+# RBAC for Pod Security Policies
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: restricted-psp-user
+  labels:
+    app.kubernetes.io/name: psp-rbac
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+rules:
+- apiGroups: ['policy']
+  resourceNames: ['restricted']
+  resources: ['podsecuritypolicies']
+  verbs: ['use']
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: baseline-psp-user
+  labels:
+    app.kubernetes.io/name: psp-rbac
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+rules:
+- apiGroups: ['policy']
+  resourceNames: ['baseline']
+  resources: ['podsecuritypolicies']
+  verbs: ['use']
+
+---
+# Service Account RoleBindings for PSP
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: restricted-psp-binding
+  labels:
+    app.kubernetes.io/name: psp-rbac
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: restricted-psp-user
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: production
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: baseline-psp-binding
+  labels:
+    app.kubernetes.io/name: psp-rbac
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: baseline-psp-user
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: staging
+- kind: ServiceAccount
+  name: default
+  namespace: development
+
+---
+# Sample Security Context for Production Pods
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: security-context-templates
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: security-context
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+data:
+  restricted-pod.yaml: |
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: restricted-pod-example
+      labels:
+        app.kubernetes.io/name: example
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: app
+        image: enterprise-registry.local/base/distroless:latest
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+            ephemeral-storage: "1Gi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+            ephemeral-storage: "100Mi"
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: cache
+          mountPath: /var/cache
+        - name: run
+          mountPath: /var/run
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: cache
+        emptyDir: {}
+      - name: run
+        emptyDir: {}
+
+  restricted-deployment.yaml: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: restricted-deployment-example
+      labels:
+        app.kubernetes.io/name: example
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: example
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: example
+        spec:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+          - name: app
+            image: enterprise-registry.local/base/distroless:latest
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              runAsNonRoot: true
+              runAsUser: 1000
+              capabilities:
+                drop:
+                - ALL
+            resources:
+              limits:
+                cpu: "500m"
+                memory: "256Mi"
+                ephemeral-storage: "1Gi"
+              requests:
+                cpu: "100m"
+                memory: "128Mi"
+                ephemeral-storage: "100Mi"
+            volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /var/cache
+            - name: run
+              mountPath: /var/run
+          volumes:
+          - name: tmp
+            emptyDir: {}
+          - name: cache
+            emptyDir: {}
+          - name: run
+            emptyDir: {}
+
+---
+# OPA Gatekeeper Constraint Template for Pod Security
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8spodsecurity
+  labels:
+    app.kubernetes.io/name: gatekeeper-policy
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sPodSecurity
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            runAsNonRoot:
+              type: boolean
+            readOnlyRootFilesystem:
+              type: boolean
+            allowPrivilegeEscalation:
+              type: boolean
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8spodsecurity
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not input.parameters.runAsNonRoot
+          container.securityContext.runAsNonRoot != true
+          msg := sprintf("Container %v must set runAsNonRoot to true", [container.name])
+        }
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not input.parameters.readOnlyRootFilesystem
+          container.securityContext.readOnlyRootFilesystem != true
+          msg := sprintf("Container %v must set readOnlyRootFilesystem to true", [container.name])
+        }
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not input.parameters.allowPrivilegeEscalation
+          container.securityContext.allowPrivilegeEscalation == true
+          msg := sprintf("Container %v must not allow privilege escalation", [container.name])
+        }
+
+---
+# OPA Gatekeeper Constraint for Pod Security
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sPodSecurity
+metadata:
+  name: pod-security-restricted
+  labels:
+    app.kubernetes.io/name: gatekeeper-policy
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+spec:
+  enforcementAction: deny
+  match:
+    kinds:
+    - apiGroups: [""]
+      kinds: ["Pod"]
+    namespaces:
+    - production
+  parameters:
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+
+---
+# OPA Gatekeeper Constraint for Image Registry
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8sallowedregistries
+  labels:
+    app.kubernetes.io/name: gatekeeper-policy
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sAllowedRegistries
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            registries:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8sallowedregistries
+
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not startswith(container.image, input.parameters.registries[_])
+          msg := sprintf("Container %v image %v is not from an allowed registry", [container.name, container.image])
+        }
+
+---
+# OPA Gatekeeper Constraint for Allowed Registries
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sAllowedRegistries
+metadata:
+  name: allowed-registries
+  labels:
+    app.kubernetes.io/name: gatekeeper-policy
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+spec:
+  enforcementAction: deny
+  match:
+    kinds:
+    - apiGroups: [""]
+      kinds: ["Pod"]
+  parameters:
+    registries:
+    - "enterprise-registry.local/"
+    - "docker.io/library/"
+    - "gcr.io/distroless/"
+    - "quay.io/"

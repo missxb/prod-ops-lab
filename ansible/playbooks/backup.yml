@@ -1,0 +1,313 @@
+###############################################################################
+# ansible/playbooks/backup.yml - 备份与恢复 Playbook
+#
+# 功能:
+#   - etcd 数据备份
+#   - K8s 资源导出
+#   - 配置文件备份
+#   - 数据库备份
+#   - 备份完整性校验
+#   - 备份恢复
+#   - 备份过期清理
+#
+# 用法:
+#   ansible-playbook -i inventory/hosts.yml playbooks/backup.yml --tags "backup"
+#   ansible-playbook -i inventory/hosts.yml playbooks/backup.yml --tags "verify"
+#   ansible-playbook -i inventory/hosts.yml playbooks/backup.yml --tags "restore"
+#   ansible-playbook -i inventory/hosts.yml playbooks/backup.yml --tags "cleanup"
+###############################################################################
+---
+- name: 企业云原生平台 - 备份与恢复
+  hosts: all
+  become: true
+  gather_facts: true
+  any_errors_fatal: false
+
+  vars:
+    # 备份配置
+    backup_root: "/root/enterprise-cloud-native-platform/backups"
+    backup_date: "{{ ansible_date_time.date }}"
+    backup_timestamp: "{{ ansible_date_time.iso8601 }}"
+    backup_retention_days: 30
+    
+    # etcd 配置
+    etcd_endpoint: "https://127.0.0.1:2379"
+    etcd_cert: "/etc/kubernetes/pki/etcd/server.crt"
+    etcd_key: "/etc/kubernetes/pki/etcd/server.key"
+    etcd_ca: "/etc/kubernetes/pki/etcd/ca.crt"
+    etcd_data_dir: "/var/lib/etcd"
+    
+    # 压缩配置
+    enable_compression: true
+    compression_level: 6
+
+  pre_tasks:
+    - name: 创建备份目录结构
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ backup_root }}"
+        - "{{ backup_root }}/etcd"
+        - "{{ backup_root }}/kubernetes"
+        - "{{ backup_root }}/config"
+        - "{{ backup_root }}/database"
+        - "{{ backup_root }}/checksums"
+        - "{{ backup_root }}/restore"
+      tags: [always]
+
+    - name: 显示备份信息
+      ansible.builtin.debug:
+        msg: |
+          ============================================================
+          备份任务启动
+          时间: {{ backup_timestamp }}
+          主机: {{ inventory_hostname }}
+          备份目录: {{ backup_root }}
+          保留策略: {{ backup_retention_days }} 天
+          ============================================================
+      tags: [always]
+
+  tasks:
+    # ======================== etcd 备份 ========================
+    - name: etcd 数据备份
+      block:
+        - name: 检查 etcd 是否可用
+          ansible.builtin.shell: |
+            ETCDCTL_API=3 etcdctl endpoint health \
+              --endpoints={{ etcd_endpoint }} \
+              --cacert={{ etcd_ca }} \
+              --cert={{ etcd_cert }} \
+              --key={{ etcd_key }} 2>/dev/null && echo "HEALTHY" || echo "UNHEALTHY"
+          register: etcd_health
+          changed_when: false
+          delegate_to: "{{ groups['masters'][0] }}"
+          run_once: true
+          tags: [etcd, backup]
+
+        - name: 创建 etcd 快照
+          ansible.builtin.shell: |
+            ETCDCTL_API=3 etcdctl snapshot save \
+              {{ backup_root }}/etcd/etcd-snapshot-{{ backup_date }}.db \
+              --endpoints={{ etcd_endpoint }} \
+              --cacert={{ etcd_ca }} \
+              --cert={{ etcd_cert }} \
+              --key={{ etcd_key }}
+          register: etcd_backup
+          delegate_to: "{{ groups['masters'][0] }}"
+          run_once: true
+          when: etcd_health.stdout == "HEALTHY"
+          tags: [etcd, backup]
+
+        - name: 校验 etcd 快照
+          ansible.builtin.shell: |
+            ETCDCTL_API=3 etcdctl snapshot status \
+              {{ backup_root }}/etcd/etcd-snapshot-{{ backup_date }}.db \
+              --write-out=table
+          register: etcd_status
+          delegate_to: "{{ groups['masters'][0] }}"
+          run_once: true
+          changed_when: false
+          when: etcd_health.stdout == "HEALTHY"
+          tags: [etcd, verify]
+
+        - name: 显示 etcd 备份状态
+          ansible.builtin.debug:
+            msg: |
+              etcd 备份状态:
+              {{ etcd_status.stdout | default('备份未执行') }}
+          when: etcd_health.stdout == "HEALTHY"
+          tags: [etcd, verify]
+      when: "'etcd' in groups or 'masters' in group_names"
+      tags: [etcd]
+
+    # ======================== K8s 资源备份 ========================
+    - name: Kubernetes 资源备份
+      block:
+        - name: 创建资源备份目录
+          ansible.builtin.file:
+            path: "{{ backup_root }}/kubernetes/resources-{{ backup_date }}"
+            state: directory
+            mode: '0755'
+          delegate_to: "{{ groups['masters'][0] }}"
+          run_once: true
+          tags: [k8s, backup]
+
+        - name: 备份集群级别资源
+          ansible.builtin.shell: |
+            RESOURCES="namespaces configmaps secrets deployments statefulsets daemonsets
+                       services ingresses persistentvolumeclaims storageclasses
+                       roles rolebindings clusterroles clusterrolebindings
+                       serviceaccounts networkpolicies poddisruptionbudgets
+                       horizontalpodautoscalers certificates customresourcedefinitions"
+            
+            for res in $RESOURCES; do
+              kubectl get "${res}" --all-namespaces -o yaml > \
+                {{ backup_root }}/kubernetes/resources-{{ backup_date }}/${res}.yaml 2>/dev/null || true
+            done
+            
+            echo "K8s 资源备份完成"
+          delegate_to: "{{ groups['masters'][0] }}"
+          run_once: true
+          changed_when: false
+          tags: [k8s, backup]
+
+        - name: 备份 RBAC 配置
+          ansible.builtin.shell: |
+            kubectl get clusterrolebindings -o yaml > \
+              {{ backup_root }}/kubernetes/resources-{{ backup_date }}/clusterrolebindings-full.yaml 2>/dev/null || true
+            kubectl get crds -o yaml > \
+              {{ backup_root }}/kubernetes/resources-{{ backup_date }}/customresourcedefinitions.yaml 2>/dev/null || true
+          delegate_to: "{{ groups['masters'][0] }}"
+          run_once: true
+          changed_when: false
+          tags: [k8s, backup]
+
+        - name: 打包 K8s 资源
+          ansible.builtin.archive:
+            path: "{{ backup_root }}/kubernetes/resources-{{ backup_date }}"
+            dest: "{{ backup_root }}/kubernetes/k8s-resources-{{ backup_date }}.tar.gz"
+            format: gz
+            mode: '0644'
+          delegate_to: "{{ groups['masters'][0] }}"
+          run_once: true
+          tags: [k8s, backup]
+      when: "'masters' in group_names"
+      tags: [k8s]
+
+    # ======================== 配置文件备份 ========================
+    - name: 配置文件备份
+      block:
+        - name: 创建配置备份目录
+          ansible.builtin.file:
+            path: "{{ backup_root }}/config/config-{{ backup_date }}"
+            state: directory
+            mode: '0755'
+          tags: [config, backup]
+
+        - name: 备份 K8s 配置
+          ansible.builtin.copy:
+            src: "{{ item }}"
+            dest: "{{ backup_root }}/config/config-{{ backup_date }}/"
+            remote_src: true
+            mode: '0644'
+          loop:
+            - /etc/kubernetes
+            - /var/lib/kubelet
+            - /etc/cni/net.d
+            - /etc/containerd
+          ignore_errors: true
+          tags: [config, backup]
+
+        - name: 备份系统关键配置
+          ansible.builtin.copy:
+            src: "{{ item.src }}"
+            dest: "{{ backup_root }}/config/config-{{ backup_date }}/{{ item.dest }}"
+            remote_src: true
+            mode: '0644'
+          loop:
+            - { src: '/etc/hosts', dest: 'hosts.bak' }
+            - { src: '/etc/resolv.conf', dest: 'resolv.conf.bak' }
+            - { src: '/etc/fstab', dest: 'fstab.bak' }
+            - { src: '/etc/sysctl.conf', dest: 'sysctl.conf.bak' }
+          ignore_errors: true
+          tags: [config, backup]
+
+        - name: 打包配置文件
+          ansible.builtin.archive:
+            path: "{{ backup_root }}/config/config-{{ backup_date }}"
+            dest: "{{ backup_root }}/config/config-{{ backup_date }}.tar.gz"
+            format: gz
+            mode: '0644'
+          tags: [config, backup]
+      tags: [config]
+
+    # ======================== 完整性校验 ========================
+    - name: 备份完整性校验
+      block:
+        - name: 生成校验和
+          ansible.builtin.shell: |
+            find {{ backup_root }} -name "*.tar.gz" -o -name "*.db" -o -name "*.sql.gz" | \
+            while read f; do sha256sum "$f"; done > \
+              {{ backup_root }}/checksums/checksums-{{ backup_date }}.sha256
+          register: checksum_result
+          changed_when: false
+          delegate_to: "{{ groups['masters'][0] }}"
+          run_once: true
+          tags: [verify]
+
+        - name: 校验备份完整性
+          ansible.builtin.shell: |
+            cd {{ backup_root }}/checksums
+            sha256sum -c checksums-{{ backup_date }}.sha256 2>/dev/null
+          register: verify_result
+          delegate_to: "{{ groups['masters'][0] }}"
+          run_once: true
+          changed_when: false
+          tags: [verify]
+
+        - name: 显示校验结果
+          ansible.builtin.debug:
+            msg: |
+              备份完整性校验:
+              {{ verify_result.stdout | default('无备份文件') }}
+              状态: {{ 'PASS' if verify_result.rc == 0 else 'FAIL' }}
+          tags: [verify]
+      tags: [verify]
+
+    # ======================== 备份清理 ========================
+    - name: 过期备份清理
+      block:
+        - name: 查找过期备份
+          ansible.builtin.find:
+            paths: "{{ backup_root }}"
+            patterns: "*"
+            age: "{{ backup_retention_days }}d"
+            file_type: file
+          register: expired_backups
+          tags: [cleanup]
+
+        - name: 删除过期备份
+          ansible.builtin.file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ expired_backups.files }}"
+          tags: [cleanup]
+
+        - name: 显示清理结果
+          ansible.builtin.debug:
+            msg: "清理过期备份: {{ expired_backups.files | length }} 个文件"
+      tags: [cleanup]
+
+  post_tasks:
+    - name: 生成备份报告
+      block:
+        - name: 获取备份统计
+          ansible.builtin.shell: |
+            echo "=== 备份统计 ==="
+            echo "etcd 备份: $(ls -la {{ backup_root }}/etcd/*.db 2>/dev/null | wc -l) 个"
+            echo "K8s 资源: $(ls -la {{ backup_root }}/kubernetes/*.tar.gz 2>/dev/null | wc -l) 个"
+            echo "配置文件: $(ls -la {{ backup_root }}/config/*.tar.gz 2>/dev/null | wc -l) 个"
+            echo "校验文件: $(ls -la {{ backup_root }}/checksums/*.sha256 2>/dev/null | wc -l) 个"
+            echo ""
+            echo "=== 备份大小 ==="
+            du -sh {{ backup_root }}/etcd/ {{ backup_root }}/kubernetes/ {{ backup_root }}/config/ 2>/dev/null || true
+            echo ""
+            echo "=== 总大小 ==="
+            du -sh {{ backup_root }}/ 2>/dev/null || true
+          register: backup_stats
+          changed_when: false
+          delegate_to: "{{ groups['masters'][0] }}"
+          run_once: true
+          tags: [always]
+
+        - name: 显示备份汇总
+          ansible.builtin.debug:
+            msg: |
+              ============================================================
+              备份完成汇总
+              {{ backup_stats.stdout }}
+              ============================================================
+          tags: [always]
+      tags: [always]

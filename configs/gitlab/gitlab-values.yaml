@@ -1,0 +1,248 @@
+# GitLab Helm Chart Values - Enterprise Cloud Native Platform
+# Chart: https://gitlab.com/gitlab-org/charts/gitlab
+# Version: 7.x+
+
+global:
+  # Domain configuration
+  hosts:
+    domain: gitlab.example.com
+    https: true
+    externalIP: ""
+  # Ingress configuration
+  ingress:
+    configureCertmanager: true
+    class: nginx
+    tls:
+      secretName: gitlab-tls-secret
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-body-size: "250m"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+  # CAS (Container Registry) host
+  appConfig:
+    enableUsagePing: false
+    default_can_create_group: true
+    username_changing_enabled: true
+    # Email settings
+    email_enabled: true
+    email_from: gitlab@example.com
+    email_display_name: "GitLab Enterprise"
+  # Pages domain
+  pages:
+    enabled: false
+  # Kubernetes domain
+  kas:
+    enabled: false
+
+# ============================================================
+# NGINX Ingress Controller (GitLab bundled)
+# ============================================================
+nginx-ingress:
+  enabled: true
+  controller:
+    replicaCount: 2
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    metrics:
+      enabled: true
+
+# ============================================================
+# Cert-Manager (for TLS)
+# ============================================================
+certmanager:
+  install: true
+  installCRDs: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+# ============================================================
+# PostgreSQL
+# ============================================================
+postgresql:
+  install: true
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClass: "standard"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# ============================================================
+# Redis
+# ============================================================
+redis:
+  install: true
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: "standard"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ============================================================
+# Gitaly
+# ============================================================
+gitaly:
+  replicaCount: 2
+  persistence:
+    enabled: true
+    size: 200Gi
+    storageClass: "standard"
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+
+# ============================================================
+# GitLab Shell
+# ============================================================
+gitlab-shell:
+  minReplicas: 2
+  maxReplicas: 4
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ============================================================
+# GitLab Sidekiq (background jobs)
+# ============================================================
+sidekiq:
+  minReplicas: 2
+  maxReplicas: 6
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+
+# ============================================================
+# GitLab Webservice (Puma)
+# ============================================================
+webservice:
+  minReplicas: 2
+  maxReplicas: 8
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+
+# ============================================================
+# GitLab Toolbox (Migrations)
+# ============================================================
+toolbox:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 350Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+# ============================================================
+# Container Registry
+# ============================================================
+registry:
+  enabled: true
+  replicas: 2
+  hpa:
+    minReplicas: 2
+    maxReplicas: 5
+  persistence:
+    enabled: true
+    size: 200Gi
+    storageClass: "standard"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+  ingress:
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-body-size: "0"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "900"
+
+# ============================================================
+# Prometheus Monitoring
+# ============================================================
+prometheus:
+  install: true
+  persistence:
+    enabled: true
+    size: 50Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+# ============================================================
+# GitLab Runner
+# ============================================================
+gitlab-runner:
+  install: true
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  runners:
+    config: |
+      [[runners]]
+        [runners.kubernetes]
+          namespace = "gitlab-runner"
+          image = "ubuntu:22.04"
+          poll_timeout = 600
+          cpu_request = "500m"
+          memory_request = "1Gi"
+          cpu_limit = "2"
+          memory_limit = "4Gi"
+          service_cpu_request = "100m"
+          service_memory_request = "256Mi"
+          helper_cpu_request = "100m"
+          helper_memory_request = "256Mi"
+        [runners.cache]
+          Type = "s3"
+          Shared = true
+
+# ============================================================
+# Service Account
+# ============================================================
+serviceAccount:
+  create: true
+  enabled: true

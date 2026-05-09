@@ -1,0 +1,88 @@
+###############################################################################
+# calico.yaml - Calico 网络插件配置
+# Calico v3.26.x 使用 Operator 安装模式
+# 此文件包含 Calico Installation CR 和 FelixConfiguration
+# deploy-kubeadm.sh 会替换 __POD_CIDR__ 占位符
+###############################################################################
+
+---
+# Calico Installation CR - 通过 Tigera Operator 管理
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+spec:
+  # 镜像仓库配置
+  registry: quay.io
+  variant: Calico
+
+  # 节点配置
+  controlPlaneReplicas: 1
+  nodeMetricsPort: 9091
+  typhaMetricsPort: 9093
+
+  # Calico 网络配置
+  calicoNetwork:
+    # IP池配置
+    ipPools:
+    - name: default-ipv4-ippool
+      blockSize: 26                    # /26 = 每节点64个IP
+      cidr: __POD_CIDR__
+      encapsulation: VXLANCrossSubnet  # 同子网无封装, 跨子网VXLAN
+      natOutgoing: Enabled
+      nodeSelector: all()
+
+    # 节点IP自动检测
+    nodeAddressAutodetectionV4:
+      interface: eth.*
+
+    # Linux dataplane (推荐)
+    linuxDataplane: Iptables
+    multiInterfaceMode: None
+
+    # BGP配置 (可选, 需要支持BGP的环境)
+    bgp: Disabled
+
+  # 可选: Calico Windows支持
+  # windowsDataplane: HNS
+
+---
+# Felix配置 - Calico数据面配置
+apiVersion: projectcalico.org/v3
+kind: FelixConfiguration
+metadata:
+  name: default
+spec:
+  # 使用iptables (默认)
+  iptablesBackend: Auto
+
+  # Wireguard加密 (可选)
+  # wireguardEnabled: true
+
+  # 日志级别
+  logSeverityScreen: Info
+
+  # Prometheus指标
+  prometheusMetricsEnabled: true
+  prometheusMetricsPort: 9091
+
+  # 连接追踪
+  conntrackTimeoutSeconds: 86400
+
+  # 健康检查
+  healthEnabled: true
+  healthPort: 9099
+
+  # 默认动作
+  defaultEndpointToHostAction: Accept
+
+  # 允许跳过标签 (性能优化)
+  removeExternalRoutes: true
+
+---
+# APIServer配置 - 启用Calico API
+apiVersion: operator.tigera.io/v1
+kind: APIServer
+metadata:
+  name: default
+spec: {}

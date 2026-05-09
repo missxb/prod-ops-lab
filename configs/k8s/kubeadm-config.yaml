@@ -1,0 +1,132 @@
+###############################################################################
+# kubeadm-config.yaml - Kubernetes 集群配置模板
+# 使用前替换 __VARIABLE__ 占位符
+# deploy-kubeadm.sh 会自动替换这些变量
+###############################################################################
+
+---
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: __HOST_IP__
+  bindPort: 6443
+nodeRegistration:
+  criSocket: unix:///var/run/containerd/containerd.sock
+  imagePullPolicy: IfNotPresent
+  taints:
+    - effect: NoSchedule
+      key: node-role.kubernetes.io/control-plane
+
+---
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: ClusterConfiguration
+clusterName: __CLUSTER_NAME__
+kubernetesVersion: __K8S_VERSION__
+controlPlaneEndpoint: "__HOST_IP__:6443"
+networking:
+  podSubnet: __POD_CIDR__
+  serviceSubnet: __SERVICE_CIDR__
+  dnsDomain: cluster.local
+
+apiServer:
+  extraArgs:
+    enable-admission-plugins: >-
+      NamespaceLifecycle,
+      LimitRanger,
+      ServiceAccount,
+      DefaultStorageClass,
+      DefaultTolerationSeconds,
+      MutatingAdmissionWebhook,
+      ValidatingAdmissionWebhook,
+      ResourceQuota
+    audit-log-path: /var/log/kubernetes/audit/audit.log
+    audit-log-maxage: "30"
+    audit-log-maxbackup: "10"
+    audit-log-maxsize: "100"
+    profiling: "false"
+    request-timeout: "300s"
+    service-account-lookup: "true"
+    tls-min-version: VersionTLS12
+    tls-cipher-suites: >-
+      TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+      TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+      TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+      TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+  extraVolumes:
+    - name: audit-log
+      hostPath: /var/log/kubernetes/audit
+      mountPath: /var/log/kubernetes/audit
+      pathType: DirectoryOrCreate
+  timeoutForControlPlane: 5m0s
+
+controllerManager:
+  extraArgs:
+    horizontal-pod-autoscaler-sync-period: "15s"
+    horizontal-pod-autoscaler-downscale-stabilization: "2m0s"
+    horizontal-pod-autoscaler-initial-readiness-delay: "30s"
+    terminated-pod-gc-threshold: "100"
+    profiling: "false"
+    use-service-account-credentials: "true"
+  extraVolumes:
+    - name: kubeconfig
+      hostPath: /etc/kubernetes/controller-manager.conf
+      mountPath: /etc/kubernetes/controller-manager.conf
+      pathType: File
+      readOnly: true
+
+scheduler:
+  extraArgs:
+    profiling: "false"
+
+dns:
+  imageRepository: registry.k8s.io/coredns
+
+etcd:
+  local:
+    dataDir: /var/lib/etcd
+    extraArgs:
+      quota-backend-bytes: "8589934592"  # 8GB
+      auto-compaction-retention: "8"
+      snapshot-count: "10000"
+
+imageRepository: registry.k8s.io
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+containerRuntimeEndpoint: unix:///var/run/containerd/containerd.sock
+failSwapOn: true
+serializeImagePulls: false
+readOnlyPort: 0
+clusterDNS:
+  - 10.96.0.10
+clusterDomain: cluster.local
+maxPods: 110
+resolvConf: /run/systemd/resolve/resolv.conf
+runtimeRequestTimeout: "15m"
+eventRecordQPS: 5
+eventBurst: 10
+healthzBindAddress: 0.0.0.0
+healthzPort: 10248
+rotateCertificates: true
+serverTLSBootstrap: true
+
+---
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+mode: ipvs
+ipvs:
+  scheduler: rr
+  excludeCIDRs: []
+  strictARP: true
+metricsBindAddress: 0.0.0.0:10249
+conntrack:
+  maxPerCore: 32768
+  min: 131072
+  tcpCloseWaitTimeout: 1h0m0s
+  tcpEstablishedTimeout: 24h0m0s
+iptables:
+  masqueradeAll: false
+  masqueradeBit: 14
+  minSyncPeriod: 0s
+  syncPeriod: 30s

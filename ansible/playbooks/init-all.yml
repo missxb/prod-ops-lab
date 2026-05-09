@@ -1,0 +1,479 @@
+###############################################################################
+# ansible/playbooks/init-all.yml - 集群初始化 Playbook
+#
+# 功能:
+#   - 系统初始化（内核参数、安全加固、时间同步）
+#   - 安装容器运行时（containerd）
+#   - 安装 K8s 组件（kubeadm/kubelet/kubectl）
+#   - 初始化 Master 节点
+#   - Worker 节点加入集群
+#   - 安装网络插件（Calico）
+#   - 安装基础组件
+#
+# 用法:
+#   ansible-playbook -i inventory/hosts.yml playbooks/init-all.yml
+#   ansible-playbook -i inventory/hosts.yml playbooks/init-all.yml --tags "system,containerd"
+#   ansible-playbook -i inventory/hosts.yml playbooks/init-all.yml --limit "workers"
+#   ansible-playbook -i inventory/hosts.yml playbooks/init-all.yml --skip-tags "monitoring"
+###############################################################################
+---
+- name: 企业云原生平台 - 集群初始化
+  hosts: all
+  become: true
+  gather_facts: true
+  any_errors_fatal: false
+  serial: "30%"
+
+  vars:
+    # 版本配置
+    containerd_version: "1.7.22"
+    runc_version: "1.1.14"
+    cni_plugins_version: "1.4.1"
+    kubernetes_version: "1.28.0"
+    
+    # 网络配置
+    pod_network_cidr: "10.244.0.0/16"
+    service_cidr: "10.96.0.0/12"
+    cni_plugin: "calico"
+    calico_version: "3.26.1"
+    
+    # 镜像配置
+    registry_mirror: "https://mirror.ccs.tencentyun.com"
+    
+    # 安全配置
+    ssh_port: 22
+    enable_firewall: true
+    
+  pre_tasks:
+    - name: 显示初始化信息
+      ansible.builtin.debug:
+        msg: |
+          ============================================================
+          集群初始化 - {{ cluster_name | default('enterprise-cloud') }}
+          版本: K8s {{ kubernetes_version }}
+          Pod CIDR: {{ pod_network_cidr }}
+          Service CIDR: {{ service_cidr }}
+          目标: {{ inventory_hostname }}
+          ============================================================
+
+    - name: 检查操作系统兼容性
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family in ['RedHat', 'Debian']
+        fail_msg: "不支持的操作系统: {{ ansible_distribution }} {{ ansible_distribution_major_version }}"
+        success_msg: "操作系统兼容: {{ ansible_distribution }} {{ ansible_distribution_major_version }}"
+      tags: [precheck]
+
+    - name: 检查系统资源
+      ansible.builtin.assert:
+        that:
+          - ansible_memtotal_mb >= 2048
+          - ansible_processor_vcpus >= 2
+        fail_msg: "系统资源不足 (内存: {{ ansible_memtotal_mb }}MB, CPU: {{ ansible_processor_vcpus }}核)"
+        success_msg: "系统资源满足要求"
+      tags: [precheck]
+
+  tasks:
+    # ======================== 系统初始化 ========================
+    - name: 系统初始化
+      block:
+        - name: 配置系统内核参数
+          ansible.builtin.sysctl:
+            name: "{{ item.key }}"
+            value: "{{ item.value }}"
+            sysctl_set: true
+            state: present
+            reload: true
+            sysctl_file: /etc/sysctl.d/99-k8s.conf
+          loop:
+            - { key: 'net.bridge.bridge-nf-call-iptables', value: '1' }
+            - { key: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
+            - { key: 'net.ipv4.ip_forward', value: '1' }
+            - { key: 'net.ipv4.tcp_keepalive_time', value: '600' }
+            - { key: 'net.ipv4.tcp_keepalive_intvl', value: '30' }
+            - { key: 'net.ipv4.tcp_keepalive_probes', value: '10' }
+            - { key: 'fs.file-max', value: '655360' }
+            - { key: 'vm.max_map_count', value: '262144' }
+            - { key: 'vm.swappiness', value: '10' }
+            - { key: 'net.ipv4.conf.all.forwarding', value: '1' }
+          tags: [system, kernel]
+
+        - name: 加载必要的内核模块
+          community.general.modprobe:
+            name: "{{ item }}"
+            state: present
+          loop:
+            - overlay
+            - br_netfilter
+            - ip_vs
+            - ip_vs_rr
+            - ip_vs_wrr
+            - ip_vs_sh
+            - nf_conntrack
+          tags: [system, kernel]
+
+        - name: 持久化内核模块
+          ansible.builtin.lineinfile:
+            path: /etc/modules-load.d/k8s.conf
+            line: "{{ item }}"
+            create: true
+            state: present
+          loop:
+            - overlay
+            - br_netfilter
+            - ip_vs
+            - ip_vs_rr
+            - ip_vs_wrr
+            - ip_vs_sh
+            - nf_conntrack
+          tags: [system, kernel]
+
+        - name: 关闭 Swap
+          block:
+            - name: 禁用所有 Swap
+              ansible.builtin.command: swapoff -a
+              when: ansible_swaptotal_mb > 0
+              changed_when: false
+
+            - name: 移除 fstab 中的 Swap 配置
+              ansible.builtin.lineinfile:
+                path: /etc/fstab
+                regexp: '\sswap\s'
+                state: absent
+          tags: [system, swap]
+
+        - name: 配置时区
+          community.general.timezone:
+            name: Asia/Shanghai
+          tags: [system, timezone]
+
+        - name: 安装系统依赖包
+          ansible.builtin.package:
+            name:
+              - yum-utils
+              - device-mapper-persistent-data
+              - lvm2
+              - chrony
+              - curl
+              - wget
+              - net-tools
+              - sysstat
+              - htop
+              - iotop
+              - lsof
+              - jq
+              - socat
+              - ipvsadm
+              - conntrack-tools
+              - bash-completion
+              - vim
+              - tree
+              - tmux
+              - rsync
+            state: present
+          tags: [system, packages]
+
+        - name: 配置时间同步
+          block:
+            - name: 配置 Chrony
+              ansible.builtin.lineinfile:
+                path: /etc/chrony.conf
+                regexp: "{{ item.regexp }}"
+                line: "{{ item.line }}"
+                backrefs: false
+              loop:
+                - { regexp: '^server ntp', line: 'server ntp.aliyun.com iburst' }
+                - { regexp: '^pool ', line: 'pool ntp.aliyun.com iburst' }
+              notify: restart chronyd
+              tags: [system, ntp]
+
+            - name: 启动 Chronyd
+              ansible.builtin.systemd:
+                name: chronyd
+                enabled: true
+                state: started
+              tags: [system, ntp]
+          tags: [system, ntp]
+
+        - name: 安全加固 - SSH 配置
+          ansible.builtin.blockinfile:
+            path: /etc/ssh/sshd_config
+            block: |
+              PermitRootLogin prohibit-password
+              PasswordAuthentication no
+              PubkeyAuthentication yes
+              X11Forwarding no
+              MaxAuthTries 3
+              ClientAliveInterval 300
+              ClientAliveCountMax 2
+            marker: "# {mark} ANSIBLE MANAGED - K8s SECURITY"
+            insertafter: EOF
+          notify: restart sshd
+          tags: [system, security]
+
+        - name: 配置防火墙规则
+          block:
+            - name: 开启必要的端口
+              community.general.firewalld:
+                port: "{{ item.port }}/{{ item.protocol }}"
+                permanent: true
+                state: enabled
+                immediate: true
+              loop:
+                - { port: '6443', protocol: 'tcp' }
+                - { port: '2379-2380', protocol: 'tcp' }
+                - { port: '10250', protocol: 'tcp' }
+                - { port: '10259', protocol: 'tcp' }
+                - { port: '10257', protocol: 'tcp' }
+                - { port: '30000-32767', protocol: 'tcp' }
+                - { port: '179', protocol: 'tcp' }
+                - { port: '4789', protocol: 'udp' }
+              when: enable_firewall | default(false) | bool
+              ignore_errors: true
+              tags: [system, firewall]
+          tags: [system, firewall]
+      tags: [system]
+
+    # ======================== 安装容器运行时 ========================
+    - name: 安装 Containerd
+      block:
+        - name: 配置 Docker 仓库
+          ansible.builtin.yum_repository:
+            name: docker-ce
+            description: Docker CE Repository
+            baseurl: "https://mirrors.aliyun.com/docker-ce/linux/centos/$releasever/$basearch/stable"
+            gpgcheck: true
+            gpgkey: "https://mirrors.aliyun.com/docker-ce/linux/centos/gpg"
+            enabled: true
+          when: ansible_os_family == 'RedHat'
+          ignore_errors: true
+          tags: [containerd, repo]
+
+        - name: 安装 containerd
+          ansible.builtin.package:
+            name: "containerd.io"
+            state: present
+            update_cache: true
+          tags: [containerd, install]
+
+        - name: 创建 containerd 配置目录
+          ansible.builtin.file:
+            path: /etc/containerd
+            state: directory
+            mode: '0755'
+          tags: [containerd, config]
+
+        - name: 生成 containerd 配置
+          ansible.builtin.shell: |
+            containerd config default > /etc/containerd/config.toml
+            sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+            sed -i 's|sandbox_image = .*|sandbox_image = "registry.k8s.io/pause:3.9"|' /etc/containerd/config.toml
+          args:
+            creates: /etc/containerd/config.toml
+          tags: [containerd, config]
+
+        - name: 配置镜像加速器
+          ansible.builtin.lineinfile:
+            path: /etc/containerd/config.toml
+            regexp: 'registry.k8s.io'
+            line: '          endpoint = ["{{ registry_mirror | default("https://registry.k8s.io") }}"]'
+          notify: restart containerd
+          tags: [containerd, mirror]
+
+        - name: 启动 containerd
+          ansible.builtin.systemd:
+            name: containerd
+            enabled: true
+            state: started
+            daemon_reload: true
+          tags: [containerd, service]
+      tags: [containerd]
+
+    # ======================== 安装 K8s 组件 ========================
+    - name: 安装 Kubernetes 组件
+      block:
+        - name: 配置 Kubernetes 仓库
+          ansible.builtin.yum_repository:
+            name: kubernetes
+            description: Kubernetes Repository
+            baseurl: "https://mirrors.aliyun.com/kubernetes-new/core/stable/v{{ kubernetes_version }}/rpm/"
+            gpgcheck: true
+            gpgkey: "https://mirrors.aliyun.com/kubernetes-new/core/stable/v{{ kubernetes_version }}/rpm/repodata/repomd.xml.key"
+            enabled: true
+          ignore_errors: true
+          tags: [k8s, repo]
+
+        - name: 安装 kubeadm, kubelet, kubectl
+          ansible.builtin.package:
+            name:
+              - "kubelet-{{ kubernetes_version }}"
+              - "kubeadm-{{ kubernetes_version }}"
+              - "kubectl-{{ kubernetes_version }}"
+            state: present
+            update_cache: true
+          tags: [k8s, install]
+
+        - name: 启用 kubelet
+          ansible.builtin.systemd:
+            name: kubelet
+            enabled: true
+            daemon_reload: true
+          tags: [k8s, service]
+
+        - name: 配置 kubectl 自动补全
+          ansible.builtin.lineinfile:
+            path: /root/.bashrc
+            line: 'source <(kubectl completion bash)'
+            state: present
+          tags: [k8s, config]
+      tags: [k8s]
+
+    # ======================== 初始化 Master 节点 ========================
+    - name: 初始化 Kubernetes Master
+      block:
+        - name: 生成 kubeadm 配置
+          ansible.builtin.template:
+            src: templates/kubeadm-config.yml.j2
+            dest: /tmp/kubeadm-config.yml
+            mode: '0644'
+          tags: [master, config]
+
+        - name: 初始化集群
+          ansible.builtin.command: |
+            kubeadm init \
+              --config /tmp/kubeadm-config.yml \
+              --upload-certs \
+              --skip-phases preflight
+          register: kubeadm_init
+          changed_when: "'initialized' in kubeadm_init.stdout or kubeadm_init.rc == 0"
+          when: "'masters' in group_names"
+          tags: [master, init]
+
+        - name: 配置 kubectl
+          ansible.builtin.shell: |
+            mkdir -p $HOME/.kube
+            cp -f /etc/kubernetes/admin.conf $HOME/.kube/config
+            chown $(id -u):$(id -g) $HOME/.kube/config
+          when: "'masters' in group_names"
+          changed_when: false
+          tags: [master, config]
+
+        - name: 获取 join 命令
+          ansible.builtin.command: kubeadm token create --print-join-command
+          register: join_command
+          changed_when: false
+          when: "'masters' in group_names"
+          tags: [master, token]
+
+        - name: 保存 join 命令到本地
+          ansible.builtin.copy:
+            content: "{{ hostvars[groups['masters'][0]].join_command.stdout | default('') }}"
+            dest: /tmp/k8s-join-command.sh
+            mode: '0755'
+          delegate_to: localhost
+          become: false
+          when: inventory_hostname == groups['masters'][0]
+          tags: [master, token]
+      when: "'masters' in group_names"
+      tags: [master]
+
+    # ======================== Worker 节点加入集群 ========================
+    - name: Worker 节点加入集群
+      block:
+        - name: 检查节点是否已加入集群
+          ansible.builtin.stat:
+            path: /etc/kubernetes/kubelet.conf
+          register: kubelet_conf
+          tags: [worker, join]
+
+        - name: 加入集群
+          ansible.builtin.command: "{{ hostvars[groups['masters'][0]].join_command.stdout | default('kubeadm join --skip-phases preflight') }}"
+          register: join_result
+          changed_when: "'This node has joined' in join_result.stdout or join_result.rc == 0"
+          when: not kubelet_conf.stat.exists
+          ignore_errors: true
+          tags: [worker, join]
+
+        - name: 等待节点就绪
+          ansible.builtin.command: kubectl get node {{ inventory_hostname | replace('.', '-') }} --no-headers
+          register: node_status
+          until: "'Ready' in node_status.stdout"
+          retries: 30
+          delay: 10
+          delegate_to: "{{ groups['masters'][0] }}"
+          when: "'workers' in group_names"
+          changed_when: false
+          ignore_errors: true
+          tags: [worker, verify]
+      when: "'workers' in group_names"
+      tags: [worker]
+
+    # ======================== 安装网络插件 ========================
+    - name: 安装 Calico 网络插件
+      block:
+        - name: 下载 Calico 清单
+          ansible.builtin.get_url:
+            url: "https://raw.githubusercontent.com/projectcalico/calico/v{{ calico_version }}/manifests/calico.yaml"
+            dest: /tmp/calico.yaml
+            mode: '0644'
+          delegate_to: "{{ groups['masters'][0] }}"
+          run_once: true
+          tags: [network, calico]
+
+        - name: 部署 Calico
+          ansible.builtin.command: kubectl apply -f /tmp/calico.yaml
+          delegate_to: "{{ groups['masters'][0] }}"
+          run_once: true
+          changed_when: false
+          tags: [network, calico]
+
+        - name: 等待 Calico 就绪
+          ansible.builtin.command: |
+            kubectl wait --for=condition=Ready pod -l k8s-app=calico-node -n kube-system --timeout=300s
+          delegate_to: "{{ groups['masters'][0] }}"
+          run_once: true
+          changed_when: false
+          ignore_errors: true
+          tags: [network, calico]
+      when: "'masters' in group_names"
+      tags: [network]
+
+  post_tasks:
+    - name: 显示集群状态
+      ansible.builtin.shell: |
+        kubectl get nodes -o wide 2>/dev/null || echo "集群状态暂时无法获取"
+        echo "---"
+        kubectl get pods -A --no-headers 2>/dev/null | awk '{print $4}' | sort | uniq -c | sort -rn || true
+      register: cluster_status
+      changed_when: false
+      delegate_to: "{{ groups['masters'][0] }}"
+      run_once: true
+      tags: [always]
+
+    - name: 显示初始化完成信息
+      ansible.builtin.debug:
+        msg: |
+          ============================================================
+          集群初始化完成!
+          集群: {{ cluster_name | default('enterprise-cloud') }}
+          版本: K8s {{ kubernetes_version }}
+          网络: {{ cni_plugin }} {{ calico_version }}
+          ============================================================
+      tags: [always]
+
+  handlers:
+    - name: restart containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: restarted
+        daemon_reload: true
+
+    - name: restart sshd
+      ansible.builtin.systemd:
+        name: sshd
+        state: restarted
+
+    - name: restart chronyd
+      ansible.builtin.systemd:
+        name: chronyd
+        state: restarted

@@ -1,0 +1,125 @@
+# Alertmanager 部署清单
+# 使用 Helm 安装 kube-prometheus-stack, 此文件作为补充资源
+---
+# Alertmanager Config (Helm Values 内嵌配置的备用)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: monitoring
+  labels:
+    app: alertmanager
+data:
+  alertmanager.yaml: |
+    global:
+      resolve_timeout: 5m
+      smtp_smarthost: 'smtp.example.com:587'
+      smtp_from: 'alertmanager@example.com'
+      smtp_auth_username: 'alertmanager@example.com'
+      smtp_auth_password: 'your-password'
+      smtp_require_tls: true
+
+    route:
+      group_by: ['alertname', 'namespace', 'severity']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      receiver: 'default-receiver'
+      routes:
+        - match:
+            severity: critical
+          receiver: 'critical-receiver'
+          group_wait: 10s
+        - match:
+            severity: warning
+          receiver: 'warning-receiver'
+
+    receivers:
+      - name: 'default-receiver'
+        email_configs:
+          - to: 'ops-team@example.com'
+            send_resolved: true
+        webhook_configs:
+          - url: 'http://dingtalk-webhook-proxy:8060/dingtalk/ops/send'
+            send_resolved: true
+
+      - name: 'critical-receiver'
+        email_configs:
+          - to: 'oncall@example.com'
+            send_resolved: true
+        webhook_configs:
+          - url: 'http://dingtalk-webhook-proxy:8060/dingtalk/critical/send'
+            send_resolved: true
+
+      - name: 'warning-receiver'
+        email_configs:
+          - to: 'ops-team@example.com'
+            send_resolved: true
+
+    inhibit_rules:
+      - source_match:
+          severity: 'critical'
+        target_match:
+          severity: 'warning'
+        equal: ['alertname', 'namespace']
+---
+# Alertmanager ServiceMonitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: alertmanager
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alertmanager
+  endpoints:
+    - port: web
+      interval: 30s
+---
+# PrometheusRule for Alertmanager self-monitoring
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: alertmanager-self-rules
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: alertmanager.rules
+      rules:
+        - alert: AlertmanagerConfigNotValid
+          expr: alertmanager_config_last_reload_successful == 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Alertmanager 配置加载失败"
+            description: "Alertmanager 配置文件加载失败超过10分钟"
+
+        - alert: AlertmanagerHighMemory
+          expr: process_resident_memory_bytes{job="alertmanager"} / 1024 / 1024 > 256
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Alertmanager 内存使用率过高"
+            description: "Alertmanager 进程内存超过 256MB，当前: {{ $value }}MB"
+---
+# PodDisruptionBudget for Alertmanager
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: alertmanager-pdb
+  namespace: monitoring
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alertmanager
+      app.kubernetes.io/instance: kube-prometheus-stack

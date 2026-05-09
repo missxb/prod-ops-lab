@@ -1,0 +1,245 @@
+# Harbor Helm Chart Values - Enterprise Cloud Native Platform
+# Chart: https://github.com/goharbor/harbor-helm
+# Version: 1.14+
+
+expose:
+  # Ingress configuration
+  type: ingress
+  tls:
+    enabled: true
+    certSource: secret
+    secret:
+      secretName: harbor-tls-secret
+      notarySecretName: harbor-notary-tls-secret
+  ingress:
+    hosts:
+      core: harbor.example.com
+      notary: notary.example.com
+    className: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-body-size: "0"
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/ssl-protocols: "TLSv1.2 TLSv1.3"
+      nginx.ingress.kubernetes.io/ssl-ciphers: "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+
+# ============================================================
+# External URL
+# ============================================================
+externalURL: https://harbor.example.com
+
+# ============================================================
+# Persistence
+# ============================================================
+persistence:
+  enabled: true
+  resourcePolicy: "keep"
+  persistentVolumeClaim:
+    registry:
+      storageClass: "standard"
+      accessMode: ReadWriteOnce
+      size: 200Gi
+    jobservice:
+      jobLog:
+        storageClass: "standard"
+        accessMode: ReadWriteOnce
+        size: 10Gi
+    database:
+      storageClass: "standard"
+      accessMode: ReadWriteOnce
+      size: 20Gi
+    redis:
+      storageClass: "standard"
+      accessMode: ReadWriteOnce
+      size: 10Gi
+    trivy:
+      storageClass: "standard"
+      accessMode: ReadWriteOnce
+      size: 10Gi
+
+# ============================================================
+# Harbor Core
+# ============================================================
+harborAdminPassword: "Harbor12345"
+
+# ============================================================
+# Image Registry
+# ============================================================
+registry:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+  storage:
+    s3:
+      accesskey: ""
+      secretkey: ""
+      region: us-east-1
+      bucket: harbor-registry
+      regionendpoint: ""
+      encrypt: false
+      secure: true
+      multipartCopyThresholdSize: "33554432"
+      multipartCopyChunkSize: "33554432"
+      multipartCopyMaxConcurrency: 10
+      multipartCopyMaxPartSize: "33554432"
+      chunksize: "16777216"
+      rootdirectory: /registry
+      redirect:
+        disabled: false
+    filesystem:
+      maxthreads: 100
+  middleware:
+    cache:
+      enabled: true
+      type: redis
+      addr: harbor-redis-master:6379
+      db: 2
+      password: ""
+      idle_timeout_second: 30
+      scan_interval: 120
+  garbageCollection:
+    enabled: true
+    schedule: "0 0 0 * * *"
+
+# ============================================================
+# Core
+# ============================================================
+core:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  secretKey: "change-this-to-a-secure-key"
+  tls:
+    enabled: true
+  xsrf:
+    enabled: true
+
+# ============================================================
+# Job Service
+# ============================================================
+jobservice:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  maxJobWorkers: 10
+  jobLoggers:
+    - STD_OUTPUT
+    - FILE
+  loggerSweeper:
+    enabled: true
+    duration: 168h
+    workers: 3
+
+# ============================================================
+# Database (PostgreSQL)
+# ============================================================
+database:
+  type: internal
+  internal:
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 2Gi
+    metric:
+      enabled: true
+
+# ============================================================
+# Redis
+# ============================================================
+redis:
+  type: internal
+  internal:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+# ============================================================
+# Trivy Scanner
+# ============================================================
+trivy:
+  enabled: true
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+  image:
+    repository: harbor/trivy-adapter-photon
+    tag: dev
+  debugMode: false
+  ignoreUnfixed: true
+  securityCheck: vuln
+  skipUpdate: false
+  insecure: false
+  gitHubToken: ""
+  severity: "HIGH,CRITICAL"
+
+# ============================================================
+# Notary
+# ============================================================
+notary:
+  enabled: true
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ============================================================
+# ChartMuseum
+# ============================================================
+chartmuseum:
+  enabled: false
+
+# ============================================================
+# Clair
+# ============================================================
+clair:
+  enabled: false
+
+# ============================================================
+# Metrics
+# ============================================================
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    interval: 30s
+    additionalLabels: {}
+
+# ============================================================
+# Cache
+# ============================================================
+cache:
+  enabled: true
+  expireSeconds: 1800

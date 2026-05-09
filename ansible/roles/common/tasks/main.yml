@@ -1,0 +1,362 @@
+###############################################################################
+# ansible/roles/common/tasks/main.yml - 公共 Role
+#
+# 功能:
+#   - 系统初始化（内核参数、用户、安全加固）
+#   - 安装基础工具
+#   - 配置时区和语言
+#   - 配置 SSH 安全
+#   - 配置日志轮转
+#   - 配置监控代理
+#
+# 适用于所有节点的通用配置
+###############################################################################
+---
+# ======================== 系统内核配置 ========================
+- name: 配置系统内核参数
+  ansible.builtin.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_set: true
+    state: present
+    reload: true
+    sysctl_file: /etc/sysctl.d/99-common.conf
+  loop:
+    - { key: 'net.ipv4.ip_forward', value: '1' }
+    - { key: 'net.bridge.bridge-nf-call-iptables', value: '1' }
+    - { key: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
+    - { key: 'net.ipv4.tcp_keepalive_time', value: '600' }
+    - { key: 'net.ipv4.tcp_keepalive_intvl', value: '30' }
+    - { key: 'net.ipv4.tcp_keepalive_probes', value: '10' }
+    - { key: 'net.ipv4.tcp_fin_timeout', value: '30' }
+    - { key: 'net.ipv4.tcp_tw_reuse', value: '1' }
+    - { key: 'net.ipv4.tcp_max_syn_backlog', value: '8192' }
+    - { key: 'net.core.somaxconn', value: '65535' }
+    - { key: 'net.core.netdev_max_backlog', value: '65535' }
+    - { key: 'net.core.rmem_max', value: '16777216' }
+    - { key: 'net.core.wmem_max', value: '16777216' }
+    - { key: 'fs.file-max', value: '655360' }
+    - { key: 'fs.inotify.max_user_watches', value: '524288' }
+    - { key: 'vm.max_map_count', value: '262144' }
+    - { key: 'vm.swappiness', value: '10' }
+    - { key: 'vm.overcommit_memory', value: '1' }
+    - { key: 'kernel.pid_max', value: '65536' }
+  tags: [kernel, sysctl]
+
+# ======================== 加载内核模块 ========================
+- name: 加载必要的内核模块
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - overlay
+    - br_netfilter
+    - ip_vs
+    - ip_vs_rr
+    - ip_vs_wrr
+    - ip_vs_sh
+    - nf_conntrack
+  tags: [kernel, modules]
+
+- name: 持久化内核模块
+  ansible.builtin.lineinfile:
+    path: /etc/modules-load.d/k8s.conf
+    line: "{{ item }}"
+    create: true
+    state: present
+  loop:
+    - overlay
+    - br_netfilter
+    - ip_vs
+    - ip_vs_rr
+    - ip_vs_wrr
+    - ip_vs_sh
+    - nf_conntrack
+  tags: [kernel, modules]
+
+# ======================== Swap 配置 ========================
+- name: 禁用 Swap
+  block:
+    - name: 关闭所有 Swap
+      ansible.builtin.command: swapoff -a
+      when: ansible_swaptotal_mb > 0
+      changed_when: false
+
+    - name: 从 fstab 移除 Swap
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        regexp: '\sswap\s'
+        state: absent
+  tags: [swap]
+
+# ======================== 时区和语言 ========================
+- name: 配置时区
+  community.general.timezone:
+    name: "{{ common_timezone | default('Asia/Shanghai') }}"
+  tags: [timezone]
+
+- name: 配置语言环境
+  ansible.builtin.lineinfile:
+    path: /etc/environment
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    create: true
+  loop:
+    - { regexp: '^LANG=', line: 'LANG=en_US.UTF-8' }
+    - { regexp: '^LC_ALL=', line: 'LC_ALL=en_US.UTF-8' }
+  tags: [locale]
+
+# ======================== 安装基础工具 ========================
+- name: 安装基础工具包
+  ansible.builtin.package:
+    name:
+      # 基础工具
+      - vim
+      - nano
+      - tree
+      - tmux
+      - screen
+      - bash-completion
+      - curl
+      - wget
+      - jq
+      - yq
+      # 网络工具
+      - net-tools
+      - iputils
+      - socat
+      - nc
+      - telnet
+      - nmap-ncat
+      # 系统工具
+      - htop
+      - iotop
+      - sysstat
+      - lsof
+      - strace
+      - tcpdump
+      - dstat
+      - iftop
+      # 安全工具
+      - openssl
+      - openssh-server
+      # 开发工具
+      - git
+      - make
+      - gcc
+      - python3
+      - python3-pip
+      # 存储工具
+      - rsync
+      - tar
+      - gzip
+      - unzip
+      - xz
+    state: present
+  tags: [packages]
+
+# ======================== SSH 安全配置 ========================
+- name: SSH 安全配置
+  ansible.builtin.blockinfile:
+    path: /etc/ssh/sshd_config
+    block: |
+      # 安全配置 - 由 Ansible 自动管理
+      PermitRootLogin prohibit-password
+      PasswordAuthentication no
+      PubkeyAuthentication yes
+      X11Forwarding no
+      MaxAuthTries 3
+      ClientAliveInterval 300
+      ClientAliveCountMax 2
+      AllowAgentForwarding no
+      AllowTcpForwarding no
+      Protocol 2
+      LogLevel VERBOSE
+    marker: "# {mark} COMMON ROLE - SSH SECURITY"
+    insertafter: EOF
+    validate: 'sshd -t -f %s'
+  notify: restart sshd
+  tags: [ssh, security]
+
+# ======================== 用户管理 ========================
+- name: 创建运维用户
+  ansible.builtin.user:
+    name: "{{ common运维_user | default('devops') }}"
+    shell: /bin/bash
+    groups: wheel
+    append: true
+    create_home: true
+    state: present
+  ignore_errors: true
+  tags: [users]
+
+# ======================== 日志轮转配置 ========================
+- name: 配置日志轮转
+  ansible.builtin.copy:
+    content: |
+      # 通用日志轮转配置
+      /var/log/*.log {
+          daily
+          rotate {{ common_log_rotate_days | default(7) }}
+          compress
+          delaycompress
+          missingok
+          notifempty
+          create 0640 root adm
+          sharedscripts
+          postrotate
+              /usr/bin/systemctl reload rsyslog > /dev/null 2>&1 || true
+          endscript
+      }
+      
+      /var/log/kern.log
+      /var/log/syslog {
+          weekly
+          rotate 4
+          compress
+          delaycompress
+          missingok
+          notifempty
+          postrotate
+              /usr/lib/rsyslog/rsyslog-rotate
+          endscript
+      }
+    dest: /etc/logrotate.d/common
+    mode: '0644'
+  tags: [logrotate]
+
+# ======================== 资源限制 ========================
+- name: 配置系统资源限制
+  ansible.builtin.copy:
+    content: |
+      # 系统级限制
+      *    soft    nofile    655360
+      *    hard    nofile    655360
+      *    soft    nproc     655360
+      *    hard    nproc     655360
+      root soft    nofile    655360
+      root hard    nofile    655360
+      root soft    nproc     655360
+      root hard    nproc     655360
+    dest: /etc/security/limits.d/99-common.conf
+    mode: '0644'
+  tags: [limits]
+
+# ======================== 磁盘 IO 调度器 ========================
+- name: 设置磁盘 IO 调度器
+  ansible.builtin.shell: |
+    for disk in $(lsblk -d -n -o NAME | grep -E '^sd|^vd|^nvme'); do
+      echo mq-deadline > /sys/block/${disk}/queue/scheduler 2>/dev/null || true
+    done
+  changed_when: false
+  ignore_errors: true
+  tags: [io-scheduler]
+
+# ======================== NTP 时间同步 ========================
+- name: 配置时间同步
+  block:
+    - name: 安装 chrony
+      ansible.builtin.package:
+        name: chrony
+        state: present
+      tags: [ntp]
+
+    - name: 配置 chrony 服务器
+      ansible.builtin.lineinfile:
+        path: /etc/chrony.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^server ntp', line: 'server ntp.aliyun.com iburst' }
+        - { regexp: '^pool ', line: 'pool ntp.aliyun.com iburst' }
+      notify: restart chronyd
+      tags: [ntp]
+
+    - name: 启动 chrony
+      ansible.builtin.systemd:
+        name: chronyd
+        enabled: true
+        state: started
+      tags: [ntp]
+  tags: [ntp]
+
+# ======================== 配置文件目录 ========================
+- name: 创建标准目录结构
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+  loop:
+    - /opt/scripts
+    - /opt/config
+    - /opt/backup
+    - /data/logs
+    - /data/backup
+    - /data/tmp
+    - /etc/kubernetes/pki
+  tags: [directories]
+
+# ======================== 环境变量 ========================
+- name: 配置全局环境变量
+  ansible.builtin.blockinfile:
+    path: /etc/profile.d/common-env.sh
+    block: |
+      # 通用环境变量
+      export PATH="/opt/scripts:/usr/local/bin:${PATH}"
+      export EDITOR=vim
+      export HISTSIZE=10000
+      export HISTFILESIZE=20000
+      export HISTTIMEFORMAT="%F %T "
+      export PROMPT_COMMAND='history -a'
+      
+      # K8s 环境
+      export KUBECONFIG=/root/.kube/config
+      
+      # 别名
+      alias ll='ls -alF'
+      alias la='ls -A'
+      alias k='kubectl'
+      alias kgp='kubectl get pods'
+      alias kgn='kubectl get nodes'
+      alias kgs='kubectl get services'
+      alias kga='kubectl get all'
+      alias tmux='tmux -u'
+    create: true
+    mode: '0644'
+  tags: [environment]
+
+# ======================== 系统安全加固 ========================
+- name: 系统安全加固
+  block:
+    - name: 限制 core dump
+      ansible.builtin.lineinfile:
+        path: /etc/security/limits.conf
+        regexp: '^\*.*core'
+        line: '*    soft    core    0'
+        state: present
+      tags: [security]
+
+    - name: 禁用 USB 存储
+      ansible.builtin.lineinfile:
+        path: /etc/modprobe.d/blacklist.conf
+        regexp: '^blacklist usb-storage'
+        line: 'blacklist usb-storage'
+        create: true
+      ignore_errors: true
+      tags: [security]
+
+    - name: 配置登录提示
+      ansible.builtin.copy:
+        content: |
+          ============================================================
+          Authorized access only. All activities are monitored.
+          ============================================================
+        dest: /etc/issue.net
+        mode: '0644'
+      tags: [security]
+  tags: [security]
+
+# ======================== Handler 定义 ========================
+# 见 handlers/main.yml

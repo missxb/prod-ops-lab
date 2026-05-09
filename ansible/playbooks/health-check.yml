@@ -1,0 +1,316 @@
+###############################################################################
+# ansible/playbooks/health-check.yml - 自动化巡检 Playbook
+#
+# 功能:
+#   - 系统资源检查 (CPU/内存/磁盘/负载)
+#   - 网络连通性检查
+#   - 服务状态检查
+#   - K8s 节点/Pod 检查
+#   - 安全审计检查
+#   - 生成巡检报告
+#
+# 用法:
+#   ansible-playbook -i inventory/hosts.yml playbooks/health-check.yml
+#   ansible-playbook -i inventory/hosts.yml playbooks/health-check.yml --tags "cpu,disk"
+#   ansible-playbook -i inventory/hosts.yml playbooks/health-check.yml --limit "workers"
+###############################################################################
+---
+- name: 企业云原生平台 - 自动化健康巡检
+  hosts: all
+  become: true
+  gather_facts: true
+  any_errors_fatal: false
+  serial: 1
+
+  vars:
+    # 告警阈值
+    cpu_warn_threshold: 70
+    cpu_crit_threshold: 90
+    mem_warn_threshold: 75
+    mem_crit_threshold: 90
+    disk_warn_threshold: 80
+    disk_crit_threshold: 95
+    load_warn_multiplier: 2.0
+    load_crit_multiplier: 4.0
+    inode_warn_threshold: 80
+    
+    # 报告配置
+    report_dir: "/root/enterprise-cloud-native-platform/reports"
+    report_file: "health-check-{{ ansible_date_time.date }}-{{ ansible_hostname }}.txt"
+
+  pre_tasks:
+    - name: 创建报告目录
+      ansible.builtin.file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      run_once: true
+      tags: [always]
+
+    - name: 初始化报告文件
+      ansible.builtin.copy:
+        content: |
+          ================================================================
+          健康巡检报告
+          时间: {{ ansible_date_time.iso8601 }}
+          主机: {{ inventory_hostname }}
+          ================================================================
+        dest: "{{ report_dir }}/{{ report_file }}"
+        mode: '0644'
+      delegate_to: localhost
+      run_once: true
+      tags: [always]
+
+  tasks:
+    # ======================== CPU 检查 ========================
+    - name: CPU 使用率检查
+      block:
+        - name: 获取 CPU 使用率
+          ansible.builtin.shell: |
+            top -bn1 | grep "Cpu(s)" | awk '{print $2}' | cut -d'%' -f1
+          register: cpu_usage
+          changed_when: false
+
+        - name: 设置 CPU 状态
+          ansible.builtin.set_fact:
+            cpu_status: >-
+              {{ "CRITICAL" if (cpu_usage.stdout | float) > cpu_crit_threshold else
+                 "WARNING" if (cpu_usage.stdout | float) > cpu_warn_threshold else
+                 "OK" }}
+            cpu_usage_value: "{{ cpu_usage.stdout }}"
+
+        - name: 显示 CPU 状态
+          ansible.builtin.debug:
+            msg: "[{{ cpu_status }}] CPU 使用率: {{ cpu_usage_value }}% (主机: {{ inventory_hostname }})"
+
+        - name: 添加 CPU 结果到报告
+          ansible.builtin.lineinfile:
+            path: "{{ report_dir }}/{{ report_file }}"
+            line: "[{{ cpu_status }}] CPU: {{ cpu_usage_value }}%"
+          delegate_to: localhost
+      when: "'cpu' in ansible_run_tags or 'all' in ansible_run_tags or ansible_run_tags | length == 0"
+      tags: [cpu]
+
+    # ======================== 内存检查 ========================
+    - name: 内存使用率检查
+      block:
+        - name: 获取内存信息
+          ansible.builtin.shell: |
+            free -m | awk '/^Mem:/{printf "%.1f", ($3/$2)*100}'
+          register: mem_usage
+          changed_when: false
+
+        - name: 设置内存状态
+          ansible.builtin.set_fact:
+            mem_status: >-
+              {{ "CRITICAL" if (mem_usage.stdout | float) > mem_crit_threshold else
+                 "WARNING" if (mem_usage.stdout | float) > mem_warn_threshold else
+                 "OK" }}
+            mem_usage_value: "{{ mem_usage.stdout }}"
+
+        - name: 显示内存状态
+          ansible.builtin.debug:
+            msg: "[{{ mem_status }}] 内存使用率: {{ mem_usage_value }}% (主机: {{ inventory_hostname }})"
+
+        - name: 添加内存结果到报告
+          ansible.builtin.lineinfile:
+            path: "{{ report_dir }}/{{ report_file }}"
+            line: "[{{ mem_status }}] 内存: {{ mem_usage_value }}%"
+          delegate_to: localhost
+      tags: [memory]
+
+    # ======================== 磁盘检查 ========================
+    - name: 磁盘使用率检查
+      block:
+        - name: 获取磁盘使用率
+          ansible.builtin.shell: |
+            df -h --output=target,pcent | grep -vE '^/dev|Filesystem|^tmpfs' | awk '{gsub(/%/,"",$2); if($2 > 0) print $1":"$2}'
+          register: disk_usage
+          changed_when: false
+
+        - name: 检查各分区
+          ansible.builtin.set_fact:
+            disk_alerts: >-
+              {% set alerts = [] %}
+              {% for item in disk_usage.stdout_lines %}
+              {% set mount = item.split(':')[0] %}
+              {% set usage = item.split(':')[1] | int %}
+              {% if usage >= disk_crit_threshold %}
+              {% set _ = alerts.append("CRITICAL: " ~ mount ~ "=" ~ usage ~ "%") %}
+              {% elif usage >= disk_warn_threshold %}
+              {% set _ = alerts.append("WARNING: " ~ mount ~ "=" ~ usage ~ "%") %}
+              {% endif %}
+              {% endfor %}
+              {{ alerts if alerts else ["OK: 所有分区正常"] }}
+
+        - name: 显示磁盘状态
+          ansible.builtin.debug:
+            msg: "{{ item }} (主机: {{ inventory_hostname }})"
+          loop: "{{ disk_alerts }}"
+
+        - name: 添加磁盘结果到报告
+          ansible.builtin.lineinfile:
+            path: "{{ report_dir }}/{{ report_file }}"
+            line: "[{{ item.split(':')[0] }}] 磁盘: {{ item }}"
+          loop: "{{ disk_usage.stdout_lines }}"
+          delegate_to: localhost
+      tags: [disk]
+
+    # ======================== 负载检查 ========================
+    - name: 系统负载检查
+      block:
+        - name: 获取系统负载
+          ansible.builtin.shell: |
+            awk '{print $1}' /proc/loadavg
+          register: load_avg
+          changed_when: false
+
+        - name: 计算负载比率
+          ansible.builtin.set_fact:
+            load_ratio: "{{ (load_avg.stdout | float) / (ansible_processor_vcpus | int) }}"
+
+        - name: 设置负载状态
+          ansible.builtin.set_fact:
+            load_status: >-
+              {{ "CRITICAL" if (load_ratio | float) > load_crit_multiplier else
+                 "WARNING" if (load_ratio | float) > load_warn_multiplier else
+                 "OK" }}
+
+        - name: 显示负载状态
+          ansible.builtin.debug:
+            msg: "[{{ load_status }}] 负载: {{ load_avg.stdout }} (核心: {{ ansible_processor_vcpus }}, 比率: {{ load_ratio }}) (主机: {{ inventory_hostname }})"
+      tags: [load]
+
+    # ======================== 网络检查 ========================
+    - name: 网络连通性检查
+      block:
+        - name: 检查 DNS 解析
+          ansible.builtin.shell: |
+            nslookup kubernetes.default.svc.cluster.local 2>/dev/null && echo "PASS" || echo "FAIL"
+          register: dns_check
+          changed_when: false
+          ignore_errors: true
+
+        - name: 检查外网连通
+          ansible.builtin.uri:
+            url: "https://www.baidu.com"
+            timeout: 5
+          register: internet_check
+          ignore_errors: true
+
+        - name: 网络检查结果
+          ansible.builtin.debug:
+            msg: >-
+              [{{ "PASS" if dns_check.rc == 0 else "WARN" }}] DNS: {{ "OK" if dns_check.rc == 0 else "FAIL" }} |
+              [{{ "PASS" if internet_check is succeeded else "WARN" }}] 外网: {{ "OK" if internet_check is succeeded else "FAIL" }}
+              (主机: {{ inventory_hostname }})
+      tags: [network]
+
+    # ======================== 服务状态检查 ========================
+    - name: 系统服务检查
+      block:
+        - name: 检查关键服务状态
+          ansible.builtin.shell: |
+            systemctl is-active {{ item }} 2>/dev/null && echo "{{ item }}:ACTIVE" || echo "{{ item }}:INACTIVE"
+          register: service_status
+          loop:
+            - containerd
+            - kubelet
+            - sshd
+            - chronyd
+          changed_when: false
+          ignore_errors: true
+
+        - name: 显示服务状态
+          ansible.builtin.debug:
+            msg: "[{{ 'PASS' if 'ACTIVE' in item.stdout else 'WARN' }}] {{ item.stdout }} (主机: {{ inventory_hostname }})"
+          loop: "{{ service_status.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+      tags: [services]
+
+    # ======================== K8s 节点检查 ========================
+    - name: Kubernetes 节点检查
+      block:
+        - name: 检查节点状态
+          ansible.builtin.shell: |
+            kubectl get node {{ inventory_hostname }} --no-headers 2>/dev/null | awk '{print $2}'
+          register: node_status
+          changed_when: false
+          delegate_to: "{{ groups['masters'][0] }}"
+          run_once: true
+          ignore_errors: true
+
+        - name: 检查本地 Pod 状态
+          ansible.builtin.shell: |
+            crictl ps 2>/dev/null | tail -n +2 | wc -l
+          register: pod_count
+          changed_when: false
+          ignore_errors: true
+
+        - name: 检查异常容器
+          ansible.builtin.shell: |
+            crictl ps -a 2>/dev/null | grep -iE "Exit|Error|Crash" | wc -l
+          register: bad_containers
+          changed_when: false
+          ignore_errors: true
+
+        - name: K8s 检查结果
+          ansible.builtin.debug:
+            msg: >-
+              K8s 状态 - 节点: {{ node_status.stdout | default('N/A') }} |
+              运行容器: {{ pod_count.stdout | default('N/A') }} |
+              异常容器: {{ bad_containers.stdout | default('N/A') }}
+              (主机: {{ inventory_hostname }})
+      when: "'masters' in groups or 'workers' in groups"
+      tags: [kubernetes]
+
+    # ======================== 安全检查 ========================
+    - name: 安全审计检查
+      block:
+        - name: 检查失败登录
+          ansible.builtin.shell: |
+            lastb 2>/dev/null | tail -5 | wc -l || echo "0"
+          register: failed_logins
+          changed_when: false
+          ignore_errors: true
+
+        - name: 检查可疑进程
+          ansible.builtin.shell: |
+            ps aux | awk '{print $11}' | sort | uniq -c | sort -rn | head -10
+          register: top_processes
+          changed_when: false
+
+        - name: 安全检查结果
+          ansible.builtin.debug:
+            msg: "[INFO] 最近失败登录: {{ failed_logins.stdout }} 条 (主机: {{ inventory_hostname }})"
+      tags: [security]
+
+  post_tasks:
+    - name: 汇总巡检结果
+      ansible.builtin.debug:
+        msg: |
+          ================================================================
+          巡检完成: {{ inventory_hostname }}
+          时间: {{ ansible_date_time.iso8601 }}
+          报告: {{ report_dir }}/{{ report_file }}
+          ================================================================
+      tags: [always]
+
+    - name: 收集所有主机结果（Master节点）
+      block:
+        - name: 获取所有节点状态
+          ansible.builtin.shell: |
+            kubectl get nodes -o wide 2>/dev/null || echo "无法获取"
+          register: all_nodes
+          changed_when: false
+          delegate_to: "{{ groups['masters'][0] }}"
+          run_once: true
+
+        - name: 显示集群总览
+          ansible.builtin.debug:
+            msg: |
+              {{ all_nodes.stdout }}
+      when: "'masters' in group_names"
+      tags: [always]

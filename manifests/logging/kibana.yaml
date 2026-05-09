@@ -1,0 +1,314 @@
+# =============================================================================
+# Kibana 可视化平台部署
+# 企业级云原生运维平台 - 日志系统
+# =============================================================================
+
+# ===== ConfigMap: Kibana 配置 =====
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kibana-config
+  namespace: logging
+  labels:
+    app: kibana
+data:
+  kibana.yml: |
+    server.name: kibana
+    server.host: "0.0.0.0"
+    server.port: 5601
+    server.basePath: ""
+    server.publicBaseUrl: ""
+    monitoring.ui.container.elasticsearch.enabled: true
+
+    # Elasticsearch 连接配置
+    elasticsearch.hosts: ["http://elasticsearch-logging:9200"]
+    elasticsearch.username: "elastic"
+    elasticsearch.password: "${ELASTICSEARCH_PASSWORD}"
+    elasticsearch.ssl.verificationMode: none
+
+    # 日志配置
+    logging.root.level: info
+    logging.appenders.file.type: file
+    logging.appenders.file.fileName: /usr/share/kibana/logs/kibana.log
+    logging.appenders.file.layout.type: json
+
+    # 性能优化
+    ops.interval: 30000
+    i18n.locale: "zh-CN"
+    i18n.fallbackLocale: "en"
+
+---
+# ===== ConfigMap: Index Patterns =====
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kibana-index-patterns
+  namespace: logging
+  labels:
+    app: kibana
+data:
+  index-patterns.json: |
+    {
+      "patterns": [
+        {
+          "id": "kubernetes-logs",
+          "title": "kubernetes-*",
+          "timeFieldName": "@timestamp",
+          "description": "Kubernetes 容器日志"
+        },
+        {
+          "id": "system-logs",
+          "title": "system-logs-*",
+          "timeFieldName": "@timestamp",
+          "description": "系统日志"
+        },
+        {
+          "id": "auth-logs",
+          "title": "auth-logs-*",
+          "timeFieldName": "@timestamp",
+          "description": "认证日志"
+        }
+      ],
+      "defaultIndexPattern": "kubernetes-*"
+    }
+
+---
+# ===== Secret: Kibana 凭证 =====
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kibana-credentials
+  namespace: logging
+  labels:
+    app: kibana
+type: Opaque
+data:
+  # 通过脚本生成随机密码
+
+---
+# ===== Deployment: Kibana =====
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kibana
+  namespace: logging
+  labels:
+    app: kibana
+    tier: logging
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kibana
+  template:
+    metadata:
+      labels:
+        app: kibana
+        tier: logging
+    spec:
+      containers:
+      - name: kibana
+        image: docker.elastic.co/kibana/kibana:8.11.3
+        ports:
+        - containerPort: 5601
+          name: http
+        env:
+        - name: ELASTICSEARCH_HOSTS
+          value: "http://elasticsearch.logging.svc.cluster.local:9200"
+        - name: ELASTICSEARCH_USERNAME
+          value: "elastic"
+        - name: ELASTICSEARCH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: elasticsearch-credentials
+              key: password
+              optional: true
+        - name: KIBANA_SYSTEM_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: kibana-credentials
+              key: password
+              optional: true
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: "1"
+            memory: 2Gi
+        readinessProbe:
+          httpGet:
+            path: /api/status
+            port: 5601
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+        livenessProbe:
+          httpGet:
+            path: /api/status
+            port: 5601
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 5
+        volumeMounts:
+        - name: kibana-data
+          mountPath: /usr/share/kibana/data
+        - name: kibana-logs
+          mountPath: /usr/share/kibana/logs
+      volumes:
+      - name: kibana-data
+        emptyDir: {}
+      - name: kibana-logs
+        emptyDir: {}
+
+---
+# ===== Service: Kibana 内部服务 =====
+apiVersion: v1
+kind: Service
+metadata:
+  name: kibana
+  namespace: logging
+  labels:
+    app: kibana
+spec:
+  ports:
+  - port: 5601
+    name: http
+    targetPort: 5601
+  selector:
+    app: kibana
+
+---
+# ===== Service: Kibana 外部访问 (NodePort) =====
+apiVersion: v1
+kind: Service
+metadata:
+  name: kibana-external
+  namespace: logging
+  labels:
+    app: kibana
+spec:
+  type: NodePort
+  ports:
+  - port: 5601
+    name: http
+    targetPort: 5601
+    nodePort: 30561
+  selector:
+    app: kibana
+
+---
+# ===== NetworkPolicy: Kibana 网络策略 =====
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kibana-netpol
+  namespace: logging
+spec:
+  podSelector:
+    matchLabels:
+      app: kibana
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    ports:
+    - port: 5601
+      protocol: TCP
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: elasticsearch
+    ports:
+    - port: 9200
+      protocol: TCP
+  - {}  # DNS
+
+---
+# ===== Job: Kibana Index Pattern 初始化 =====
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kibana-init
+  namespace: logging
+  labels:
+    app: kibana
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: kibana-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: kibana-init
+        image: curlimages/curl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Waiting for Kibana to be ready..."
+          for i in $(seq 1 60); do
+            if curl -s http://kibana.logging.svc.cluster.local:5601/api/status | grep -q '"available"'; then
+              echo "Kibana is ready!"
+              break
+            fi
+            echo "Attempt $i/60..."
+            sleep 10
+          done
+          
+          echo "Creating index patterns..."
+          
+          # 创建 Kubernetes 日志索引模式
+          curl -X POST "http://kibana.logging.svc.cluster.local:5601/api/saved_objects/index-pattern/kubernetes-*" \
+            -H "kbn-xsrf: true" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "attributes": {
+                "title": "kubernetes-*",
+                "timeFieldName": "@timestamp",
+                "description": "Kubernetes 容器日志"
+              }
+            }' || true
+          
+          # 创建系统日志索引模式
+          curl -X POST "http://kibana.logging.svc.cluster.local:5601/api/saved_objects/index-pattern/system-logs-*" \
+            -H "kbn-xsrf: true" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "attributes": {
+                "title": "system-logs-*",
+                "timeFieldName": "@timestamp",
+                "description": "系统日志"
+              }
+            }' || true
+          
+          # 创建认证日志索引模式
+          curl -X POST "http://kibana.logging.svc.cluster.local:5601/api/saved_objects/index-pattern/auth-logs-*" \
+            -H "kbn-xsrf: true" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "attributes": {
+                "title": "auth-logs-*",
+                "timeFieldName": "@timestamp",
+                "description": "认证日志"
+              }
+            }' || true
+          
+          # 设置默认索引模式
+          curl -X POST "http://kibana.logging.svc.cluster.local:5601/api/kibana/settings/defaultIndex" \
+            -H "kbn-xsrf: true" \
+            -H "Content-Type: application/json" \
+            -d '{"value": "kubernetes-*"}' || true
+          
+          echo "Index patterns created successfully!"

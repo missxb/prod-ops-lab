@@ -1,0 +1,129 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-config
+  namespace: monitoring
+type: Opaque
+stringData:
+  alertmanager.yaml: |
+    global:
+      resolve_timeout: 5m
+      smtp_smarthost: 'smtp.example.com:587'
+      smtp_from: 'alertmanager@example.com'
+      smtp_auth_username: 'alertmanager@example.com'
+      smtp_auth_password: 'your-password'
+      smtp_require_tls: true
+
+    route:
+      group_by: ['alertname', 'namespace', 'severity']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      receiver: 'default-receiver'
+      routes:
+        - match:
+            severity: critical
+          receiver: 'critical-receiver'
+          group_wait: 10s
+        - match:
+            severity: warning
+          receiver: 'warning-receiver'
+
+    receivers:
+      - name: 'default-receiver'
+        email_configs:
+          - to: 'ops-team@example.com'
+            send_resolved: true
+        webhook_configs:
+          - url: 'http://dingtalk-webhook-proxy:8060/dingtalk/ops/send'
+            send_resolved: true
+
+      - name: 'critical-receiver'
+        email_configs:
+          - to: 'oncall@example.com'
+            send_resolved: true
+        webhook_configs:
+          - url: 'http://dingtalk-webhook-proxy:8060/dingtalk/critical/send'
+            send_resolved: true
+
+      - name: 'warning-receiver'
+        email_configs:
+          - to: 'ops-team@example.com'
+            send_resolved: true
+
+    inhibit_rules:
+      - source_match:
+          severity: 'critical'
+        target_match:
+          severity: 'warning'
+        equal: ['alertname', 'namespace']
+---
+# 钉钉 Webhook 代理 (可选部署)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dingtalk-webhook-proxy
+  namespace: monitoring
+  labels:
+    app: dingtalk-webhook-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dingtalk-webhook-proxy
+  template:
+    metadata:
+      labels:
+        app: dingtalk-webhook-proxy
+    spec:
+      containers:
+        - name: dingtalk-webhook-proxy
+          image: timonwong/prometheus-webhook-dingtalk:v2.1.0
+          ports:
+            - containerPort: 8060
+          env:
+            - name: DINGTALK_OPS_WEBHOOK_URL
+              value: "https://oapi.dingtalk.com/robot/send?access_token=YOUR_OPS_TOKEN"
+            - name: DINGTALK_CRITICAL_WEBHOOK_URL
+              value: "https://oapi.dingtalk.com/robot/send?access_token=YOUR_CRITICAL_TOKEN"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dingtalk-webhook-proxy
+  namespace: monitoring
+spec:
+  selector:
+    app: dingtalk-webhook-proxy
+  ports:
+    - port: 8060
+      targetPort: 8060
+---
+# Alertmanager ConfigMap (备用)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config-backup
+  namespace: monitoring
+data:
+  alertmanager.yaml: |
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['alertname', 'namespace', 'severity']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      receiver: 'default-receiver'
+    receivers:
+      - name: 'default-receiver'
+        email_configs:
+          - to: 'ops-team@example.com'
+            send_resolved: true

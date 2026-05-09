@@ -1,0 +1,252 @@
+# Jenkins Helm Chart Values - Enterprise Cloud Native Platform
+# Chart: https://charts.jenkins.io
+# Version: 5.x+
+
+controller:
+  # Jenkins controller image
+  image: "jenkins/jenkins"
+  tag: "lts-jdk17"
+  
+  # Resource allocation
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+
+  # Jenkins configuration
+  jenkinsUriPrefix: ""
+  servicePort: 8080
+  
+  # Ingress
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    tls:
+      - secretName: jenkins-tls-secret
+        hosts:
+          - jenkins.example.com
+    hostName: jenkins.example.com
+  
+  # Persistence
+  persistence:
+    enabled: true
+    storageClass: "standard"
+    size: 50Gi
+    accessMode: ReadWriteOnce
+  
+  # Admin credentials (CHANGE IN PRODUCTION)
+  admin:
+    create: true
+    username: admin
+    password: "admin123"
+    passwordHash: ""
+    existingSecret: ""
+    secretKey: "jenkins-admin-password"
+
+  # Kubernetes plugin configuration
+  installPlugins:
+    - kubernetes:4203.v1dd44f5b_5cf9
+    - workflow-aggregator:600.vb_57cdd26fdd7
+    - git:5.2.2
+    - configuration-as-code:1810.v9b_53f58a_0182
+    - pipeline-stage-view:2.33
+    - docker-workflow:580.vc0c340c9b_16f
+    - pipeline-model-definition:2.2175.v03017a_50f656
+    - blueocean:1.27.14
+    - job-dsl:1.81
+    - credentials-binding:631.v861c06d062bf
+    - aws-credentials:292
+    - docker-plugin:534.v42257285b_89f
+    - kubernetes-credentials:0.11
+    - pipeline-utility-steps:2.15.2
+    - trivy-scanner:1.4.2
+    - slack-notification:2.40
+    - prometheus:2.3.2
+
+  # JCasC (Jenkins Configuration as Code)
+  JCasC:
+    defaultConfig: true
+    configScripts:
+      pipeline-config: |
+        jenkins:
+          systemMessage: "Enterprise Cloud Native Platform - CI/CD Server"
+          numExecutors: 0
+          mode: EXCLUSIVE
+          securityRealm:
+            local:
+              allowsSignup: false
+              users:
+                - id: admin
+                  password: "${JENKINS_ADMIN_PWD}"
+          nodes:
+            - kubernetes:
+                name: "kubernetes-agent"
+                serverUrl: "https://kubernetes.default.svc"
+                namespace: "jenkins-agents"
+                jenkinsUrl: "http://jenkins-controller:8080"
+                jenkinsTunnel: "jenkins-agent:50000"
+                containerCapStr: "20"
+                maxRequestsPerHostStr: "32"
+                retentionTimeout: 5
+                connectTimeout: 10
+                templates:
+                  - name: "default-agent"
+                    label: "kubernetes"
+                    nodeUsageMode: NORMAL
+                    containers:
+                      - name: "jnlp"
+                        image: "jenkins/inbound-agent:latest"
+                        workingDir: "/home/jenkins/agent"
+                        resourceRequestCpu: "200m"
+                        resourceRequestMemory: "256Mi"
+                        resourceLimitCpu: "1"
+                        resourceLimitMemory: "1Gi"
+                      - name: "maven"
+                        image: "maven:3.9-eclipse-temurin-17"
+                        workingDir: "/home/jenkins/agent"
+                        command: "cat"
+                        args: ""
+                        resourceRequestCpu: "500m"
+                        resourceRequestMemory: "1Gi"
+                        resourceLimitCpu: "2"
+                        resourceLimitMemory: "4Gi"
+                      - name: "docker"
+                        image: "docker:24-dind"
+                        workingDir: "/home/jenkins/agent"
+                        privileged: true
+                        resourceRequestCpu: "500m"
+                        resourceRequestMemory: "1Gi"
+                        resourceLimitCpu: "2"
+                        resourceLimitMemory: "4Gi"
+                    volumes:
+                      - emptyDirVolume:
+                          mountPath: "/var/run/docker.sock"
+                          volumeName: "docker-sock"
+                    envVars:
+                      - envVar:
+                          key: "DOCKER_HOST"
+                          value: "unix:///var/run/docker.sock"
+        unclassified:
+          location:
+            url: "https://jenkins.example.com/"
+            adminAddress: "admin@example.com"
+          globalLibraries:
+            libraries:
+              - name: "enterprise-pipeline-lib"
+                defaultVersion: "main"
+                includeInChangesets: false
+                retriever:
+                  modernSCM:
+                    scm:
+                      git:
+                        remote: "https://gitlab.example.com/devops/pipeline-library.git"
+                        branches:
+                          - branchSpec: "main"
+        jobs:
+          - script: >
+              multibranchPipelineJob('enterprise-app-pipeline') {
+                branchSources {
+                  git {
+                    remote('https://gitlab.example.com/devops/enterprise-app.git')
+                    credentialsId('gitlab-credentials')
+                    id('enterprise-app')
+                  }
+                }
+                orphanedItemStrategy {
+                  discardOldItems {
+                    numToKeep(20)
+                  }
+                }
+              }
+
+  # JVM options
+  javaOpts: >-
+    -Xms1g
+    -Xmx3g
+    -XX:+UseG1GC
+    -XX:+HeapDumpOnOutOfMemoryError
+    -Djenkins.install.runSetupWizard=false
+
+  # Groovy init scripts
+  initScripts:
+    - |
+      import jenkins.model.*
+      import hudson.model.*
+      
+      // Disable CSRF for API compatibility
+      def jenkins = Jenkins.getInstance()
+      jenkins.setCrumbIssuer(null)
+      
+      // Configure global properties
+      def globalNodeProperties = jenkins.getGlobalNodeProperties()
+      envVarsNodePropertyList = new hudson.slaves.EnvironmentVariablesNodeProperty[]
+      def envVars = new hudson.slaves.EnvironmentVariablesNodeProperty(
+        new hudson.EnvVars([
+          'DOCKER_REGISTRY': 'harbor.example.com',
+          'TRIVY_SERVER': 'http://trivy-server.trivy:4954'
+        ])
+      )
+      globalNodeProperties.add(envVars)
+      jenkins.save()
+
+  # Service configuration
+  serviceType: ClusterIP
+  servicePort: 8080
+  
+  # Agent port
+  agentListenerPort: 50000
+
+# ============================================================
+# Pod Templates for Kubernetes agents
+# ============================================================
+agent:
+  enabled: true
+  namespace: jenkins-agents
+  image:
+    repository: jenkins/inbound-agent
+    tag: latest
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# ============================================================
+# Additional configuration
+# ============================================================
+additionalAgents: {}
+
+# ============================================================
+# Backup configuration
+# ============================================================
+backup:
+  enabled: true
+  schedule: "0 2 * * *"
+  storage:
+    size: 20Gi
+    storageClass: "standard"
+
+# ============================================================
+# Monitoring
+# ============================================================
+prometheus:
+  enabled: true
+  serviceMonitorAdditionalLabels: {}
+
+# ============================================================
+# RBAC
+# ============================================================
+rbac:
+  create: true
+  serviceAccount:
+    create: true
+    name: jenkins-controller

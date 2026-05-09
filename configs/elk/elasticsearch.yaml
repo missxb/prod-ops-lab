@@ -1,0 +1,60 @@
+# =============================================================================
+# Elasticsearch 生产级配置
+# 企业级云原生运维平台 - 日志系统
+# =============================================================================
+
+# ===== 集群配置 =====
+cluster.name: logging-cluster
+node.name: ${HOSTNAME}
+node.roles: [master, data, ingest]
+
+# ===== 网络配置 =====
+network.host: 0.0.0.0
+http.port: 9200
+transport.port: 9300
+
+# ===== 发现配置 =====
+discovery.seed_hosts:
+  - elasticsearch-0.elasticsearch.logging.svc.cluster.local
+  - elasticsearch-1.elasticsearch.logging.svc.cluster.local
+  - elasticsearch-2.elasticsearch.logging.svc.cluster.local
+cluster.initial_master_nodes:
+  - elasticsearch-0
+  - elasticsearch-1
+  - elasticsearch-2
+
+# ===== 路径配置 =====
+path.data: /usr/share/elasticsearch/data
+path.logs: /usr/share/elasticsearch/logs
+
+# ===== 内存配置 =====
+bootstrap.memory_lock: true
+
+# ===== 写入配置 =====
+indices.memory.index_buffer_size: 15%
+index.translog.flush_threshold_size: 512mb
+index.translog.durability: async
+index.translog.sync_interval: 5s
+
+# ===== 索引配置 =====
+action.auto_create_index: true
+action.destructive_requires_name: true
+
+# ===== 线程池配置 =====
+thread_pool.write.queue_size: 1000
+thread_pool.search.queue_size: 1000
+
+# ===== 快照配置 =====
+# snapshot 配置已禁用以节省资源
+
+# ===== 安全配置 =====
+xpack.security.enabled: false
+xpack.security.enrollment.enabled: false
+
+# ===== ILM 生命周期策略 =====
+# 30天日志保留策略
+# 通过 API 创建，配置文件中不直接定义
+
+# ===== 监控 =====
+xpack.monitoring.collection.enabled: true
+xpack.monitoring.history.duration: 7d

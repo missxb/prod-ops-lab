@@ -1,0 +1,414 @@
+# =============================================================================
+# Fluentd DaemonSet 部署
+# 企业级云原生运维平台 - 日志系统
+# =============================================================================
+
+# ===== ConfigMap: Fluentd 主配置 =====
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluentd-config
+  namespace: logging
+  labels:
+    app: fluentd
+data:
+  fluent.conf: |
+    # ===== 输入源 =====
+    # 容器日志
+    <source>
+      @type tail
+      @id in_tail_container_logs
+      path /var/log/containers/*.log
+      pos_file /var/log/fluentd-containers.log.pos
+      tag kubernetes.*
+      exclude_path ["/var/log/containers/fluentd*"]
+      read_from_head true
+      <parse>
+        @type multi_format
+        <pattern>
+          format json
+          time_key time
+          time_format %Y-%m-%dT%H:%M:%S.%NZ
+          keep_time_key true
+        </pattern>
+        <pattern>
+          format regexp
+          expression /^(?<time>.+) (?<stream>stdout|stderr) [^ ]* (?<log>.*)$/
+          time_format %Y-%m-%dT%H:%M:%S.%N%:z
+        </pattern>
+      </parse>
+    </source>
+
+    # 系统日志
+    <source>
+      @type tail
+      @id in_tail_syslog
+      path /var/log/syslog,/var/log/messages
+      pos_file /var/log/fluentd-syslog.log.pos
+      tag system.*
+      <parse>
+        @type syslog
+      </parse>
+    </source>
+
+    # 认证日志
+    <source>
+      @type tail
+      @id in_tail_auth
+      path /var/log/auth.log,/var/log/secure
+      pos_file /var/log/fluentd-auth.log.pos
+      tag auth.*
+      <parse>
+        @type syslog
+      </parse>
+    </source>
+
+    # ===== Kubernetes 元数据过滤 =====
+    <filter kubernetes.**>
+      @type kubernetes_metadata
+      @id filter_kube_metadata
+      kubernetes_url "https://#{ENV['KUBERNETES_SERVICE_HOST']}:#{ENV['KUBERNETES_SERVICE_PORT']}"
+      verify_ssl true
+      ca_file /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      bearer_token_file /var/run/secrets/kubernetes.io/serviceaccount/token
+      skip_labels false
+      skip_container_metadata false
+      skip_master_url true
+      skip_namespace_metadata false
+    </filter>
+
+    # ===== 日志过滤与处理 =====
+    # 过滤空日志
+    <filter kubernetes.**>
+      @type grep
+      <exclude>
+        key log
+        pattern /^\s*$/
+      </exclude>
+    </filter>
+
+    # 添加日志级别检测
+    <filter kubernetes.**>
+      @type record_transformer
+      enable_ruby true
+      <record>
+        log_level ${record["log"] =~ /ERROR|FATAL|CRITICAL/i ? "error" : record["log"] =~ /WARN/i ? "warn" : record["log"] =~ /INFO/i ? "info" : record["log"] =~ /DEBUG/i ? "debug" : "unknown"}
+        timestamp ${Time.now.iso8601}
+        hostname ${Socket.gethostname}
+      </record>
+    </filter>
+
+    # 添加索引日期
+    <filter kubernetes.**>
+      @type record_transformer
+      enable_ruby true
+      <record>
+        index_date ${Time.now.strftime("%Y.%m.%d")}
+      </record>
+    </filter>
+
+    # ===== 输出到 Elasticsearch =====
+    <match kubernetes.**>
+      @type elasticsearch
+      @id out_es_kubernetes
+      @log_level info
+      host elasticsearch.logging.svc.cluster.local
+      port 9200
+      scheme http
+      user elastic
+      password "#{ENV['ELASTIC_PASSWORD']}"
+      index_name kubernetes-${tag_parts[2]}
+      type_name _doc
+      include_tag_key true
+      tag_key @log_name
+
+      # 索引模板
+      template_name kubernetes
+      template_overwrite true
+      template_file /etc/fluentd/templates/kubernetes-template.json
+
+      # 缓冲区配置
+      <buffer>
+        @type file
+        path /var/log/fluentd-buffers/kubernetes.buffer
+        flush_mode interval
+        flush_interval 30s
+        flush_thread_count 2
+        retry_type exponential_backoff
+        retry_forever true
+        retry_max_interval 300
+        chunk_limit_size 5M
+        total_limit_size 2G
+        overflow_action block
+        compress gzip
+      </buffer>
+    </match>
+
+    <match system.**>
+      @type elasticsearch
+      @id out_es_system
+      host elasticsearch.logging.svc.cluster.local
+      port 9200
+      scheme http
+      user elastic
+      password "#{ENV['ELASTIC_PASSWORD']}"
+      index_name system-logs
+      type_name _doc
+
+      <buffer>
+        @type file
+        path /var/log/fluentd-buffers/system.buffer
+        flush_mode interval
+        flush_interval 30s
+        flush_thread_count 2
+        retry_type exponential_backoff
+        retry_forever true
+        chunk_limit_size 2M
+        total_limit_size 1G
+        compress gzip
+      </buffer>
+    </match>
+
+    <match auth.**>
+      @type elasticsearch
+      @id out_es_auth
+      host elasticsearch.logging.svc.cluster.local
+      port 9200
+      scheme http
+      user elastic
+      password "#{ENV['ELASTIC_PASSWORD']}"
+      index_name auth-logs
+      type_name _doc
+
+      <buffer>
+        @type file
+        path /var/log/fluentd-buffers/auth.buffer
+        flush_mode interval
+        flush_interval 15s
+        retry_type exponential_backoff
+        retry_forever true
+        chunk_limit_size 1M
+        total_limit_size 512M
+        compress gzip
+      </buffer>
+    </match>
+
+    # ===== 监控 =====
+    <source>
+      @type monitor_agent
+      @id monitor_agent
+      bind 0.0.0.0
+      port 24220
+    </source>
+
+---
+# ===== ConfigMap: 索引模板 =====
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluentd-templates
+  namespace: logging
+  labels:
+    app: fluentd
+data:
+  kubernetes-template.json: |
+    {
+      "index_patterns": ["kubernetes-*"],
+      "version": 80001,
+      "settings": {
+        "number_of_shards": 2,
+        "number_of_replicas": 1,
+        "index.lifecycle.name": "kubernetes-policy",
+        "index.lifecycle.rollover_alias": "kubernetes"
+      },
+      "mappings": {
+        "properties": {
+          "@timestamp": { "type": "date" },
+          "log": { "type": "text" },
+          "stream": { "type": "keyword" },
+          "kubernetes": {
+            "properties": {
+              "pod_name": { "type": "keyword" },
+              "namespace_name": { "type": "keyword" },
+              "container_name": { "type": "keyword" },
+              "labels": { "type": "object", "enabled": false },
+              "host": { "type": "keyword" }
+            }
+          },
+          "log_level": { "type": "keyword" }
+        }
+      }
+    }
+
+---
+# ===== DaemonSet: Fluentd 日志收集 =====
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluentd
+  namespace: logging
+  labels:
+    app: fluentd
+    tier: logging
+spec:
+  selector:
+    matchLabels:
+      app: fluentd
+  template:
+    metadata:
+      labels:
+        app: fluentd
+        tier: logging
+    spec:
+      serviceAccountName: fluentd
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/control-plane
+        effect: NoSchedule
+      - operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: fluentd
+        image: fluent/fluentd-kubernetes-daemonset:v1.16-debian-elasticsearch8-1
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: FLUENT_ELASTICSEARCH_HOST
+          value: "elasticsearch.logging.svc.cluster.local"
+        - name: FLUENT_ELASTICSEARCH_PORT
+          value: "9200"
+        - name: FLUENT_ELASTICSEARCH_SCHEME
+          value: "http"
+        - name: FLUENT_ELASTICSEARCH_USER
+          value: "elastic"
+        - name: ELASTIC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: elasticsearch-credentials
+              key: password
+              optional: true
+        - name: FLUENT_ELASTICSEARCH_SSL_VERIFY
+          value: "false"
+        - name: FLUENT_ELASTICSEARCH_SSL_VERSION
+          value: "TLSv1_2"
+        - name: KUBERNETES_SERVICE_HOST
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: KUBERNETES_SERVICE_PORT
+          value: "6443"
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        volumeMounts:
+        - name: varlog
+          mountPath: /var/log
+          readOnly: true
+        - name: containers
+          mountPath: /var/lib/docker/containers
+          readOnly: true
+        - name: fluentd-config
+          mountPath: /fluentd/etc/fluent.conf
+          subPath: fluent.conf
+        - name: fluentd-buffer
+          mountPath: /var/log/fluentd-buffers
+        - name: fluentd-templates
+          mountPath: /etc/fluentd/templates
+        - name: pos-files
+          mountPath: /var/log/fluentd-containers.log.pos
+          subPath: fluentd-containers.log.pos
+        ports:
+        - containerPort: 24220
+          name: monitor
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /metrics
+            port: 24220
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /metrics
+            port: 24220
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: varlog
+        hostPath:
+          path: /var/log
+          type: Directory
+      - name: containers
+        hostPath:
+          path: /var/lib/docker/containers
+          type: Directory
+      - name: fluentd-config
+        configMap:
+          name: fluentd-config
+      - name: fluentd-buffer
+        hostPath:
+          path: /var/log/fluentd-buffers
+          type: DirectoryOrCreate
+      - name: fluentd-templates
+        configMap:
+          name: fluentd-templates
+      - name: pos-files
+        hostPath:
+          path: /var/log/fluentd-containers.log.pos
+          type: FileOrCreate
+      terminationGracePeriodSeconds: 30
+
+---
+# ===== Service: Fluentd 监控 =====
+apiVersion: v1
+kind: Service
+metadata:
+  name: fluentd-monitor
+  namespace: logging
+  labels:
+    app: fluentd
+spec:
+  ports:
+  - port: 24220
+    name: monitor
+    targetPort: 24220
+  selector:
+    app: fluentd
+
+---
+# ===== ClusterRole: Fluentd 集群角色 =====
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluentd
+  labels:
+    app: fluentd
+rules:
+- apiGroups: [""]
+  resources:
+  - pods
+  - namespaces
+  - nodes
+  - nodes/proxy
+  verbs: ["get", "list", "watch"]
+
+---
+# ===== ClusterRoleBinding: Fluentd 集群角色绑定 =====
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fluentd
+  labels:
+    app: fluentd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fluentd
+subjects:
+- kind: ServiceAccount
+  name: fluentd
+  namespace: logging

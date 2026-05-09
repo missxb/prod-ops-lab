@@ -1,0 +1,191 @@
+#===============================================================================
+# Kubernetes RBAC - Readonly Configuration
+#===============================================================================
+# Read-only access for monitoring and audit purposes
+#===============================================================================
+
+---
+# Readonly ClusterRole - Read-only access to most resources
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: readonly
+  labels:
+    app.kubernetes.io/name: rbac-readonly
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+rules:
+# Read-only access to core resources
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "pods/status", "services", "endpoints", "configmaps", "namespaces", "nodes", "nodes/status", "events", "persistentvolumes", "persistentvolumeclaims", "serviceaccounts", "secrets"]
+  verbs: ["get", "list", "watch"]
+
+# Read-only access to apps resources
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "statefulsets", "daemonsets", "controllerrevisions"]
+  verbs: ["get", "list", "watch"]
+
+# Read-only access to batch resources
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch"]
+
+# Read-only access to networking resources
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses", "networkpolicies"]
+  verbs: ["get", "list", "watch"]
+
+# Read-only access to RBAC resources
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+  verbs: ["get", "list", "watch"]
+
+# Read-only access to storage resources
+- apiGroups: ["storage.k8s.io"]
+  resources: ["storageclasses", "csinodes", "csidrivers"]
+  verbs: ["get", "list", "watch"]
+
+# Read-only access to policy resources
+- apiGroups: ["policy"]
+  resources: ["poddisruptionbudgets", "podsecuritypolicies"]
+  verbs: ["get", "list", "watch"]
+
+# Read-only access to resource quotas
+- apiGroups: [""]
+  resources: ["resourcequotas", "limitranges"]
+  verbs: ["get", "list", "watch"]
+
+# Read-only access to certificates
+- apiGroups: ["cert-manager.io"]
+  resources: ["certificates", "certificaterequests", "issuers", "clusterissuers"]
+  verbs: ["get", "list", "watch"]
+
+# Read-only access to monitoring resources
+- apiGroups: ["monitoring.coreos.com"]
+  resources: ["prometheuses", "servicemonitors", "podmonitors", "alertmanagers", "prometheusrules"]
+  verbs: ["get", "list", "watch"]
+
+---
+# Readonly ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: readonly
+  labels:
+    app.kubernetes.io/name: rbac-readonly
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: readonly
+subjects:
+- kind: Group
+  name: readonly-users
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Readonly RoleBinding for production namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: readonly
+  namespace: production
+  labels:
+    app.kubernetes.io/name: rbac-readonly
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: readonly
+subjects:
+- kind: Group
+  name: readonly-users
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Readonly RoleBinding for staging namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: readonly
+  namespace: staging
+  labels:
+    app.kubernetes.io/name: rbac-readonly
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: readonly
+subjects:
+- kind: Group
+  name: readonly-users
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Readonly RoleBinding for development namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: readonly
+  namespace: development
+  labels:
+    app.kubernetes.io/name: rbac-readonly
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: readonly
+subjects:
+- kind: Group
+  name: readonly-users
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Readonly RoleBinding for monitoring namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: readonly
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: rbac-readonly
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: readonly
+subjects:
+- kind: Group
+  name: readonly-users
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Readonly RoleBinding for logging namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: readonly
+  namespace: logging
+  labels:
+    app.kubernetes.io/name: rbac-readonly
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: readonly
+subjects:
+- kind: Group
+  name: readonly-users
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Readonly RoleBinding for security namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: readonly
+  namespace: security
+  labels:
+    app.kubernetes.io/name: rbac-readonly
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: readonly
+subjects:
+- kind: Group
+  name: readonly-users
+  apiGroup: rbac.authorization.k8s.io

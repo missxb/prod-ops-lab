@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-app-config
+  labels:
+    app: demo-app
+    app.kubernetes.io/name: demo-app
+    platform: enterprise-cloud-native
+data:
+  APP_NAME: "demo-app"
+  APP_ENV: "development"
+  APP_LOG_LEVEL: "info"
+  APP_PORT: "80"
+  APP_DEBUG: "true"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-app-nginx-config
+  labels:
+    app: demo-app
+    app.kubernetes.io/name: demo-app
+    platform: enterprise-cloud-native
+data:
+  default.conf: |
+    server {
+        listen 80;
+        server_name localhost;
+
+        location / {
+            root   /usr/share/nginx/html;
+            index  index.html;
+        }
+
+        location /healthz {
+            access_log off;
+            return 200 'OK';
+            add_header Content-Type text/plain;
+        }
+
+        location /readyz {
+            access_log off;
+            return 200 'OK';
+            add_header Content-Type text/plain;
+        }
+
+        location /status {
+            stub_status on;
+            access_log off;
+        }
+    }
