@@ -1,0 +1,300 @@
+# =============================================================================
+# 资源配额示例 - ResourceQuota + LimitRange
+# 包含: CPU/内存配额, PVC数量限制, LimitRange
+# =============================================================================
+
+---
+# ----------------------------
+# 1. ResourceQuota - 命名空间级资源配额
+# 限制整个命名空间的资源总量
+# ----------------------------
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: production-quota
+  namespace: production
+  labels:
+    app.kubernetes.io/name: resource-quota
+    app.kubernetes.io/component: quota
+    environment: production
+  description: "生产环境资源配额 - 限制命名空间的资源总量"
+spec:
+  hard:
+    # ========== 计算资源配额 ==========
+    # CPU配额
+    requests.cpu: "20"           # 所有Pod的CPU request总和不超过20核
+    limits.cpu: "40"             # 所有Pod的CPU limit总和不超过40核
+    # 内存配额
+    requests.memory: "40Gi"      # 所有Pod的内存request总和不超过40Gi
+    limits.memory: "80Gi"        # 所有Pod的内存limit总和不超过80Gi
+    # 临时存储配额
+    requests.ephemeral-storage: "100Gi"
+    limits.ephemeral-storage: "200Gi"
+
+    # ========== Pod数量配额 ==========
+    pods: "50"                   # 命名空间内最多50个Pod
+    services: "20"               # 最多20个Service
+    services.loadbalancers: "2"  # 最多2个LoadBalancer
+    services.nodeports: "5"      # 最多5个NodePort
+
+    # ========== 存储配额 ==========
+    persistentvolumeclaims: "20" # 最多20个PVC
+    requests.storage: "500Gi"    # 总存储请求不超过500Gi
+    # 按StorageClass限制
+    count/persistentvolumeclaims: "20"
+
+    # ========== 配置对象配额 ==========
+    configmaps: "20"
+    secrets: "30"
+    services.clusterips: "20"    # 最多20个ClusterIP
+  # 按资源类型限制（需开启资源配额追踪）
+  scopeSelector:
+    matchExpressions: []
+
+---
+# ----------------------------
+# 2. ResourceQuota - 开发环境配额（更宽松）
+# ----------------------------
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: development-quota
+  namespace: development
+  labels:
+    app.kubernetes.io/name: resource-quota
+    app.kubernetes.io/component: quota
+    environment: development
+  description: "开发环境资源配额"
+spec:
+  hard:
+    requests.cpu: "10"
+    limits.cpu: "20"
+    requests.memory: "20Gi"
+    limits.memory: "40Gi"
+    requests.ephemeral-storage: "50Gi"
+    limits.ephemeral-storage: "100Gi"
+    pods: "30"
+    services: "10"
+    persistentvolumeclaims: "10"
+    requests.storage: "100Gi"
+    configmaps: "20"
+    secrets: "20"
+
+---
+# ----------------------------
+# 3. ResourceQuota - 存储专用配额
+# 按StorageClass限制存储使用
+# ----------------------------
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: storage-quota
+  namespace: production
+  labels:
+    app.kubernetes.io/name: resource-quota
+    app.kubernetes.io/component: storage-quota
+  description: "存储专用配额 - 按StorageClass限制"
+spec:
+  hard:
+    # 高性能存储（SSD）限制
+    requests.storage-ssd: "100Gi"
+    # 标准存储限制
+    requests.storage-standard: "500Gi"
+    # 低频存储限制
+    requests.storage-cold: "1Ti"
+    # PVC数量限制
+    persistentvolumeclaims-ssd: "5"
+    persistentvolumeclaims-standard: "20"
+    persistentvolumeclaims-cold: "10"
+
+---
+# ----------------------------
+# 4. LimitRange - 命名空间内Pod/容器资源限制
+# 自动为未设置资源限制的Pod注入默认值
+# ----------------------------
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: production-limit-range
+  namespace: production
+  labels:
+    app.kubernetes.io/name: limit-range
+    app.kubernetes.io/component: limits
+    environment: production
+  description: "生产环境LimitRange - 自动注入资源限制"
+spec:
+  limits:
+    # ========== Container级别限制 ==========
+    - type: Container
+      # 默认资源限制（未设置时自动注入）
+      default:
+        cpu: "500m"             # 默认CPU limit
+        memory: "512Mi"         # 默认内存limit
+      # 默认资源请求
+      defaultRequest:
+        cpu: "100m"             # 默认CPU request
+        memory: "128Mi"         # 默认内存request
+      # 最大资源限制
+      max:
+        cpu: "4"                # 单容器最大4核
+        memory: "8Gi"           # 单容器最大8Gi
+        ephemeral-storage: "10Gi"
+      # 最小资源限制
+      min:
+        cpu: "50m"              # 单容器最小50m
+        memory: "64Mi"          # 单容器最小64Mi
+        ephemeral-storage: "10Mi"
+      # 最大限制/请求比率
+      maxLimitRequestRatio:
+        cpu: "10"               # CPU limit/request最大比率10:1
+        memory: "4"             # 内存limit/request最大比率4:1
+
+    # ========== Pod级别限制 ==========
+    - type: Pod
+      max:
+        cpu: "8"                # 单Pod最大8核
+        memory: "16Gi"          # 单Pod最大16Gi
+        ephemeral-storage: "20Gi"
+      min:
+        cpu: "50m"
+        memory: "64Mi"
+
+    # ========== PVC级别限制 ==========
+    - type: PersistentVolumeClaim
+      max:
+        storage: "100Gi"        # 单个PVC最大100Gi
+      min:
+        storage: "1Gi"          # 单个PVC最小1Gi
+
+---
+# ----------------------------
+# 5. LimitRange - 开发环境（宽松限制）
+# ----------------------------
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: development-limit-range
+  namespace: development
+  labels:
+    app.kubernetes.io/name: limit-range
+    app.kubernetes.io/component: limits
+    environment: development
+  description: "开发环境LimitRange"
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "200m"
+        memory: "256Mi"
+      defaultRequest:
+        cpu: "50m"
+        memory: "64Mi"
+      max:
+        cpu: "2"
+        memory: "4Gi"
+        ephemeral-storage: "5Gi"
+      min:
+        cpu: "50m"
+        memory: "64Mi"
+      maxLimitRequestRatio:
+        cpu: "10"
+        memory: "4"
+    - type: Pod
+      max:
+        cpu: "4"
+        memory: "8Gi"
+      min:
+        cpu: "50m"
+        memory: "64Mi"
+    - type: PersistentVolumeClaim
+      max:
+        storage: "50Gi"
+      min:
+        storage: "500Mi"
+
+---
+# ----------------------------
+# 6. LimitRange - 网络命名空间限制
+# 针对网络密集型应用
+# ----------------------------
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: network-limit-range
+  namespace: network-functions
+  labels:
+    app.kubernetes.io/name: limit-range
+    app.kubernetes.io/component: network-limits
+  description: "网络函数命名空间限制 - 高CPU低内存"
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "1000m"            # 网络函数默认高CPU
+        memory: "256Mi"
+      defaultRequest:
+        cpu: "200m"
+        memory: "128Mi"
+      max:
+        cpu: "4"
+        memory: "4Gi"
+      min:
+        cpu: "100m"
+        memory: "64Mi"
+      maxLimitRequestRatio:
+        cpu: "4"                # 网络函数需要更小的比率
+        memory: "2"
+
+---
+# ----------------------------
+# 7. ResourceQuota - 按优先级Class限制
+# 为不同优先级的Pod设置不同配额
+# ----------------------------
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: high-priority-quota
+  namespace: production
+  labels:
+    app.kubernetes.io/name: resource-quota
+    app.kubernetes.io/component: priority-quota
+  description: "高优先级Pod配额"
+spec:
+  hard:
+    pods: "20"
+    requests.cpu: "16"
+    limits.cpu: "32"
+    requests.memory: "32Gi"
+    limits.memory: "64Gi"
+  scopeSelector:
+    matchExpressions:
+      - scopeName: PriorityClass
+        operator: In
+        values:
+          - high
+          - critical
+
+---
+# ----------------------------
+# 8. ResourceQuota - 最小资源保证
+# 确保关键服务有足够资源
+# ----------------------------
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: guaranteed-quota
+  namespace: production
+  labels:
+    app.kubernetes.io/name: resource-quota
+    app.kubernetes.io/component: guaranteed
+  description: "资源保证配额 - 确保关键服务资源"
+spec:
+  hard:
+    # 为关键服务预留的资源
+    requests.cpu: "8"
+    requests.memory: "16Gi"
+    pods: "10"
+  scopeSelector:
+    matchExpressions:
+      - scopeName: NotTerminating
+        operator: Exists

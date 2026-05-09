@@ -1,0 +1,305 @@
+# =============================================================================
+# 示例后台任务 - Python Celery Worker
+# 包含: Deployment, ConfigMap, 资源限制
+# =============================================================================
+
+---
+# ----------------------------
+# Namespace（复用webapp命名空间，或独立创建）
+# ----------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: example-worker
+  labels:
+    app.kubernetes.io/part-of: example-apps
+    environment: production
+
+---
+# ----------------------------
+# ConfigMap - Worker配置
+# ----------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: example-worker-config
+  namespace: example-worker
+  labels:
+    app.kubernetes.io/name: example-worker
+    app.kubernetes.io/component: config
+data:
+  # Celery配置
+  CELERY_BROKER_URL: "redis://redis-master:6379/0"
+  CELERY_RESULT_BACKEND: "redis://redis-master:6379/1"
+  CELERY_ACCEPT_CONTENT: "json"
+  CELERY_TASK_SERIALIZER: "json"
+  CELERY_RESULT_SERIALIZER: "json"
+  CELERY_TIMEZONE: "UTC"
+  CELERY_ENABLE_UTC: "true"
+  # Worker并发配置
+  CELERY_CONCURRENCY: "8"
+  CELERY_PREFETCH_MULTIPLIER: "1"
+  CELERY_MAX_TASKS_PER_CHILD: "1000"
+  CELERY_TASK_TIME_LIMIT: "3600"
+  CELERY_TASK_SOFT_TIME_LIMIT: "3300"
+  # 重试配置
+  CELERY_TASK_DEFAULT_RETRY_DELAY: "60"
+  CELERY_TASK_MAX_RETRIES: "3"
+  # 队列配置
+  CELERY_DEFAULT_QUEUE: "default"
+  CELERY_QUEUES: "high,normal,low,default"
+  # 监控配置
+  WORKER_LOG_LEVEL: "info"
+  WORKER_CONCURRENCY: "8"
+  # 应用配置
+  APP_ENV: "production"
+  BATCH_SIZE: "100"
+
+---
+# ----------------------------
+# Secret - Worker敏感配置
+# ----------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: example-worker-secrets
+  namespace: example-worker
+  labels:
+    app.kubernetes.io/name: example-worker
+    app.kubernetes.io/component: secrets
+type: Opaque
+data:
+  DATABASE_URL: cG9zdGdyZXNxbDovL3VzZXI6cGFzc3dvcmRAZGItbWFzdGVyOjU0MzIvYXBw
+  REDIS_PASSWORD: cmVkaXMtcGFzc3dvcmQ=
+  S3_ACCESS_KEY: czNhLWFjY2Vzcy1rZXk=
+  S3_SECRET_KEY: czNhLXNlY3JldC1rZXk=
+  S3_BUCKET: czMtYnVja2V0LW5hbWU=
+
+---
+# ----------------------------
+# Deployment - Worker部署
+# ----------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: example-worker-default
+  namespace: example-worker
+  labels:
+    app.kubernetes.io/name: example-worker
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: worker
+    celery.queue: "default"
+  annotations:
+    description: "Celery Worker - 默认队列处理器"
+spec:
+  # Worker副本数（根据队列负载调整）
+  replicas: 3
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: example-worker
+      celery.queue: "default"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: example-worker
+        app.kubernetes.io/version: "1.0.0"
+        app.kubernetes.io/component: worker
+        celery.queue: "default"
+      annotations:
+        prometheus.io/scrape: "false"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: default
+      terminationGracePeriodSeconds: 120   # Worker需要更长优雅关闭时间
+      # 反亲和性
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - example-worker
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: worker
+          image: python:3.11-slim
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          # 启动命令 - Celery Worker
+          command:
+            - /bin/sh
+            - -c
+            - |
+              pip install celery[redis] flower &&
+              celery -A app.celery worker \
+                --loglevel=${WORKER_LOG_LEVEL} \
+                --concurrency=${CELERY_CONCURRENCY} \
+                --queues=default,normal,low \
+                --hostname=worker-default@%h \
+                --max-tasks-per-child=${CELERY_MAX_TASKS_PER_CHILD} \
+                --without-heartbeat \
+                --without-mingle \
+                --without-gossip
+          envFrom:
+            - configMapRef:
+                name: example-worker-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: example-worker-secrets
+                  key: DATABASE_URL
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: example-worker-secrets
+                  key: REDIS_PASSWORD
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+              ephemeral-storage: "200Mi"
+            limits:
+              cpu: "2000m"
+              memory: "1Gi"
+              ephemeral-storage: "1Gi"
+          # Worker不需要HTTP探针，使用进程探针
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - celery -A app.celery inspect ping --timeout 5
+            initialDelaySeconds: 60
+            periodSeconds: 60
+            timeoutSeconds: 30
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp-volume
+              mountPath: /tmp
+            - name: config-volume
+              mountPath: /app/config
+              readOnly: true
+      volumes:
+        - name: tmp-volume
+          emptyDir:
+            sizeLimit: 200Mi
+        - name: config-volume
+          configMap:
+            name: example-worker-config
+
+---
+# ----------------------------
+# Deployment - 高优先级队列Worker
+# ----------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: example-worker-high
+  namespace: example-worker
+  labels:
+    app.kubernetes.io/name: example-worker
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: worker
+    celery.queue: "high"
+  annotations:
+    description: "Celery Worker - 高优先级队列处理器"
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: example-worker
+      celery.queue: "high"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: example-worker
+        app.kubernetes.io/version: "1.0.0"
+        app.kubernetes.io/component: worker
+        celery.queue: "high"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: worker
+          image: python:3.11-slim
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          command:
+            - /bin/sh
+            - -c
+            - |
+              pip install celery[redis] &&
+              celery -A app.celery worker \
+                --loglevel=${WORKER_LOG_LEVEL} \
+                --concurrency=4 \
+                --queues=high \
+                --hostname=worker-high@%h \
+                --max-tasks-per-child=500 \
+                --without-heartbeat \
+                --without-mingle \
+                --without-gossip
+          envFrom:
+            - configMapRef:
+                name: example-worker-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: example-worker-secrets
+                  key: DATABASE_URL
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: example-worker-secrets
+                  key: REDIS_PASSWORD
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          volumeMounts:
+            - name: tmp-volume
+              mountPath: /tmp
+      volumes:
+        - name: tmp-volume
+          emptyDir:
+            sizeLimit: 200Mi

@@ -1,0 +1,743 @@
+{
+  "index_patterns": [
+    "logs-*",
+    "app-logs-*",
+    "system-logs-*",
+    "k8s-logs-*"
+  ],
+  "priority": 200,
+  "version": 1,
+  "_meta": {
+    "description": "企业级云原生运维平台 - ES索引模板",
+    "created_by": "enterprise-cloud-native-platform",
+    "version": "1.0.0",
+    "last_updated": "2024-01-15"
+  },
+  "template": {
+    "settings": {
+      "number_of_shards": 3,
+      "number_of_replicas": 1,
+      "refresh_interval": "5s",
+      "max_result_window": 10000,
+
+      "analysis": {
+        "analyzer": {
+          "standard_analyzer": {
+            "type": "standard",
+            "stopwords": "_english_"
+          },
+          "keyword_analyzer": {
+            "type": "custom",
+            "tokenizer": "keyword",
+            "filter": ["lowercase", "trim"]
+          },
+          "edge_ngram_analyzer": {
+            "type": "custom",
+            "tokenizer": "edge_ngram_tokenizer",
+            "filter": ["lowercase", "trim"]
+          },
+          "path_analyzer": {
+            "type": "custom",
+            "tokenizer": "path_tokenizer",
+            "filter": ["lowercase", "trim"]
+          },
+          "ip_analyzer": {
+            "type": "custom",
+            "tokenizer": "keyword",
+            "filter": ["trim"]
+          },
+          "message_analyzer": {
+            "type": "custom",
+            "tokenizer": "uax_url_email",
+            "filter": [
+              "lowercase",
+              "trim",
+              "english_stop",
+              "english_stemmer"
+            ]
+          },
+          "cjk_analyzer": {
+            "type": "custom",
+            "tokenizer": "standard",
+            "filter": [
+              "cjk_bigram",
+              "cjk_width",
+              "lowercase",
+              "trim"
+            ]
+          },
+          "json_analyzer": {
+            "type": "custom",
+            "tokenizer": "uax_url_email",
+            "filter": [
+              "lowercase",
+              "trim"
+            ]
+          },
+          "nginx_access_log_analyzer": {
+            "type": "custom",
+            "tokenizer": "pattern",
+            "pattern": "\\s+",
+            "filter": [
+              "lowercase",
+              "trim"
+            ]
+          }
+        },
+        "tokenizer": {
+          "edge_ngram_tokenizer": {
+            "type": "edge_ngram",
+            "min_gram": 2,
+            "max_gram": 20,
+            "token_chars": [
+              "letter",
+              "digit",
+              "punctuation",
+              "symbol"
+            ]
+          },
+          "path_tokenizer": {
+            "type": "pattern",
+            "pattern": "[/\\\\]",
+            "group": -1
+          }
+        },
+        "filter": {
+          "english_stop": {
+            "type": "stop",
+            "stopwords": "_english_"
+          },
+          "english_stemmer": {
+            "type": "stemmer",
+            "language": "english"
+          },
+          "synonym_filter": {
+            "type": "synonym",
+            "synonyms": [
+              "error, err, fail, failure, fatal",
+              "warn, warning",
+              "info, information",
+              "debug, dbg",
+              "critical, crit, panic",
+              "timeout, timeout_error",
+              "exception, exc, error"
+            ]
+          },
+          "truncation_filter": {
+            "type": "truncate",
+            "length": 1024
+          }
+        }
+      },
+      "codec": "best_compression",
+      "query": {
+        "default_field": "message"
+      }
+    },
+    "mappings": {
+      "dynamic": "strict",
+      "dynamic_templates": [
+        {
+          "string_as_text": {
+            "match_mapping_type": "string",
+            "match": "message|stack_trace|error_message|log_content|full_message",
+            "mapping": {
+              "type": "text",
+              "analyzer": "message_analyzer",
+              "fields": {
+                "keyword": {
+                  "type": "keyword",
+                  "ignore_above": 1024
+                },
+                "cjk": {
+                  "type": "text",
+                  "analyzer": "cjk_analyzer"
+                }
+              }
+            }
+          }
+        },
+        {
+          "strings_as_keywords": {
+            "match_mapping_type": "string",
+            "match": "*",
+            "mapping": {
+              "type": "keyword",
+              "ignore_above": 512,
+              "fields": {
+                "analyzed": {
+                  "type": "text",
+                  "analyzer": "standard_analyzer"
+                }
+              }
+            }
+          }
+        },
+        {
+          "longs_as_dates": {
+            "match_mapping_type": "long",
+            "match": "*timestamp*|*_ts|*_time|*_at",
+            "mapping": {
+              "type": "date",
+              "format": [
+                "strict_date_optional_time",
+                "epoch_millis",
+                "epoch_second",
+                "yyyy-MM-dd HH:mm:ss",
+                "yyyy-MM-dd HH:mm:ss.SSS",
+                "yyyy-MM-dd'T'HH:mm:ss.SSSZ",
+                "yyyy-MM-dd'T'HH:mm:ss.SSSSSSZ",
+                "yyyy/MM/dd HH:mm:ss",
+                "ISO8601"
+              ]
+            }
+          }
+        },
+        {
+          "objects_as_nested": {
+            "match_mapping_type": "object",
+            "match": "labels|annotations|metadata|context|extra|tags|dimensions",
+            "mapping": {
+              "type": "object",
+              "enabled": true,
+              "dynamic": true
+            }
+          }
+        }
+      ],
+      "properties": {
+        "@timestamp": {
+          "type": "date",
+          "format": [
+            "strict_date_optional_time",
+            "epoch_millis"
+          ]
+        },
+        "@version": {
+          "type": "keyword"
+        },
+        "timestamp": {
+          "type": "date",
+          "format": [
+            "strict_date_optional_time",
+            "epoch_millis",
+            "epoch_second"
+          ]
+        },
+        "level": {
+          "type": "keyword",
+          "normalizer": "lowercase_normalizer"
+        },
+        "severity": {
+          "type": "keyword"
+        },
+        "severity_code": {
+          "type": "integer"
+        },
+        "message": {
+          "type": "text",
+          "analyzer": "message_analyzer",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 1024
+            },
+            "cjk": {
+              "type": "text",
+              "analyzer": "cjk_analyzer"
+            }
+          }
+        },
+        "stack_trace": {
+          "type": "text",
+          "analyzer": "standard_analyzer"
+        },
+        "logger_name": {
+          "type": "keyword"
+        },
+        "thread_name": {
+          "type": "keyword"
+        },
+        "service_name": {
+          "type": "keyword",
+          "fields": {
+            "analyzed": {
+              "type": "text",
+              "analyzer": "standard_analyzer"
+            }
+          }
+        },
+        "service_version": {
+          "type": "keyword"
+        },
+        "instance_id": {
+          "type": "keyword"
+        },
+        "host": {
+          "type": "keyword",
+          "fields": {
+            "ip": {
+              "type": "ip"
+            }
+          }
+        },
+        "host_ip": {
+          "type": "ip"
+        },
+        "container_id": {
+          "type": "keyword"
+        },
+        "container_name": {
+          "type": "keyword"
+        },
+        "pod_name": {
+          "type": "keyword"
+        },
+        "pod_ip": {
+          "type": "ip"
+        },
+        "namespace": {
+          "type": "keyword"
+        },
+        "node_name": {
+          "type": "keyword"
+        },
+        "cluster_name": {
+          "type": "keyword"
+        },
+        "environment": {
+          "type": "keyword"
+        },
+        "region": {
+          "type": "keyword"
+        },
+        "zone": {
+          "type": "keyword"
+        },
+        "source_type": {
+          "type": "keyword",
+          "doc_values": true
+        },
+        "log_source": {
+          "type": "keyword",
+          "doc_values": true
+        },
+        "log_path": {
+          "type": "text",
+          "analyzer": "path_analyzer",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 1024
+            }
+          }
+        },
+        "log_type": {
+          "type": "keyword"
+        },
+        "log_format": {
+          "type": "keyword"
+        },
+        "message_id": {
+          "type": "keyword"
+        },
+        "correlation_id": {
+          "type": "keyword"
+        },
+        "trace_id": {
+          "type": "keyword"
+        },
+        "span_id": {
+          "type": "keyword"
+        },
+        "parent_span_id": {
+          "type": "keyword"
+        },
+        "request_id": {
+          "type": "keyword"
+        },
+        "session_id": {
+          "type": "keyword"
+        },
+        "user_id": {
+          "type": "keyword"
+        },
+        "client_ip": {
+          "type": "ip"
+        },
+        "remote_ip": {
+          "type": "ip"
+        },
+        "method": {
+          "type": "keyword"
+        },
+        "url": {
+          "type": "text",
+          "analyzer": "path_analyzer",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 1024
+            },
+            "domain": {
+              "type": "keyword"
+            }
+          }
+        },
+        "path": {
+          "type": "text",
+          "analyzer": "path_analyzer",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 512
+            }
+          }
+        },
+        "status_code": {
+          "type": "integer"
+        },
+        "response_time": {
+          "type": "float",
+          "unit": "s"
+        },
+        "response_time_ms": {
+          "type": "float",
+          "unit": "ms"
+        },
+        "bytes_sent": {
+          "type": "long",
+          "unit": "byte"
+        },
+        "bytes_received": {
+          "type": "long",
+          "unit": "byte"
+        },
+        "duration": {
+          "type": "float",
+          "unit": "ms"
+        },
+        "cpu_time": {
+          "type": "float",
+          "unit": "ms"
+        },
+        "memory_used": {
+          "type": "long",
+          "unit": "byte"
+        },
+        "error_code": {
+          "type": "keyword"
+        },
+        "error_type": {
+          "type": "keyword"
+        },
+        "error_message": {
+          "type": "text",
+          "analyzer": "message_analyzer",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 1024
+            }
+          }
+        },
+        "error_class": {
+          "type": "keyword"
+        },
+        "exception_type": {
+          "type": "keyword"
+        },
+        "exception_message": {
+          "type": "text",
+          "analyzer": "message_analyzer"
+        },
+        "caller_class": {
+          "type": "keyword"
+        },
+        "caller_method": {
+          "type": "keyword"
+        },
+        "caller_line": {
+          "type": "integer"
+        },
+        "caller_file": {
+          "type": "keyword"
+        },
+        "caller_module": {
+          "type": "keyword"
+        },
+        "caller_function": {
+          "type": "keyword"
+        },
+        "http_method": {
+          "type": "keyword"
+        },
+        "http_path": {
+          "type": "text",
+          "analyzer": "path_analyzer",
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          }
+        },
+        "http_query": {
+          "type": "text",
+          "analyzer": "standard_analyzer"
+        },
+        "http_host": {
+          "type": "keyword"
+        },
+        "http_user_agent": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword",
+              "ignore_above": 512
+            }
+          }
+        },
+        "http_content_type": {
+          "type": "keyword"
+        },
+        "http_accept_language": {
+          "type": "keyword"
+        },
+        "http_referer": {
+          "type": "text",
+          "fields": {
+            "keyword": {
+              "type": "keyword"
+            }
+          }
+        },
+        "upstream_addr": {
+          "type": "keyword"
+        },
+        "upstream_response_time": {
+          "type": "float",
+          "unit": "ms"
+        },
+        "upstream_status": {
+          "type": "integer"
+        },
+        "user_agent": {
+          "type": "keyword"
+        },
+        "user_agent_name": {
+          "type": "keyword"
+        },
+        "user_agent_os": {
+          "type": "keyword"
+        },
+        "user_agent_device": {
+          "type": "keyword"
+        },
+        "geo": {
+          "type": "object",
+          "properties": {
+            "ip": { "type": "ip" },
+            "country_code": { "type": "keyword" },
+            "country_name": { "type": "keyword" },
+            "region_code": { "type": "keyword" },
+            "region_name": { "type": "keyword" },
+            "city": { "type": "keyword" },
+            "latitude": { "type": "float" },
+            "longitude": { "type": "float" }
+          }
+        },
+        "tags": {
+          "type": "keyword"
+        },
+        "labels": {
+          "type": "object",
+          "dynamic": true
+        },
+        "annotations": {
+          "type": "object",
+          "dynamic": true
+        },
+        "metadata": {
+          "type": "object",
+          "dynamic": true
+        },
+        "context": {
+          "type": "object",
+          "dynamic": true
+        },
+        "extra": {
+          "type": "object",
+          "dynamic": true
+        },
+        "event": {
+          "type": "object",
+          "properties": {
+            "dataset": { "type": "keyword" },
+            "module": { "type": "keyword" },
+            "action": { "type": "keyword" },
+            "outcome": { "type": "keyword" },
+            "reason": { "type": "keyword" },
+            "category": { "type": "keyword" },
+            "type": { "type": "keyword" },
+            "kind": { "type": "keyword" },
+            "timezone": { "type": "keyword" }
+          }
+        },
+        "kubernetes": {
+          "type": "object",
+          "properties": {
+            "pod": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "keyword" },
+                "uid": { "type": "keyword" },
+                "namespace": { "type": "keyword" },
+                "ip": { "type": "ip" },
+                "node": { "type": "keyword" },
+                "hostname": { "type": "keyword" }
+              }
+            },
+            "container": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "keyword" },
+                "id": { "type": "keyword" },
+                "image": { "type": "keyword" }
+              }
+            },
+            "namespace": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "keyword" },
+                "labels": { "type": "object", "dynamic": true }
+              }
+            },
+            "node": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "keyword" },
+                "ip": { "type": "ip" },
+                "labels": { "type": "object", "dynamic": true }
+              }
+            },
+            "replicaset": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "keyword" }
+              }
+            },
+            "deployment": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "keyword" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "aliases": {
+    "logs-current": {},
+    "logs-all": {}
+  },
+  "rollover_alias": "logs",
+  "lifecycle": {
+    "name": "logs-lifecycle-policy",
+    "rollover_alias": "logs",
+    "conditions": {
+      "max_size": "30gb",
+      "max_age": "1d",
+      "max_docs": 100000000
+    },
+    "min_age": "0ms",
+    "actions": {
+      "rollover": {
+        "max_size": "30gb",
+        "max_age": "1d",
+        "max_primary_shard_size": "50gb"
+      },
+      "set_priority": {
+        "priority": 100
+      },
+      "shrink": {
+        "number_of_shards": 1
+      },
+      "forcemerge": {
+        "max_num_segments": 1
+      },
+      "delete": {
+        "min_age": "90d",
+        "delete": {}
+      }
+    },
+    "steps": [
+      {
+        "set_priority": {
+          "priority": 100
+        }
+      },
+      {
+        "rollover": {
+          "max_size": "30gb",
+          "max_age": "1d",
+          "max_primary_shard_size": "50gb"
+        }
+      },
+      {
+        "set_priority": {
+          "priority": 50
+        }
+      },
+      {
+        "shrink": {
+          "number_of_shards": 1
+        }
+      },
+      {
+        "forcemerge": {
+          "max_num_segments": 1
+        }
+      },
+      {
+        "set_priority": {
+          "priority": 0
+        }
+      },
+      {
+        "delete": {
+          "delete": {}
+        }
+      }
+    ]
+  },
+  "index.lifecycle.name": "logs-lifecycle-policy",
+  "index.lifecycle.rollover_alias": "logs",
+  "index.codec": "best_compression",
+  "index.routing_partition_size": 1,
+  "index.routing.required_size": 2,
+  "index.max_ngram_diff": 10,
+  "index.max_shingle_diff": 10,
+  "index.blocks.read_only_allow_delete": false,
+  "index.translog.durability": "async",
+  "index.translog.sync_interval": "30s",
+  "index.translog.flush_threshold_size": "1gb",
+  "index.translog.flush_threshold_ops": "10000",
+  "index.translog.flush_threshold_period": "60m",
+  "index.translog.interval": "10s",
+  "index.translog.generation_threshold_size": "64mb",
+  "index.merge.scheduler.max_thread_count": 1,
+  "index.merge.policy.floor_segment": "2mb",
+  "index.merge.policy.max_merge_at_once": 10,
+  "index.merge.policy.max_merge_at_once_explicit": 30,
+  "index.merge.policy.max_merged_segment": "5gb",
+  "index.merge.policy.segments_per_tier": 10,
+  "index.merge.policy.expunge_deletes_allowed": 10,
+  "index.merge.policy.non_aggressive_ratio": 3,
+  "index.merge.policy.use_compound_file": true,
+  "index.merge.policy.reclaim_deletes_weight": 2.0,
+  "index.merge.policy.floor_segment": "2mb",
+  "index.merge.policy.async": true,
+  "index.merge.policy.max_merge_thread_count": 1,
+  "index.merge.policy.max_merge_scheduler_thread_count": 2
+}

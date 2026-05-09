@@ -1,0 +1,367 @@
+# =============================================================================
+# 示例Web应用 - Python Flask应用
+# 包含: Deployment, Service, Ingress, ConfigMap, Secret, HPA
+# =============================================================================
+
+---
+# ----------------------------
+# Namespace
+# ----------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: example-webapp
+  labels:
+    app.kubernetes.io/part-of: example-apps
+    environment: production
+
+---
+# ----------------------------
+# ConfigMap - 应用配置
+# ----------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: example-webapp-config
+  namespace: example-webapp
+  labels:
+    app.kubernetes.io/name: example-webapp
+    app.kubernetes.io/component: config
+data:
+  # Flask应用配置
+  FLASK_ENV: "production"
+  FLASK_DEBUG: "0"
+  APP_PORT: "5000"
+  LOG_LEVEL: "info"
+  LOG_FORMAT: "json"
+  # 数据库连接池配置
+  DB_POOL_SIZE: "20"
+  DB_POOL_OVERFLOW: "10"
+  DB_POOL_TIMEOUT: "30"
+  # Redis配置
+  REDIS_MAX_CONNECTIONS: "50"
+  # CORS配置
+  CORS_ORIGINS: "https://app.example.com,https://admin.example.com"
+  # 速率限制配置
+  RATE_LIMIT_PER_MINUTE: "100"
+  RATE_LIMIT_BURST: "20"
+
+---
+# ----------------------------
+# Secret - 敏感配置
+# ----------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: example-webapp-secrets
+  namespace: example-webapp
+  labels:
+    app.kubernetes.io/name: example-webapp
+    app.kubernetes.io/component: secrets
+type: Opaque
+data:
+  # base64编码的敏感信息 (实际使用时应使用sealed-secrets或vault)
+  DATABASE_URL: cG9zdGdyZXNxbDovL3VzZXI6cGFzc3dvcmRAZGItbWFzdGVyOjU0MzIvYXBw
+  REDIS_URL: cmVkaXM6Ly86cGFzc3dvcmRAcmVkaXMtbWFzdGVyOjYzNzkvMA==
+  SECRET_KEY: c2VjcmV0LWtleS1mb3ItZmxhc2stYXBwLTIwMjQ=
+  JWT_SECRET: amV0LXNlY3JldC1rZXktZm9yLWp3dC10b2tlbi0yMDI0
+
+---
+# ----------------------------
+# Deployment
+# ----------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: example-webapp
+  namespace: example-webapp
+  labels:
+    app.kubernetes.io/name: example-webapp
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: example-apps
+  annotations:
+    deployment.kubernetes.io/revision: "1"
+    description: "Python Flask Web应用示例"
+spec:
+  replicas: 3
+  revisionHistoryLimit: 10
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1            # 滚动更新时最多多出1个Pod
+      maxUnavailable: 0      # 滚动更新时不允许不可用
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: example-webapp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: example-webapp
+        app.kubernetes.io/version: "1.0.0"
+        app.kubernetes.io/component: web
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "5000"
+        prometheus.io/path: "/metrics"
+    spec:
+      # 安全上下文 - Pod级别
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: default
+      terminationGracePeriodSeconds: 60
+      # 反亲和性 - 分散到不同节点
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - example-webapp
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: webapp
+          image: python:3.11-slim
+          imagePullPolicy: Always
+          # 容器安全上下文
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: http
+              containerPort: 5000
+              protocol: TCP
+          # 环境变量（非敏感配置从ConfigMap注入）
+          envFrom:
+            - configMapRef:
+                name: example-webapp-config
+          # 敏感环境变量从Secret注入
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: example-webapp-secrets
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: example-webapp-secrets
+                  key: REDIS_URL
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: example-webapp-secrets
+                  key: SECRET_KEY
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: example-webapp-secrets
+                  key: JWT_SECRET
+          # 资源限制
+          resources:
+            requests:
+              cpu: "250m"         # 0.25核
+              memory: "256Mi"     # 256MB
+              ephemeral-storage: "100Mi"
+            limits:
+              cpu: "1000m"        # 1核
+              memory: "512Mi"     # 512MB
+              ephemeral-storage: "500Mi"
+          # 启动探针 - 给应用足够时间启动
+          startupProbe:
+            httpGet:
+              path: /health/startup
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+            timeoutSeconds: 5
+          # 存活探针 - 检查应用是否存活
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 0
+            periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 5
+          # 就绪探针 - 检查应用是否准备好接收流量
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 5
+          # 优雅关闭
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 15"]
+          # 挂载配置文件
+          volumeMounts:
+            - name: config-volume
+              mountPath: /app/config
+              readOnly: true
+            - name: tmp-volume
+              mountPath: /tmp
+      volumes:
+        - name: config-volume
+          configMap:
+            name: example-webapp-config
+        - name: tmp-volume
+          emptyDir:
+            sizeLimit: 100Mi
+
+---
+# ----------------------------
+# Service - ClusterIP内部服务
+# ----------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: example-webapp
+  namespace: example-webapp
+  labels:
+    app.kubernetes.io/name: example-webapp
+    app.kubernetes.io/component: web
+  annotations:
+    description: "Flask Web应用服务"
+spec:
+  type: ClusterIP
+  sessionAffinity: None
+  selector:
+    app.kubernetes.io/name: example-webapp
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+
+---
+# ----------------------------
+# Ingress - 外部访问入口
+# ----------------------------
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: example-webapp
+  namespace: example-webapp
+  labels:
+    app.kubernetes.io/name: example-webapp
+  annotations:
+    # Nginx Ingress Controller配置
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+    # 限流配置
+    nginx.ingress.kubernetes.io/limit-rps: "50"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+    # 安全头
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: DENY";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "X-XSS-Protection: 1; mode=block";
+      more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
+    # TLS配置（需要先创建Secret）
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - app.example.com
+      secretName: example-webapp-tls
+  rules:
+    - host: app.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: example-webapp
+                port:
+                  number: 80
+
+---
+# ----------------------------
+# HPA - 水平自动伸缩
+# ----------------------------
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: example-webapp
+  namespace: example-webapp
+  labels:
+    app.kubernetes.io/name: example-webapp
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: example-webapp
+  minReplicas: 3
+  maxReplicas: 20
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 4
+          periodSeconds: 60
+        - type: Percent
+          value: 100
+          periodSeconds: 60
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 300    # 缩容冷却5分钟
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+      selectPolicy: Min
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+---
+# ----------------------------
+# PodDisruptionBudget - Pod中断预算
+# ----------------------------
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: example-webapp
+  namespace: example-webapp
+  labels:
+    app.kubernetes.io/name: example-webapp
+spec:
+  minAvailable: 2   # 至少保持2个Pod可用
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: example-webapp

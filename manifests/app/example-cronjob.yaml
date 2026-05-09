@@ -1,0 +1,477 @@
+# =============================================================================
+# 示例定时任务 - CronJob
+# 包含: CronJob配置, Shell脚本, 失败重试
+# =============================================================================
+
+---
+# ----------------------------
+# Namespace
+# ----------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: example-cronjob
+  labels:
+    app.kubernetes.io/part-of: example-apps
+    environment: production
+
+---
+# ----------------------------
+# ConfigMap - 定时任务脚本
+# ----------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cronjob-scripts
+  namespace: example-cronjob
+  labels:
+    app.kubernetes.io/name: example-cronjob
+    app.kubernetes.io/component: scripts
+data:
+  # 数据库备份脚本
+  db-backup.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] 开始数据库备份..."
+
+    BACKUP_DIR="/backups/$(date -u '+%Y-%m-%d')"
+    BACKUP_FILE="db-backup-$(date -u '+%Y%m%d-%H%M%S').sql.gz"
+    RETENTION_DAYS=30
+
+    # 创建备份目录
+    mkdir -p "${BACKUP_DIR}"
+
+    # 执行数据库备份
+    echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] 执行pg_dump..."
+    pg_dump \
+      -h "${DB_HOST}" \
+      -p "${DB_PORT}" \
+      -U "${DB_USER}" \
+      -d "${DB_NAME}" \
+      --format=custom \
+      --compress=9 \
+      --verbose \
+      2>&1 | gzip > "${BACKUP_DIR}/${BACKUP_FILE}"
+
+    BACKUP_SIZE=$(du -h "${BACKUP_DIR}/${BACKUP_FILE}" | cut -f1)
+    echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] 备份完成: ${BACKUP_FILE} (${BACKUP_SIZE})"
+
+    # 清理过期备份
+    echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] 清理${RETENTION_DAYS}天前的备份..."
+    find /backups -name "*.sql.gz" -mtime +${RETENTION_DAYS} -delete
+    echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] 备份清理完成"
+
+    # 上传到S3（可选）
+    if [ -n "${S3_BUCKET:-}" ]; then
+      echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] 上传到S3..."
+      aws s3 cp "${BACKUP_DIR}/${BACKUP_FILE}" \
+        "s3://${S3_BUCKET}/backups/${BACKUP_FILE}" \
+        --storage-class STANDARD_IA
+      echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] S3上传完成"
+    fi
+
+    echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] 备份任务全部完成"
+
+  # 日志清理脚本
+  log-cleanup.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] 开始日志清理..."
+
+    LOG_RETENTION_DAYS=7
+    ERROR_LOG_RETENTION_DAYS=30
+
+    # 清理常规日志
+    echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] 清理${LOG_RETENTION_DAYS}天前的常规日志..."
+    find /var/log/app -name "*.log" -mtime +${LOG_RETENTION_DAYS} -delete
+    find /var/log/app -name "*.log.gz" -mtime +${LOG_RETENTION_DAYS} -delete
+
+    # 清理错误日志（保留更久）
+    echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] 清理${ERROR_LOG_RETENTION_DAYS}天前的错误日志..."
+    find /var/log/app -name "error-*.log" -mtime +${ERROR_LOG_RETENTION_DAYS} -delete
+
+    # 清理空文件
+    echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] 清理空日志文件..."
+    find /var/log/app -name "*.log" -empty -delete
+
+    DISK_USAGE=$(df -h /var/log | tail -1 | awk '{print $5}')
+    echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] 日志清理完成, 磁盘使用率: ${DISK_USAGE}"
+
+  # 数据同步脚本
+  data-sync.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] 开始数据同步..."
+
+    SOURCE_PATH="${SOURCE_PATH:-/data/source}"
+    DEST_PATH="${DEST_PATH:-/data/dest}"
+    SYNC_LOG="/var/log/sync/sync-$(date -u '+%Y%m%d-%H%M%S').log"
+
+    mkdir -p /var/log/sync
+
+    # 使用rsync同步数据
+    rsync -avz \
+      --delete \
+      --stats \
+      --progress \
+      "${SOURCE_PATH}/" "${DEST_PATH}/" \
+      2>&1 | tee "${SYNC_LOG}"
+
+    SYNC_STATUS=${PIPESTATUS[0]}
+
+    if [ ${SYNC_STATUS} -eq 0 ]; then
+      echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] 数据同步成功"
+    else
+      echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] 数据同步失败 (exit code: ${SYNC_STATUS})"
+      exit ${SYNC_STATUS}
+    fi
+
+    echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] 数据同步完成"
+
+---
+# ----------------------------
+# Secret - 定时任务敏感配置
+# ----------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cronjob-secrets
+  namespace: example-cronjob
+  labels:
+    app.kubernetes.io/name: example-cronjob
+    app.kubernetes.io/component: secrets
+type: Opaque
+data:
+  DB_PASSWORD: cGFzc3dvcmQ=
+  S3_ACCESS_KEY: czNhLWFjY2Vzcy1rZXk=
+  S3_SECRET_KEY: czNhLXNlY3JldC1rZXk=
+
+---
+# ----------------------------
+# CronJob 1: 数据库备份 (每天凌晨2点)
+# ----------------------------
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: db-backup
+  namespace: example-cronjob
+  labels:
+    app.kubernetes.io/name: example-cronjob
+    app.kubernetes.io/component: db-backup
+    app.kubernetes.io/part-of: example-apps
+  annotations:
+    description: "每日数据库备份"
+    schedule: "0 2 * * *"
+spec:
+  # Cron表达式: 每天凌晨2点 (UTC)
+  schedule: "0 2 * * *"
+  # 并发策略: Allow(允许并行), Forbid(禁止并行), Replace(替换运行中的)
+  concurrencyPolicy: Forbid
+  # 保留成功/失败Job历史
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  # 跳过错过的调度（如果上次运行超过调度间隔）
+  startingDeadlineSeconds: 3600
+  # 暂停调度（设置为true可暂停）
+  suspend: false
+  jobTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: example-cronjob
+        app.kubernetes.io/component: db-backup
+    spec:
+      # 任务完成后保留时间
+      ttlSecondsAfterFinished: 86400
+      # 手动删除保留时间
+      activeDeadlineSeconds: 7200
+      # 失败重试次数
+      backoffLimit: 3
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: example-cronjob
+            app.kubernetes.io/component: db-backup
+        spec:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          restartPolicy: OnFailure
+          # 不需要的服务账号权限
+          serviceAccountName: default
+          containers:
+            - name: db-backup
+              image: postgres:15-alpine
+              imagePullPolicy: Always
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: false
+                capabilities:
+                  drop:
+                    - ALL
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  # 安装gzip（postgres镜像可能没有）
+                  apk add --no-cache gzip
+                  # 安装AWS CLI（可选）
+                  apk add --no-cache py3-pip && pip3 install --no-cache-dir awscli
+                  # 执行备份脚本
+                  bash /scripts/db-backup.sh
+              env:
+                - name: DB_HOST
+                  value: "postgres-master.database.svc.cluster.local"
+                - name: DB_PORT
+                  value: "5432"
+                - name: DB_USER
+                  value: "backup_user"
+                - name: DB_NAME
+                  value: "production_db"
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: cronjob-secrets
+                      key: DB_PASSWORD
+                - name: S3_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: cronjob-secrets
+                      key: S3_ACCESS_KEY
+                - name: S3_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: cronjob-secrets
+                      key: S3_SECRET_KEY
+                - name: S3_BUCKET
+                  value: "my-production-backups"
+                - name: AWS_DEFAULT_REGION
+                  value: "us-east-1"
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: "256Mi"
+                limits:
+                  cpu: "500m"
+                  memory: "512Mi"
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: backups
+                  mountPath: /backups
+          volumes:
+            - name: scripts
+              configMap:
+                name: cronjob-scripts
+                defaultMode: 0755
+            - name: backups
+              persistentVolumeClaim:
+                claimName: backup-pvc
+
+---
+# ----------------------------
+# CronJob 2: 日志清理 (每6小时)
+# ----------------------------
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: log-cleanup
+  namespace: example-cronjob
+  labels:
+    app.kubernetes.io/name: example-cronjob
+    app.kubernetes.io/component: log-cleanup
+    app.kubernetes.io/part-of: example-apps
+  annotations:
+    description: "日志定期清理"
+spec:
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 1800
+  suspend: false
+  jobTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: example-cronjob
+        app.kubernetes.io/component: log-cleanup
+    spec:
+      ttlSecondsAfterFinished: 3600
+      activeDeadlineSeconds: 1800
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: example-cronjob
+            app.kubernetes.io/component: log-cleanup
+        spec:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          restartPolicy: OnFailure
+          serviceAccountName: default
+          containers:
+            - name: log-cleanup
+              image: alpine:3.19
+              imagePullPolicy: Always
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  apk add --no-cache findutils &&
+                  bash /scripts/log-cleanup.sh
+              env:
+                - name: LOG_RETENTION_DAYS
+                  value: "7"
+                - name: ERROR_LOG_RETENTION_DAYS
+                  value: "30"
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: "64Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "128Mi"
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: logs
+                  mountPath: /var/log/app
+                  readOnly: false
+          volumes:
+            - name: scripts
+              configMap:
+                name: cronjob-scripts
+                defaultMode: 0755
+            - name: logs
+              emptyDir: {}
+
+---
+# ----------------------------
+# CronJob 3: 数据同步 (每天凌晨4点)
+# ----------------------------
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: data-sync
+  namespace: example-cronjob
+  labels:
+    app.kubernetes.io/name: example-cronjob
+    app.kubernetes.io/component: data-sync
+    app.kubernetes.io/part-of: example-apps
+  annotations:
+    description: "每日数据同步"
+spec:
+  schedule: "0 4 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 5
+  startingDeadlineSeconds: 3600
+  suspend: false
+  jobTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: example-cronjob
+        app.kubernetes.io/component: data-sync
+    spec:
+      ttlSecondsAfterFinished: 86400
+      activeDeadlineSeconds: 14400
+      backoffLimit: 3
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: example-cronjob
+            app.kubernetes.io/component: data-sync
+        spec:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          restartPolicy: OnFailure
+          serviceAccountName: default
+          containers:
+            - name: data-sync
+              image: alpine:3.19
+              imagePullPolicy: Always
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  apk add --no-cache rsync openssh-client &&
+                  bash /scripts/data-sync.sh
+              env:
+                - name: SOURCE_PATH
+                  value: "/data/source"
+                - name: DEST_PATH
+                  value: "/data/dest"
+                - name: SSH_PRIVATE_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: cronjob-secrets
+                      key: DB_PASSWORD
+                      optional: true
+              resources:
+                requests:
+                  cpu: "100m"
+                  memory: "128Mi"
+                limits:
+                  cpu: "500m"
+                  memory: "256Mi"
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                  readOnly: true
+                - name: sync-data
+                  mountPath: /data
+                - name: sync-logs
+                  mountPath: /var/log/sync
+          volumes:
+            - name: scripts
+              configMap:
+                name: cronjob-scripts
+                defaultMode: 0755
+            - name: sync-data
+              emptyDir: {}
+            - name: sync-logs
+              emptyDir: {}
+
+---
+# ----------------------------
+# PVC - 备份存储
+# ----------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backup-pvc
+  namespace: example-cronjob
+  labels:
+    app.kubernetes.io/name: example-cronjob
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 50Gi

@@ -1,0 +1,323 @@
+# =============================================================================
+# 网络策略示例 - NetworkPolicy
+# 包含: 默认拒绝策略, 特定流量允许, 命名空间隔离
+# =============================================================================
+
+---
+# ----------------------------
+# 1. 默认拒绝所有入站流量
+# 在命名空间中创建后，所有Pod的入站流量将被拒绝
+# 除非有其他NetworkPolicy显式允许
+# ----------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all-ingress
+  namespace: production
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: default-deny
+    policy-type: ingress
+  description: "默认拒绝所有入站流量 - 命名空间级别安全基线"
+spec:
+  podSelector: {}           # 空selector = 选中命名空间内所有Pod
+  policyTypes:
+    - Ingress               # 仅限制入站流量，出站不受影响
+
+---
+# ----------------------------
+# 2. 默认拒绝所有出站流量
+# 适用于高安全要求的环境
+# ----------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all-egress
+  namespace: production
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: default-deny
+    policy-type: egress
+  description: "默认拒绝所有出站流量"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+
+---
+# ----------------------------
+# 3. 允许DNS出站（关键！）
+# 即使开启了default-deny-all-egress，也需要DNS
+# ----------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: production
+  labels:
+    app.kubernetes.io/name: network-policy
+    app.kubernetes.io/component: allow-dns
+    policy-type: egress
+  description: "允许所有Pod访问DNS服务（必需）"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # 允许访问kube-dns
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+---
+# ----------------------------
+# 4. Web应用网络策略
+# 允许来自Ingress Controller的流量
+# 允许出站到数据库和Redis
+# ----------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: webapp-network-policy
+  namespace: production
+  labels:
+    app.kubernetes.io/name: example-webapp
+    app.kubernetes.io/component: network-policy
+  description: "Web应用网络策略 - 允许Ingress到Web，Web到DB/Redis"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: example-webapp
+  policyTypes:
+    - Ingress
+    - Egress
+  # 入站规则
+  ingress:
+    # 允许来自Ingress Controller命名空间的流量
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 5000
+    # 允许同命名空间内的Pod通信（健康检查等）
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 5000
+    # 允许来自监控命名空间的Prometheus抓取
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 5000
+  # 出站规则
+  egress:
+    # 允许访问数据库
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: database
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - protocol: TCP
+          port: 5432
+    # 允许访问Redis
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cache
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    # 允许访问外部HTTPS（第三方API）
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8       # 排除内网
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+# ----------------------------
+# 5. 数据库网络策略 - 最小权限
+# 仅允许特定应用访问数据库
+# ----------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: database-network-policy
+  namespace: database
+  labels:
+    app.kubernetes.io/name: postgresql
+    app.kubernetes.io/component: network-policy
+  description: "数据库网络策略 - 仅允许授权应用访问"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 允许来自生产命名空间的Web应用
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: production
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: example-webapp
+      ports:
+        - protocol: TCP
+          port: 5432
+    # 允许来自生产命名空间的Worker
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: production
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: example-worker
+      ports:
+        - protocol: TCP
+          port: 5432
+    # 允许数据库复制（主从同步）
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 5433
+  # 数据库不需要主动出站（除了DNS和可能的备份）
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 5433
+
+---
+# ----------------------------
+# 6. 命名空间隔离策略
+# 阻止不同环境间的流量
+# ----------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: namespace-isolation
+  namespace: production
+  labels:
+    app.kubernetes.io/name: namespace-isolation
+    app.kubernetes.io/component: security
+  description: "命名空间隔离 - 仅允许来自特定命名空间的流量"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # 仅允许来自这些命名空间的流量
+    - from:
+        # 允许来自ingress-nginx命名空间
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+        # 允许来自monitoring命名空间
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+        # 允许来自同命名空间
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: production
+
+---
+# ----------------------------
+# 7. Web应用到Worker的通信策略
+# 允许Web应用调用Worker队列
+# ----------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: webapp-to-worker
+  namespace: production
+  labels:
+    app.kubernetes.io/name: example-worker
+    app.kubernetes.io/component: network-policy
+  description: "允许Web应用访问Worker队列"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: example-worker
+  policyTypes:
+    - Ingress
+  ingress:
+    # 允许来自同命名空间Web应用的流量
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: example-webapp
+      ports:
+        - protocol: TCP
+          port: 8000
+
+---
+# ----------------------------
+# 8. 监控流量策略
+# 允许Prometheus从监控命名空间抓取指标
+# ----------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: monitoring-allow
+  namespace: production
+  labels:
+    app.kubernetes.io/name: monitoring
+    app.kubernetes.io/component: network-policy
+  description: "允许监控命名空间的Prometheus抓取指标"
+spec:
+  podSelector:
+    matchLabels:
+      prometheus.io/scrape: "true"
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 5000
