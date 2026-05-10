@@ -38,7 +38,7 @@ enterprise-cloud-native-platform/企业云原生平台/
 | 容器运行时 | Docker CE + containerd || Container Runtime | Docker CE containerd |
 | 容器编排 | Kubernetes 1.28 + kubeadm || Container Orchestration | Kubernetes 1.28   kubeadm |
 | CNI网络 | Calico |
-| 存储 | NFS + Longhorn |
+|| 存储 | Longhorn (默认) + NFS + Ceph ||
 | CI/CD | GitLab + Jenkins + Harbor + Trivy |
 | 监控 | Prometheus + Grafana + Zabbix |
 | 日志 | Elasticsearch + Fluentd + Kibana |
@@ -127,7 +127,9 @@ bash scripts/verify-phase1.sh运行 bash 脚本 scripts/verify-phase1.sh
 
 # 4. 继续后续阶段...
 # bash scripts/02-k8s/deploy-k8s.sh运行 `bash scripts/02-k8s/deploy-k8s.sh` 脚本。
-# bash scripts/03-storage/deploy-storage.sh运行脚本：bash scripts/03-storage/deploy-storage.sh
+# bash scripts/03-storage/deploy-storage.sh          # 默认部署Longhorn
+# bash scripts/03-storage/deploy-storage.sh -t nfs   # 或选择NFS
+# bash scripts/03-storage/deploy-storage.sh -t ceph  # 或选择Ceph
 # ...
 ```
 
@@ -137,7 +139,8 @@ bash scripts/verify-phase1.sh运行 bash 脚本 scripts/verify-phase1.sh
 # 部署所有阶段
 bash scripts/01-init/init-all.sh运行 bash 脚本/01-init/init-all.sh
 bash scripts/02-k8s/deploy-k8s.sh运行 bash 脚本/02-k8s/deploy-k8s.sh
-bash scripts/03-storage/deploy-storage.sh运行 bash 脚本：scripts/03-storage/deploy-storage.sh
+bash scripts/03-storage/deploy-storage.sh                          # 默认部署Longhorn
+bash scripts/03-storage/deploy-storage.sh -t nfs                   # NFS方案
 bash scripts/04-cicd/deploy-cicd.sh运行 bash 脚本：scripts/04-cicd/deploy-cicd.sh
 bash scripts/05-app/deploy-app.sh运行 bash 脚本/05-app/deploy-app.sh
 bash scripts/06-monitor/deploy-monitor.sh运行 bash 脚本 scripts/06-monitor/deploy-monitor.sh
@@ -169,7 +172,7 @@ bash scripts/teardown/teardown-all.sh运行 bash 脚本 /scripts/teardown/teardo
 kubeadm安装、Master初始化、Worker加入、Calico网络插件、CoreDNS验证、集群高可用测试。
 
 ### 阶段3: 存储方案
-NFS动态供给、StorageClass、Longhorn分布式存储、VolumeSnapshot、Velero备份。
+Longhorn分布式存储（默认方案）、NFS动态供给、StorageClass、Ceph分布式存储、VolumeSnapshot、Velero备份。本项目默认使用Longhorn作为存储方案，提供轻量级分布式块存储，支持快照和备份。
 
 ### 阶段4: CI/CD流水线
 GitLab代码仓库、Jenkins持续集成、Harbor镜像仓库、Trivy安全扫描、完整流水线配置。

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 ###############################################################################
 # 脚本名称: deploy-storage.sh
-# 功能描述: 阶段3存储层配置主部署脚本，协调NFS/Ceph/Longhorn动态供给、StorageClass、功能验证
+# 功能描述: 阶段3存储层配置主部署脚本，协调Longhorn/NFS/Ceph动态供给、StorageClass、功能验证
 # 适用系统: 需要kubectl可访问集群, 对应存储后端已配置
 # 依赖条件: kubectl可用, 阶段2集群已部署
 # 作者: 运维平台团队
@@ -10,19 +10,24 @@
 # 更新日期: 2026-05-10
 #
 # 使用方法:
-#   ./deploy-storage.sh -s 192.168.1.100 -p /exports           # NFS (默认)
-#   ./deploy-storage.sh --storage-type ceph deploy              # Rook-Ceph
-#   ./deploy-storage.sh --storage-type longhorn deploy          # Longhorn
-#   ./deploy-storage.sh --storage-type ceph verify              # 验证Ceph
-#   ./deploy-storage.sh --storage-type longhorn verify          # 验证Longhorn
-#   NFS_SERVER=10.0.0.5 ./deploy-storage.sh
-#   ./deploy-storage.sh -s 10.0.0.5 --skip-verify
+#   ./deploy-storage.sh deploy                                  # Longhorn (默认)
+#   ./deploy-storage.sh -t longhorn deploy                      # Longhorn
+#   ./deploy-storage.sh -t nfs -s 192.168.1.100 -p /exports    # NFS
+#   ./deploy-storage.sh -t ceph deploy                          # Rook-Ceph
+#   ./deploy-storage.sh -t longhorn verify                      # 验证Longhorn
+#   ./deploy-storage.sh -t ceph verify                          # 验证Ceph
+#   ./deploy-storage.sh -t longhorn --skip-verify
 #
 # 环境变量:
-#   STORAGE_TYPE    - 存储类型: nfs, ceph, longhorn (默认: nfs)
+#   STORAGE_TYPE    - 存储类型: nfs, ceph, longhorn (默认: longhorn)
 #   NFS_SERVER      - NFS服务器IP地址 (NFS模式必填)
 #   NFS_PATH        - NFS导出路径 (默认: /exports)
 #   SKIP_VERIFY     - 跳过验证步骤 (默认: false)
+#
+# 部署步骤 (Longhorn - 默认):
+#   1. 部署Longhorn (Helm)
+#   2. 创建Longhorn StorageClass
+#   3. 验证Longhorn存储功能
 #
 # 部署步骤 (NFS):
 #   1. 部署NFS动态供给器 (nfs-subdir-external-provisioner)
@@ -33,11 +38,6 @@
 #   1. 部署Rook-Ceph Operator和CephCluster
 #   2. 创建Ceph StorageClass (block + filesystem)
 #   3. 验证Ceph存储功能
-#
-# 部署步骤 (Longhorn):
-#   1. 部署Longhorn (Helm)
-#   2. 创建Longhorn StorageClass
-#   3. 验证Longhorn存储功能
 ###############################################################################
 set -euo pipefail
 umask 077
@@ -54,7 +54,7 @@ DEPLOY_START=$(date +%s)
 NFS_SERVER="${NFS_SERVER:-}"
 NFS_PATH="${NFS_PATH:-/exports}"
 SKIP_VERIFY="${SKIP_VERIFY:-false}"
-STORAGE_TYPE="${STORAGE_TYPE:-nfs}"
+STORAGE_TYPE="${STORAGE_TYPE:-longhorn}"
 
 # ========================= 颜色定义 =========================
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -71,7 +71,7 @@ banner() {
     echo -e "" | tee -a "$LOG_FILE"
     echo -e "${BOLD}${BLUE}" | tee -a "$LOG_FILE"
     echo "╔══════════════════════════════════════════════════════╗" | tee -a "$LOG_FILE"
-    echo "║   阶段3 - 存储层配置 (NFS Dynamic Provisioning)    ║" | tee -a "$LOG_FILE"
+    echo "║   阶段3 - 存储层配置 (Longhorn/NFS/Ceph)            ║" | tee -a "$LOG_FILE"
     echo "╚══════════════════════════════════════════════════════╝" | tee -a "$LOG_FILE"
     echo -e "${NC}" | tee -a "$LOG_FILE"
 }
@@ -127,12 +127,12 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
-部署阶段3存储层：NFS/Ceph/Longhorn动态供给、StorageClass、功能验证。
+部署阶段3存储层：Longhorn（默认）/NFS/Ceph动态供给、StorageClass、功能验证。
 
 OPTIONS:
     -s, --server <IP>          NFS服务器地址 (NFS模式必填)
     -p, --path <path>          NFS导出路径 (默认: /exports)
-    -t, --storage-type <type>  存储类型: nfs, ceph, longhorn (默认: nfs)
+    -t, --storage-type <type>  存储类型: nfs, ceph, longhorn (默认: longhorn)
     --skip-verify              跳过验证步骤
     -h, --help                 显示帮助
 
@@ -143,17 +143,20 @@ ENVIRONMENT VARIABLES:
     SKIP_VERIFY=true        跳过验证
 
 EXAMPLES:
-    # NFS (默认)
-    $(basename "$0") -s 192.168.1.100 -p /exports
-    NFS_SERVER=10.0.0.5 SKIP_VERIFY=true $(basename "$0")
+    # Longhorn (默认)
+    $(basename "$0") deploy
+    $(basename "$0") -t longhorn verify
 
+    # NFS
+    $(basename "$0") -t nfs -s 192.168.1.100 -p /exports
+    NFS_SERVER=10.0.0.5 SKIP_VERIFY=true $(basename "$0") -t nfs
     # Rook-Ceph
     $(basename "$0") -t ceph deploy
     $(basename "$0") -t ceph verify
     $(basename "$0") -t ceph status
     $(basename "$0") -t ceph delete
 
-    # Longhorn
+    # Longhorn (完整操作)
     $(basename "$0") -t longhorn deploy
     $(basename "$0") -t longhorn verify
     $(basename "$0") -t longhorn status
@@ -178,19 +181,20 @@ preflight_check() {
     fi
     log_success "Kubernetes集群连接正常"
 
-    # 检查NFS服务器
-    if ping -c 1 -W 3 "${NFS_SERVER}" &>/dev/null; then
-        log_success "NFS服务器 ${NFS_SERVER} 可达"
-    else
-        log_warn "NFS服务器 ${NFS_SERVER} Ping不可达"
-    fi
-
-    # 检查NFS导出
-    if command -v showmount &>/dev/null; then
-        if showmount -e "${NFS_SERVER}" &>/dev/null; then
-            log_success "NFS服务器 ${NFS_SERVER} 导出可访问"
+    # NFS专用检查
+    if [[ "${STORAGE_TYPE}" == "nfs" ]]; then
+        if ping -c 1 -W 3 "${NFS_SERVER}" &>/dev/null; then
+            log_success "NFS服务器 ${NFS_SERVER} 可达"
         else
-            log_warn "无法访问NFS服务器导出列表"
+            log_warn "NFS服务器 ${NFS_SERVER} Ping不可达"
+        fi
+
+        if command -v showmount &>/dev/null; then
+            if showmount -e "${NFS_SERVER}" &>/dev/null; then
+                log_success "NFS服务器 ${NFS_SERVER} 导出可访问"
+            else
+                log_warn "无法访问NFS服务器导出列表"
+            fi
         fi
     fi
 
