@@ -55,6 +55,12 @@ PG_CONFIG_DIR="${PG_CONFIG_DIR:-/etc/postgresql}"
 PG_LOG_DIR="${PG_LOG_DIR:-/var/log/postgresql}"
 PG_VERSION="${PG_VERSION:-15}"
 
+# 长期存储配置 (Longhorn 兼容性)
+# 当在 Kubernetes 环境中运行时，数据目录应挂载到 Longhorn PVC
+# 示例 PVC: postgresql-data-pvc (StorageClass: longhorn, 50Gi)
+# 此脚本为裸金属模式，直接使用本地磁盘
+STORAGE_MOUNT="${STORAGE_MOUNT:-/var/lib/postgresql/data}"
+
 # 复制配置
 MASTER_HOST="${MASTER_HOST:-192.168.100.10}"
 MASTER_PORT="${MASTER_PORT:-5432}"
@@ -109,6 +115,35 @@ parse_args() {
             *) log_error "未知参数: $1"; usage ;;
         esac
     done
+}
+
+# ==================== 存储检查 ====================
+# 验证数据目录可用性（Longhorn 兼容: 可挂载 PVC 到 PG_DATA_DIR）
+check_storage() {
+    log_step "检查存储配置..."
+
+    # 确保数据目录存在且可写
+    mkdir -p "$PG_DATA_DIR" "$PG_LOG_DIR" "$PG_CONFIG_DIR"
+
+    # 检查磁盘空间 (至少需要 5GB 可用)
+    local available_kb
+    available_kb=$(df -k "$PG_DATA_DIR" | awk 'NR==2{print $4}')
+    local available_gb=$((available_kb / 1024 / 1024))
+    if [[ "$available_gb" -lt 5 ]]; then
+        log_error "磁盘空间不足: 仅 ${available_gb}GB 可用 (需要至少 5GB)"
+        log_error "如果使用 Longhorn，请确保存储池有足够容量"
+        exit 1
+    fi
+    log_info "磁盘空间检查通过: ${available_gb}GB 可用"
+
+    # 检查是否为 Longhorn 挂载点
+    if df -T "$PG_DATA_DIR" 2>/dev/null | grep -q "longhorn"; then
+        log_info "检测到 Longhorn 存储卷挂载"
+    else
+        log_info "使用本地存储: $PG_DATA_DIR"
+    fi
+
+    log_info "存储检查完成"
 }
 
 # ==================== 前置检查 ====================
@@ -579,6 +614,7 @@ main() {
 
     # 执行部署步骤
     check_prerequisites
+    check_storage
     setup_directories
     initialize_database
     configure_master "$role"

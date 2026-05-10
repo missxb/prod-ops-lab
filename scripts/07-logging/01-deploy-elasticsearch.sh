@@ -52,12 +52,35 @@ done
 # ===== 前置检查 =====
 log_info "检查 Elasticsearch 部署前置条件..."
 
+# 检查必需命令
+for cmd in kubectl openssl; do
+    if ! command -v "$cmd" &>/dev/null; then
+        log_error "必需命令未找到: $cmd，请先安装"
+        exit 1
+    fi
+done
+
+# 验证 Kubernetes 集群连接
+if ! kubectl cluster-info &>/dev/null; then
+    log_error "无法连接到 Kubernetes 集群"
+    exit 1
+fi
+
 # 验证命名空间
 if ! kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
-    log_error "命名空间 $NAMESPACE 不存在"
+    log_error "命名空间 $NAMESPACE 不存在，请先创建"
     exit 1
 fi
 log_ok "命名空间 $NAMESPACE 存在"
+
+# 验证 Longhorn StorageClass 可用
+if kubectl get storageclass longhorn &>/dev/null; then
+    log_ok "Longhorn StorageClass 已就绪"
+else
+    log_error "Longhorn StorageClass 不存在！Elasticsearch 需要持久化存储来保存日志数据。"
+    log_error "请先部署 Longhorn: kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/v1.5.3/deploy/longhorn.yaml"
+    exit 1
+fi
 
 # 验证 ES 配置文件
 ES_CONFIG="$PROJECT_ROOT/configs/elk/elasticsearch.yaml"
@@ -67,66 +90,17 @@ fi
 
 log_info "部署 Elasticsearch 到命名空间: $NAMESPACE"
 
-# ===== 创建 StorageClass =====
-log_info "创建 Elasticsearch StorageClass..."
-cat <<'SC' | kubectl apply -f -
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: elasticsearch-storage
-provisioner: kubernetes.io/no-provisioner
-volumeBindingMode: WaitForFirstConsumer
-reclaimPolicy: Retain
-SC
+# ===== 存储配置 =====
+# Longhorn 通过 StorageClass "longhorn" 动态供应 PV，无需手动创建
+log_info "确认 Longhorn StorageClass (动态存储供应)..."
+if ! kubectl get storageclass longhorn &>/dev/null; then
+    log_error "Longhorn StorageClass 缺失，无法动态创建 PVC"
+    exit 1
+fi
+log_ok "Longhorn 动态存储供应已就绪"
 
-# ===== 创建 PersistentVolume =====
-log_info "创建 Elasticsearch PersistentVolume (3x50Gi)..."
-cat <<'PV' | kubectl apply -f -
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: es-data-pv-0
-spec:
-  capacity:
-    storage: 50Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: longhorn
-  hostPath:
-    path: /data/elasticsearch/data-0
-    type: DirectoryOrCreate
----
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: es-data-pv-1
-spec:
-  capacity:
-    storage: 50Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: longhorn
-  hostPath:
-    path: /data/elasticsearch/data-1
-    type: DirectoryOrCreate
----
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: es-data-pv-2
-spec:
-  capacity:
-    storage: 50Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: longhorn
-  hostPath:
-    path: /data/elasticsearch/data-2
-    type: DirectoryOrCreate
-PV
+# 注意: 无需手动创建 StorageClass 或 PV
+# Longhorn 会根据 volumeClaimTemplate 自动创建 3x50Gi 的 PVC 和底层卷
 
 # ===== 创建 ConfigMap: ES 配置 =====
 log_info "创建 Elasticsearch ConfigMap..."
@@ -401,6 +375,13 @@ log_info "验证 Elasticsearch 部署..."
 # 检查 StatefulSet
 if kubectl get statefulset elasticsearch -n "$NAMESPACE" >/dev/null 2>&1; then
     log_ok "Elasticsearch StatefulSet 已创建"
+
+    # 检查 StatefulSet 副本状态
+    local ready_replicas
+    ready_replicas=$(kubectl get statefulset elasticsearch -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+    local desired_replicas
+    desired_replicas=$(kubectl get statefulset elasticsearch -n "$NAMESPACE" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "3")
+    log_ok "StatefulSet 副本状态: ${ready_replicas:-0}/${desired_replicas} 就绪"
 else
     log_error "Elasticsearch StatefulSet 创建失败"
     exit 1
@@ -419,5 +400,27 @@ if kubectl get secret elasticsearch-credentials -n "$NAMESPACE" >/dev/null 2>&1;
 else
     log_warn "Elasticsearch Secret 不存在"
 fi
+
+# 检查 PVC 状态 (Longhorn 动态创建)
+log_info "检查 PersistentVolume Claims..."
+local pvc_count
+pvc_count=$(kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l)
+if [[ "$pvc_count" -gt 0 ]]; then
+    log_ok "PVC 数量: $pvc_count"
+    # 列出 PVC 及其状态
+    kubectl get pvc -n "$NAMESPACE" -o custom-columns=NAME:.metadata.name,STATUS:.status.phase,STORAGE:.spec.storageClassName,CAPACITY:.status.capacity.storage 2>/dev/null || true
+    # 检查是否有 Pending 的 PVC
+    local pending_pvc
+    pending_pvc=$(kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | grep -c "Pending" || true)
+    if [[ "$pending_pvc" -gt 0 ]]; then
+        log_error "$pending_pvc 个 PVC 处于 Pending 状态，可能需要检查 Longhorn 节点状态"
+    fi
+else
+    log_warn "未找到 PVC，StatefulSet 可能尚未创建卷"
+fi
+
+# 检查 Pod 状态
+log_info "检查 Pod 状态..."
+kubectl get pods -n "$NAMESPACE" -l app=elasticsearch -o wide 2>/dev/null || true
 
 log_ok "Elasticsearch 部署完成"

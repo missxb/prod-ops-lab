@@ -370,7 +370,7 @@ spec:
     
   storage:
     size: 100Gi
-    storageClassName: high-performance
+    storageClassName: longhorn-fast
     
   resources:
     requests:

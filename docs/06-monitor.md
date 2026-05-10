@@ -68,7 +68,7 @@ prometheus:
       volumeClaimTemplate:
         spec:
           accessModes: ["ReadWriteOnce"]
-          storageClassName: managed-csi
+          storageClassName: longhorn
           resources:
             requests:
               storage: 100Gi
@@ -207,7 +207,7 @@ alertmanager:
     volumeClaimTemplate:
       spec:
         accessModes: ["ReadWriteOnce"]
-        storageClassName: managed-csi
+        storageClassName: longhorn
         resources:
           requests:
             storage: 10Gi

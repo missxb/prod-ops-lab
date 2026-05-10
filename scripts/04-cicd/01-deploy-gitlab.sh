@@ -147,21 +147,46 @@ create_secrets() {
     log_info "Secrets created (${secret_count} total in namespace)"
 }
 
-# setup_storage - 检查并配置存储类
-# 如果 Longhorn 存储类不存在，等待 Longhorn 部署完成
+# setup_storage - 检查 Longhorn StorageClass 可用性
+# GitLab 需要持久化存储，Longhorn 是必需的
 setup_storage() {
-    log_info "检查存储类..."
-    
-    # 检查是否已有 default storage class (优先使用 Longhorn)
+    log_info "检查 Longhorn StorageClass..."
+
+    # 检查 Longhorn StorageClass 是否存在
     if kubectl get storageclass longhorn &>/dev/null; then
-        log_info "检测到 Longhorn StorageClass，使用默认存储"
+        log_info "检测到 Longhorn StorageClass，GitLab 将使用 Longhorn 持久化存储"
     else
-        log_warn "未检测到 Longhorn StorageClass，请先部署阶段3存储层"
-        log_warn "运行: bash scripts/03-storage/deploy-storage.sh"
-        # 允许继续，使用任意可用的 StorageClass
+        log_error "Longhorn StorageClass 不存在！"
+        log_error "GitLab 需要可靠的持久化存储来保存数据。"
+        log_error ""
+        log_error "请先部署 Longhorn:"
+        log_error "  1. kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/v1.5.3/deploy/longhorn.yaml"
+        log_error "  2. 或运行: bash scripts/03-storage/deploy-storage.sh"
+        log_error "  3. 等待所有 Longhorn 节点就绪后再重新运行此脚本"
+        log_error ""
+        log_error "验证 Longhorn 状态:"
+        log_error "  kubectl get storageclass longhorn"
+        log_error "  kubectl get pods -n longhorn-system"
+        exit 1
     fi
-    
-    log_info "Storage configured"
+
+    # 检查 Longhorn 组件是否就绪
+    local longhorn_pods_not_ready
+    longhorn_pods_not_ready=$(kubectl get pods -n longhorn-system --no-headers 2>/dev/null | grep -cv "Running\|Completed" || true)
+    if [[ "${longhorn_pods_not_ready}" -gt 0 ]]; then
+        log_warn "Longhorn 有 ${longhorn_pods_not_ready} 个 Pod 未就绪，可能影响存储性能"
+        log_warn "建议等待 Longhorn 完全就绪后再部署 GitLab"
+    fi
+
+    # 检查是否至少有一个节点可用
+    local longhorn_ready_nodes
+    longhorn_ready_nodes=$(kubectl get nodes --no-headers 2>/dev/null | grep -c "Ready" || true)
+    if [[ "${longhorn_ready_nodes}" -lt 1 ]]; then
+        log_error "集群中没有 Ready 状态的节点，Longhorn 无法正常工作"
+        exit 1
+    fi
+
+    log_info "Longhorn StorageClass 验证通过"
 }
 
 # deploy_gitlab - 使用 Helm 安装/升级 GitLab CE

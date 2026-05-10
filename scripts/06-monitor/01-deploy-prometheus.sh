@@ -37,12 +37,35 @@ log_error(){ echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') [Prometheu
 # ===== 前置检查 =====
 log "检查 Prometheus 部署前置条件..."
 
+# 检查必需命令
+for cmd in kubectl helm; do
+    if ! command -v "$cmd" &>/dev/null; then
+        log_error "必需命令未找到: $cmd，请先安装"
+        exit 1
+    fi
+done
+
+# 验证 Kubernetes 集群连接
+if ! kubectl cluster-info &>/dev/null; then
+    log_error "无法连接到 Kubernetes 集群"
+    exit 1
+fi
+
 # 验证命名空间存在
 if ! kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
     log_error "命名空间 $NAMESPACE 不存在，请先创建"
     exit 1
 fi
 log_ok "命名空间 $NAMESPACE 存在"
+
+# 验证 Longhorn StorageClass 可用
+if kubectl get storageclass longhorn &>/dev/null; then
+    log_ok "Longhorn StorageClass 已就绪"
+else
+    log_error "Longhorn StorageClass 不存在！Prometheus 需要持久化存储来保留指标数据。"
+    log_error "请先部署 Longhorn: kubectl apply -f https://raw.githubusercontent.com/longhorn/longhorn/v1.5.3/deploy/longhorn.yaml"
+    exit 1
+fi
 
 # 验证 Helm 仓库
 if ! helm repo list 2>/dev/null | grep -q "prometheus-community"; then
@@ -56,7 +79,7 @@ log_ok "Helm 仓库已配置"
 
 # 验证 values 文件存在
 if [[ ! -f "$VALUES_FILE" ]]; then
-    log_warn "Values 文件不存在: $VALUES_FILE，使用默认配置"
+    log_warn "Values 文件不存在: $VALUES_FILE，将使用默认配置"
 fi
 
 # ===== 部署 Prometheus =====
@@ -64,7 +87,7 @@ log "安装 kube-prometheus-stack..."
 log "  Chart: $CHART"
 log "  Namespace: $NAMESPACE"
 log "  保留策略: 30天"
-log "  存储: 50Gi (local-path)"
+log "  存储: 50Gi (longhorn)"
 
 helm upgrade --install "$RELEASE_NAME" "$CHART" \
   --namespace "$NAMESPACE" \
@@ -101,6 +124,21 @@ if [[ "$GRAFANA_PODS" -gt 0 ]]; then
     log_ok "Grafana Pods: $GRAFANA_PODS 个运行中"
 else
     log_warn "未找到 Grafana Pods"
+fi
+
+# 检查 PVC 状态
+log "检查 PersistentVolume Claims..."
+PVC_COUNT=$(kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l)
+if [[ "$PVC_COUNT" -gt 0 ]]; then
+    log_ok "PVC 数量: $PVC_COUNT"
+    # 检查是否有 Pending 的 PVC
+    PENDING_PVC=$(kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | grep -c "Pending" || true)
+    if [[ "$PENDING_PVC" -gt 0 ]]; then
+        log_warn "$PENDING_PVC 个 PVC 处于 Pending 状态"
+        kubectl get pvc -n "$NAMESPACE" --no-headers 2>/dev/null | grep "Pending" || true
+    fi
+else
+    log_warn "未找到 PVC，请检查存储配置"
 fi
 
 log_ok "Prometheus 部署完成"
