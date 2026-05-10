@@ -166,6 +166,49 @@ SSL证书管理、SSH加固、防火墙策略、容器安全扫描、K8s RBAC、
 - [常见问题](docs/faq.md)
 - [最佳实践](docs/best-practices.md)
 
+## 📝 做完这个项目，简历上可以写什么
+
+> 完成本项目后，你可以将以下内容写入简历的「项目经历」板块。
+
+### 项目标题
+**企业级云原生运维平台** | 个人项目 | 2026.05
+
+### 一句话描述（简历用）
+独立设计并搭建了一套完整的企业级云原生运维平台，涵盖 Kubernetes 集群部署、CI/CD 流水线、分布式存储、监控告警、日志收集、高可用架构、自动化运维及安全加固共 10 个核心模块，编写了 70+ 生产级 Shell 脚本和 30+ Ansible Playbook。
+
+### 你可以写的核心工作内容
+
+| 模块 | 简历写法 |
+|------|----------|
+| K8s集群 | 使用 kubeadm 部署 Kubernetes 1.28 高可用集群，集成 Calico CNI 网络插件和 NFS 动态存储供给 |
+| CI/CD | 搭建 Jenkins + Harbor + Trivy CI/CD 流水线，实现代码提交到生产部署的全流程自动化 |
+| 监控 | 构建 Prometheus + Grafana + EFK 监控日志体系，配置多级告警和钉钉/邮件通知 |
+| 高可用 | 实现 Keepalived + MySQL/PostgreSQL/Redis 多组件高可用方案，编写故障转移自动化测试脚本 |
+| 自动化 | 编写 70+ 生产级 Shell 脚本（含错误处理、日志框架、回滚机制），构建 Ansible 自动化体系 |
+| 安全 | 部署 cert-manager 自动化证书管理，配置 K8s RBAC 和 NetworkPolicy，集成 Trivy + OPA 安全策略 |
+
+### 简历精简版（直接复制）
+
+> **企业级云原生运维平台** | 个人项目 | 2026.05
+>
+> 独立设计并搭建的完整云原生运维平台，涵盖 K8s 集群、CI/CD、监控、日志、高可用、自动化、安全 10 大模块。
+> - 使用 kubeadm 部署 Kubernetes 1.28 高可用集群，集成 Calico CNI 和 NFS 动态存储
+> - 搭建 Jenkins + Harbor + Trivy CI/CD 流水线，实现代码到生产的自动化部署
+> - 构建 Prometheus + Grafana + EFK 监控日志体系，配置多级告警和钉钉/邮件通知
+> - 实现 Keepalived + MySQL/PostgreSQL/Redis 多组件高可用方案
+> - 编写 70+ Shell 脚本和 30+ Ansible Playbook，覆盖全流程自动化
+> - 技术栈：Kubernetes, Docker, Prometheus, Elasticsearch, Ansible, MySQL, Redis, Nginx
+
+### 面试怎么说这个项目
+
+> 面试官：介绍一下你的项目？
+>
+> **30秒版本**：我独立搭建了一套企业级云原生运维平台，从基础环境到 K8s 集群、CI/CD、监控、高可用、安全加固，覆盖了运维工程师日常工作的核心领域。整个项目包含 228 个文件、70+ 脚本，全部按照生产标准编写。
+>
+> **2分钟版本**：先说背景——运维工程师需要掌握从集群搭建到应用部署的全链路能力，所以我设计了这个 10 阶段的项目。技术选型上，K8s 用 kubeadm 部署，网络用 Calico，存储用 NFS 动态供给，监控用 Prometheus+Grafana，日志用 EFK，高可用用 Keepalived+MySQL 主从+Redis 哨兵。实施过程中遇到的最大问题是 containerd 双配置冲突和 K8s 网络参数与安全加固的矛盾，最终通过统一配置标准解决。成果是实现了从环境初始化到应用部署的全流程自动化，所有脚本都有错误处理和回滚机制。
+
+详细简历撰写指南见 [docs/resume-guide.md](docs/resume-guide.md)。
+
 ## License
 
 MIT
