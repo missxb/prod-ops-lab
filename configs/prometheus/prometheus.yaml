@@ -30,7 +30,7 @@ prometheus:
       volumeClaimTemplate:
         spec:
           # 存储类 (使用本地路径或SSD)
-          storageClassName: local-path
+          storageClassName: longhorn
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:
@@ -378,7 +378,7 @@ alertmanager:
     storage:
       volumeClaimTemplate:
         spec:
-          storageClassName: local-path
+          storageClassName: longhorn
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:

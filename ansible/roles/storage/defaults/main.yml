@@ -23,8 +23,8 @@ nfs_export_roots:
     options: "rw,sync,no_subtree_check,no_root_squash"
 
 # ======================== StorageClass 配置 ========================
-storageclass_name: "nfs-storage"
-storageclass_provisioner: "nfs-subdir-external-provisioner"
+storageclass_name: "longhorn"
+storageclass_provisioner: "driver.longhorn.io"
 storageclass_reclaim_policy: "Retain"
 storageclass_volume_binding_mode: "Immediate"
 storageclass_allow_volume_expansion: true

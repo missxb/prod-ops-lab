@@ -68,28 +68,28 @@ persistence:
   persistentVolumeClaim:
     # Registry存储 (镜像数据)
     registry:
-      storageClass: "standard"
+      storageClass: "longhorn"
       accessMode: ReadWriteOnce
       size: 200Gi  # 根据镜像数量调整
     # Job Service日志存储
     jobservice:
       jobLog:
-        storageClass: "standard"
+        storageClass: "longhorn"
         accessMode: ReadWriteOnce
         size: 10Gi
     # 数据库存储
     database:
-      storageClass: "standard"
+      storageClass: "longhorn"
       accessMode: ReadWriteOnce
       size: 20Gi
     # Redis存储
     redis:
-      storageClass: "standard"
+      storageClass: "longhorn"
       accessMode: ReadWriteOnce
       size: 10Gi
     # Trivy扫描器存储
     trivy:
-      storageClass: "standard"
+      storageClass: "longhorn"
       accessMode: ReadWriteOnce
       size: 10Gi
 

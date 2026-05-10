@@ -62,7 +62,7 @@ controller:
   # =========================================================================
   persistence:
     enabled: true
-    storageClass: "standard"
+    storageClass: "longhorn"
     # Jenkins数据存储 (包括配置、构建历史)
     size: 50Gi
     accessMode: ReadWriteOnce
@@ -291,7 +291,7 @@ backup:
   schedule: "0 2 * * *"
   storage:
     size: 20Gi
-    storageClass: "standard"
+    storageClass: "longhorn"
 
 # =============================================================================
 # 监控配置
