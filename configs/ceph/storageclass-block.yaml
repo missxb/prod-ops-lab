@@ -1,0 +1,98 @@
+###############################################################################
+# Ceph Block StorageClass 配置 - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: 定义Ceph RBD块存储类，用于单节点读写场景
+# 前提: CephCluster已部署，ceph-block-pool已创建
+# 部署: kubectl apply -f storageclass-block.yaml
+# 验证: kubectl get storageclass ceph-block
+###############################################################################
+
+# =============================================================================
+# StorageClass - Ceph RBD 块存储
+# 用途:
+#   - 数据库存储 (MySQL, PostgreSQL)
+#   - 有状态应用 (Redis, MongoDB)
+#   - 单节点读写场景
+# 性能: 高 (直接映射块设备)
+# 限制: 单节点读写 (ReadWriteOnce)
+# =============================================================================
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ceph-block
+  annotations:
+    # 不设置为默认存储类 (保留NFS作为默认)
+    # storageclass.kubernetes.io/is-default-class: "true"
+  labels:
+    app.kubernetes.io/name: ceph-block
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+    app.kubernetes.io/managed-by: 04-deploy-rook-ceph.sh
+# CSI驱动名称 (由Rook-Ceph Operator部署)
+provisioner: rook-ceph.rbd.csi.ceph.com
+parameters:
+  # Ceph池名称 (对应CephBlockPool)
+  pool: replicapool
+  # Ceph集群ID
+  clusterID: rook-ceph
+  # 文件系统类型 (块设备格式)
+  csi.storage.k8s.io/fstype: ext4
+  # RBD镜像特性 (支持thin provisioning)
+  imageFeatures: layering,fast-diff,object-map,deep-flatten
+# 回收策略
+# Delete: 删除PVC时自动删除PV和底层RBD镜像
+reclaimPolicy: Delete
+# 允许卷扩展 (支持在线扩容)
+allowVolumeExpansion: true
+# 卷绑定模式
+# WaitForFirstConsumer: 等Pod调度后再绑定，避免调度问题
+volumeBindingMode: WaitForFirstConsumer
+
+---
+# =============================================================================
+# StorageClass - Ceph RBD 块存储 (保留策略)
+# 用途: 需要保留数据的场景
+# =============================================================================
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ceph-block-retained
+  labels:
+    app.kubernetes.io/name: ceph-block-retained
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+    app.kubernetes.io/managed-by: 04-deploy-rook-ceph.sh
+provisioner: rook-ceph.rbd.csi.ceph.com
+parameters:
+  pool: replicapool
+  clusterID: rook-ceph
+  csi.storage.k8s.io/fstype: ext4
+  imageFeatures: layering,fast-diff,object-map,deep-flatten
+# 回收策略: 保留 (删除PVC后保留PV)
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer
+
+# =============================================================================
+# 使用示例
+# =============================================================================
+# 创建PVC:
+#
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: mysql-data-pvc
+#   namespace: databases
+# spec:
+#   accessModes:
+#     - ReadWriteOnce
+#   resources:
+#     requests:
+#       storage: 50Gi
+#   storageClassName: ceph-block
+#
+# 查看PVC状态:
+#   kubectl get pvc -n databases
+#   kubectl describe pvc mysql-data-pvc -n databases
+#
+# 查看底层RBD镜像:
+#   kubectl -n rook-ceph exec -it <toolbox-pod> -- rbd ls replicapool
+# =============================================================================

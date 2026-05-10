@@ -1,0 +1,66 @@
+###############################################################################
+# Longhorn 高性能 StorageClass 配置 - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: 定义Longhorn高性能存储类，用于低延迟场景
+# 前提: Longhorn已通过Helm部署, 节点有SSD存储
+# 部署: kubectl apply -f storageclass-fast.yaml
+# 验证: kubectl get storageclass longhorn-fast
+###############################################################################
+
+# =============================================================================
+# StorageClass - Longhorn 高性能存储
+# 用途:
+#   - 高性能数据库 (Redis, MongoDB)
+#   - 日志聚合
+#   - 缓存层
+# 性能: 高 (2副本, 严格本地性)
+# 优势: 低延迟, 数据本地性
+# 限制: 2副本 (容错能力低于3副本)
+# =============================================================================
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-fast
+  annotations:
+    # 不设置为默认StorageClass
+  labels:
+    app.kubernetes.io/name: longhorn-fast
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+    app.kubernetes.io/managed-by: 06-deploy-longhorn.sh
+provisioner: driver.longhorn.io
+parameters:
+  # 副本数量 (2副本，性能优先)
+  numberOfReplicas: "2"
+  # 严格本地性: 数据必须存储在调度的节点上
+  dataLocality: "required"
+  # 卷前端类型
+  fsType: ext4
+  # 快照超时
+  staleReplicaTimeout: "30"
+# 回收策略
+reclaimPolicy: Delete
+# 卷绑定模式
+volumeBindingMode: WaitForFirstConsumer
+# 允许卷扩展
+allowVolumeExpansion: true
+
+# =============================================================================
+# 使用示例
+# =============================================================================
+# 创建高性能PVC:
+#
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: redis-data-pvc
+#   namespace: databases
+# spec:
+#   accessModes:
+#     - ReadWriteOnce
+#   resources:
+#     requests:
+#       storage: 10Gi
+#   storageClassName: longhorn-fast
+#
+# 注意: 本地性策略要求节点有足够存储空间
+# =============================================================================

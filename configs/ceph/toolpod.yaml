@@ -1,0 +1,137 @@
+###############################################################################
+# Ceph Toolbox Pod 配置 - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: 创建Ceph调试工具Pod，用于集群管理和诊断
+# 前提: CephCluster已部署
+# 部署: kubectl apply -f toolpod.yaml
+# 使用: kubectl -n rook-ceph exec -it rook-ceph-tools -- ceph <command>
+###############################################################################
+
+# =============================================================================
+# Deployment - Ceph Toolbox
+# 用途:
+#   - ceph status: 查看集群状态
+#   - ceph osd tree: 查看OSD拓扑
+#   - ceph df: 查看存储使用
+#   - ceph health detail: 详细健康信息
+#   - rados df: 查看池使用
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rook-ceph-tools
+  namespace: rook-ceph
+  labels:
+    app.kubernetes.io/name: rook-ceph-tools
+    app.kubernetes.io/component: toolbox
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+    app.kubernetes.io/managed-by: 04-deploy-rook-ceph.sh
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rook-ceph-tools
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rook-ceph-tools
+        app.kubernetes.io/component: toolbox
+    spec:
+      serviceAccountName: rook-ceph-operator
+      # 安全上下文
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      # 调度配置
+      tolerations:
+        - key: node-role.kubernetes.io/master
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/control-plane
+          effect: NoSchedule
+      containers:
+        - name: rook-ceph-tools
+          # Ceph工具箱镜像
+          image: rook/ceph:v1.14.10
+          command: ["sleep", "3600"]
+          imagePullPolicy: IfNotPresent
+          # 资源限制
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          # 环境变量
+          env:
+            - name: ROOK_CEPH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: rook-ceph-mon
+                  key: admin-secret
+                  optional: true
+          # 卷挂载
+          volumeMounts:
+            - name: ceph-admin-keyring
+              mountPath: /etc/ceph
+            - name: mon-endpoint
+              mountPath: /etc/ceph
+      volumes:
+        # Ceph管理密钥
+        - name: ceph-admin-keyring
+          secret:
+            secretName: rook-ceph-mon
+            optional: true
+        # Monitor端点配置
+        - name: mon-endpoint
+          configMap:
+            name: rook-ceph-mon-endpoints
+            optional: true
+
+---
+# =============================================================================
+# Service - Ceph Toolbox (可选，用于远程调试)
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: rook-ceph-tools
+  namespace: rook-ceph
+  labels:
+    app.kubernetes.io/name: rook-ceph-tools
+spec:
+  ports:
+    - name: tool
+      port: 22
+      targetPort: 22
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: rook-ceph-tools
+
+# =============================================================================
+# 使用说明
+# =============================================================================
+# 1. 部署Toolbox:
+#    kubectl apply -f toolpod.yaml
+#
+# 2. 等待Pod就绪:
+#    kubectl -n rook-ceph rollout status deployment/rook-ceph-tools
+#
+# 3. 进入Toolbox:
+#    kubectl -n rook-ceph exec -it $(kubectl -n rook-ceph get pod -l app.kubernetes.io/name=rook-ceph-tools -o name) -- bash
+#
+# 4. 常用命令:
+#    ceph status              # 查看集群状态
+#    ceph health detail       # 详细健康信息
+#    ceph osd tree            # OSD拓扑
+#    ceph osd pool ls detail  # 存储池列表
+#    ceph df                  # 存储使用
+#    rados df                 # 池使用详情
+#    ceph osd perf            # OSD性能
+#    ceph mon stat            # Monitor状态
+#    ceph mds stat            # MDS状态
+#    ceph mgr stat            # Manager状态
+#
+# 5. 快捷方式 (无需进入Pod):
+#    kubectl -n rook-ceph exec -it $(kubectl -n rook-ceph get pod -l app.kubernetes.io/name=rook-ceph-tools -o name) -- ceph status
+# =============================================================================

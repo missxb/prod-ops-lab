@@ -1013,7 +1013,111 @@ ETCDCTL_API=3 etcdctl snapshot restore <etcd-backup> \
 # 3. 重新创建 PVC 并挂载
 ```
 
-## 8. 最佳实践
+## 8. 备选方案: Ceph分布式存储 (Rook-Ceph)
+
+### 8.1 方案对比
+
+| 特性 | NFS | Ceph |
+|------|-----|------|
+| 架构 | 单点NFS服务器 | 分布式（mon+osd+mds） |
+| 性能 | 中等（受限单机IO） | 高（多节点并行IO） |
+| 高可用 | 需要额外配置 | 内置多副本 |
+| 存储类型 | 文件存储 | 块/对象/文件 |
+| 复杂度 | 低 | 中高 |
+| 资源占用 | 低 | 高（每节点约2-3GB内存） |
+| 适用场景 | 中小规模/学习/共享文件 | 生产/大规模/数据库 |
+| K8s集成 | NFS Provisioner | Rook-Ceph Operator |
+
+### 8.2 部署步骤
+
+1. 安装 Rook-Ceph Operator (Helm 或 kubectl)
+2. 创建 CephCluster (3 mons + 3 osds)
+3. 等待集群健康
+4. 创建 StorageClass (ceph-block + ceph-filesystem)
+5. 验证存储功能
+
+### 8.3 脚本说明
+
+- 04-deploy-rook-ceph.sh: 部署 Rook-Ceph (支持 deploy/delete/status)
+- 05-verify-ceph.sh: 验证 Ceph 存储功能
+- configs/ceph/: Ceph 配置文件 (operator/cluster/storageclass)
+
+### 8.4 注意事项
+
+- Rook-Ceph 需要至少3个节点
+- 每个节点需要至少2GB空闲内存
+- 生产环境建议使用裸金属磁盘
+- 学习环境可以使用 local storage path
+
+---
+
+## 9. 备选方案: Longhorn分布式存储
+
+### 9.1 方案对比
+
+| 特性 | NFS | Ceph | Longhorn |
+|------|-----|------|----------|
+| 架构 | 单点 | 分布式 | 分布式 |
+| 性能 | 中等 | 高 | 中高 |
+| 高可用 | 需额外配置 | 内置 | 内置副本 |
+| 存储类型 | 文件 | 块/对象/文件 | 块 |
+| 复杂度 | 低 | 中高 | 中 |
+| 资源占用 | 低 | 高 | 中 |
+| 适用场景 | 中小规模 | 生产/大规模 | 中小规模/边缘 |
+| K8s集成 | NFS Provisioner | Rook-Ceph | Longhorn CSI |
+| 特色 | 简单 | 成熟稳定 | 轻量/快照/备份 |
+
+### 9.2 部署步骤
+
+1. 所有节点安装 open-iscsi
+2. 添加 Longhorn Helm repo
+3. helm install longhorn
+4. 创建 StorageClass (longhorn-default/fast/backup)
+5. 验证存储功能
+
+### 9.3 脚本说明
+
+- 06-deploy-longhorn.sh: 部署 Longhorn (支持 deploy/delete/status)
+- 07-verify-longhorn.sh: 验证 Longhorn 存储功能
+- configs/longhorn/: Longhorn 配置文件 (Helm values/storageclass)
+
+### 9.4 注意事项
+
+- 至少需要2个节点
+- 所有节点需要安装 open-iscsi
+- 默认3副本，学习环境可以改为2副本节省空间
+- 支持 VolumeSnapshot 和备份到 S3
+
+---
+
+## 10. 三方案选型建议
+
+| 场景 | 推荐 | 原因 |
+|------|------|------|
+| 学习/测试 | NFS | 最简单，资源占用最小 |
+| 中小生产 | Longhorn | 轻量分布式，易维护 |
+| 大规模生产 | Ceph | 性能最强，功能最全 |
+| 数据库存储 | Ceph RBD | 块存储性能最好 |
+| 共享文件 | NFS 或 CephFS | 都支持 RWX |
+| 边缘计算 | Longhorn | 资源占用小，支持 ARM |
+
+---
+
+## 11. 版本兼容性
+
+| 组件 | 最低版本 | 推荐版本 | 说明 |
+|------|----------|----------|------|
+| Kubernetes | 1.24 | 1.28+ | 存储层基础 |
+| Longhorn | 1.5.0 | 1.6.0 | 轻量分布式存储 |
+| Rook | 1.12 | 1.13 | Ceph Operator |
+| Ceph | 17.2 | 18.0 | Rook-Ceph 后端 |
+| Helm | 3.10 | 3.14 | 包管理器 |
+| NFS Provisioner | 4.0 | 4.0 | NFS 动态供给 |
+| CSI Snapshotter | 6.3 | 6.3 | 快照功能 |
+
+---
+
+## 12. 最佳实践
 
 1. **存储类型选择**：
    - 数据库：使用高性能 StorageClass（fewer replicas, local）

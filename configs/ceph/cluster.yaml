@@ -1,0 +1,362 @@
+###############################################################################
+# CephCluster 资源定义 - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: 定义Ceph集群，包含Monitor、OSD、Dashboard等组件
+# 前提: Rook-Ceph Operator已部署并运行
+# 部署: kubectl apply -f cluster.yaml
+# 验证: kubectl -n rook-ceph get cephcluster
+###############################################################################
+
+# =============================================================================
+# CephCluster - 主集群资源
+# 架构说明:
+#   - Mon: Monitor节点，负责集群状态管理 (奇数个，至少3个)
+#   - OSD: Object Storage Daemon，实际存储数据
+#   - MDS: Metadata Server，CephFS元数据服务
+#   - Dashboard: Web管理界面
+# =============================================================================
+apiVersion: ceph.rook.io/v1
+kind: CephCluster
+metadata:
+  name: rook-ceph
+  namespace: rook-ceph
+  labels:
+    app.kubernetes.io/name: ceph-cluster
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+    app.kubernetes.io/managed-by: 04-deploy-rook-ceph.sh
+spec:
+  # 集群版本 (Ceph版本由Rook决定)
+  cephVersion:
+    # 使用Ceph Squid (v18.x) - Rook v1.14默认
+    image: quay.io/ceph/ceph:v18.2.4
+    # 是否允许降级 (生产环境建议false)
+    allowUnsupported: false
+
+  # 集群信息
+  clusterMetadata:
+    name: rook-ceph
+    namespace: rook-ceph
+
+  # 数据目录存储路径
+  # 学习环境使用本地路径，生产环境应使用专用磁盘
+  dataDirHostPath: /var/lib/rook
+
+  # 存储配置
+  storage:
+    # 使用本地存储路径 (学习环境)
+    # 注意: 生产环境应使用 rawBlockDevices 或 storageClassDeviceSets
+    storageClassDeviceSets:
+      - name: local-storage
+        count: 3
+        # 每个OSD的数据目录
+        dataDirHostPath: /var/lib/rook
+        # 资源限制
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: "2"
+            memory: 4Gi
+        # 持久卷配置
+        placement: {}
+        preparePlacement: {}
+        # 端口配置
+        portable: false
+        # 磁盘类型
+        type: data
+    # 是否使用所有节点 (如果false，只使用有存储的节点)
+    useAllNodes: true
+    useAllDevices: false
+    # 设备过滤 (使用本地路径)
+    devices:
+      - name: local-data
+    # 优雅终止
+    onlyApplyOSDPlacement: false
+
+  # Monitor配置
+  mon:
+    # Monitor数量 (奇数个，确保仲裁)
+    count: 3
+    # 是否允许部署在master节点
+    allowMultiplePerNode: false
+    # Monitor数据存储
+    volumeClaimTemplate:
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 5Gi
+
+  # OSD配置
+  osd:
+    # OSD优雅终止超时
+    cleanupTimeout: 120s
+    # OSD升级策略
+    upgradeNode: true
+
+  # MDS配置 (CephFS)
+  mds:
+    # MDS副本数
+    activeCount: 1
+    # 是否允许多个MDS (高可用)
+    activeStandby: true
+    # MDS资源限制
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+
+  # Dashboard配置
+  dashboard:
+    # 启用Dashboard
+    enabled: true
+    # Dashboard端口
+    port: 8443
+    # 是否启用SSL
+    ssl: true
+
+  # Gateway配置 (对象存储)
+  gateway:
+    # 是否启用Ceph Object Gateway
+    enabled: false
+
+  # 网络配置
+  network:
+    # 是否使用Host网络 (性能更好)
+    hostNetwork: false
+    # 集群网络 (OSD复制流量)
+    clusterNet: ""
+    # 公共网络
+    publicNet: ""
+    # 是否启用多集群支持
+    multiClusterSupport: false
+
+  # 资源管理
+  resources: {}
+
+  # 安全配置
+  security:
+    # Keyring配置
+    keyring: {}
+    # TLS配置
+    tls: {}
+
+  # 健康检查配置
+  healthCheck:
+    # 守护进程健康检查
+    daemonHealth:
+      mon:
+        interval: 60s
+        timeout: 30s
+      osd:
+        interval: 60s
+        timeout: 30s
+      mds:
+        interval: 60s
+        timeout: 30s
+    # 集群健康检查间隔
+    livenessProbe: {}
+    startupProbe: {}
+
+  # 日志配置
+  logCollector:
+    # 是否启用日志收集
+    enabled: true
+    # 保留天数
+    maxLogAge: 30
+
+  # 调度配置
+  placement: {}
+  # 优先级类
+  priorityClassNames:
+    mon: system-node-critical
+    osd: system-cluster-critical
+    mgr: system-node-critical
+
+  # 迭代
+  continueReleaseUpgrade: false
+
+  # Ceph配置覆盖
+  cephConfig:
+    # OSD配置
+    osd:
+      osd_pool_default_min_size: 1
+      osd_pool_default_size: 3
+      osd_journal_size: 512
+    # 全局配置
+    global:
+      osd_pool_default_pg_autoscale_mode: on
+
+  # 管理器配置
+  mgr:
+    # Mgr模块
+    modules:
+      - name: rook
+        enabled: true
+
+---
+# =============================================================================
+# StorageClass - Ceph RBD (块存储)
+# 用途: 单节点读写，适合数据库、有状态应用
+# =============================================================================
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ceph-block
+  labels:
+    app.kubernetes.io/name: ceph-block
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+    app.kubernetes.io/managed-by: 04-deploy-rook-ceph.sh
+provisioner: rook-ceph.rbd.csi.ceph.com
+parameters:
+  # RBD镜像池
+  pool: replicapool
+  # 集群名称
+  clusterID: rook-ceph
+  # 文件系统类型
+  csi.storage.k8s.io/fstype: ext4
+# 回收策略
+reclaimPolicy: Delete
+# 允许卷扩展
+allowVolumeExpansion: true
+# 卷绑定模式 (等待Pod调度)
+volumeBindingMode: WaitForFirstConsumer
+
+---
+# =============================================================================
+# StorageClass - CephFS (文件存储)
+# 用途: 多节点共享读写，适合配置文件、共享数据
+# =============================================================================
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ceph-filesystem
+  labels:
+    app.kubernetes.io/name: ceph-filesystem
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+    app.kubernetes.io/managed-by: 04-deploy-rook-ceph.sh
+provisioner: rook-ceph.cephfs.csi.ceph.com
+parameters:
+  # CephFS集群名称
+  clusterID: rook-ceph
+  # CephFS文件系统名称
+  fsName: myfs
+  # CephFS池
+  pool: myfs-data0
+  # 根目录
+  csi.storage.k8s.io/provisioner-secret-name: rook-ceph-csi
+  csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
+  csi.storage.k8s.io/node-stage-secret-name: rook-ceph-csi
+  csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
+# 回收策略
+reclaimPolicy: Delete
+# 允许卷扩展
+allowVolumeExpansion: true
+# 卷绑定模式
+volumeBindingMode: WaitForFirstConsumer
+
+---
+# =============================================================================
+# CephFilesystem - CephFS文件系统资源
+# 说明: 为CephFS StorageClass提供后端
+# =============================================================================
+apiVersion: ceph.rook.io/v1
+kind: CephFilesystem
+metadata:
+  name: myfs
+  namespace: rook-ceph
+  labels:
+    app.kubernetes.io/name: ceph-filesystem
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+spec:
+  # 元数据服务器
+  metadataServer:
+    # 副本数
+    activeCount: 1
+    # 是否活跃-待命
+    activeStandby: true
+    # 资源限制
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+    # 优先级
+    priorityClassName: system-node-critical
+    # 安全上下文
+    securityContext:
+      runAsUser: 0
+      fsGroup: 0
+    # 调度
+    placement: {}
+  # 存储池配置
+  dataPools:
+    - name: data0
+      # 副本数
+      replicated:
+        size: 3
+      # PG数
+      parameters:
+        pg_num: 8
+        pgp_num: 8
+  # 元数据存储池
+  metadataPool:
+    replicated:
+      size: 3
+    parameters:
+      pg_num: 8
+      pgp_num: 8
+  # 共享文件系统名称
+  metadataServer:
+    # 多活配置
+    activeCount: 1
+    activeStandby: true
+
+---
+# =============================================================================
+# CephBlockPool - RBD块存储池
+# =============================================================================
+apiVersion: ceph.rook.io/v1
+kind: CephBlockPool
+metadata:
+  name: replicapool
+  namespace: rook-ceph
+  labels:
+    app.kubernetes.io/name: ceph-block-pool
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+spec:
+  # 复制配置
+  replicated:
+    # 副本数 (推荐3)
+    size: 3
+  # 压缩配置
+  compressionMode: none
+  # 参数
+  parameters:
+    min_size: 1
+    pg_autoscale_mode: on
+    target_size_ratio: 0.5
+
+# =============================================================================
+# 部署说明
+# =============================================================================
+# 1. 确保Operator已运行:
+#    kubectl -n rook-ceph get deployment rook-ceph-operator
+#
+# 2. 部署CephCluster:
+#    kubectl apply -f cluster.yaml
+#
+# 3. 等待集群就绪:
+#    kubectl -n rook-ceph wait --for=jsonpath='{.status.phase}'=Ready cephcluster/rook-ceph --timeout=600s
+#
+# 4. 验证:
+#    kubectl -n rook-ceph get pods
+#    kubectl -n rook-ceph ceph status
+# =============================================================================

@@ -1,0 +1,66 @@
+###############################################################################
+# Longhorn 备份 StorageClass 配置 - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: 定义Longhorn备份存储类，用于冷数据和归档场景
+# 前提: Longhorn已通过Helm部署
+# 部署: kubectl apply -f storageclass-backup.yaml
+# 验证: kubectl get storageclass longhorn-backup
+###############################################################################
+
+# =============================================================================
+# StorageClass - Longhorn 备份存储
+# 用途:
+#   - 冷数据存储
+#   - 备份数据
+#   - 归档数据
+# 性能: 低 (1副本, 无冗余)
+# 优势: 最小化存储开销
+# 风险: 无数据冗余, 单点故障
+# =============================================================================
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-backup
+  annotations:
+    # 不设置为默认StorageClass
+  labels:
+    app.kubernetes.io/name: longhorn-backup
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+    app.kubernetes.io/managed-by: 06-deploy-longhorn.sh
+provisioner: driver.longhorn.io
+parameters:
+  # 副本数量 (1副本，最低开销)
+  numberOfReplicas: "1"
+  # 本地性: 不限制
+  dataLocality: "disabled"
+  # 卷前端类型
+  fsType: ext4
+  # 快照超时
+  staleReplicaTimeout: "30"
+# 回收策略
+reclaimPolicy: Delete
+# 卷绑定模式
+volumeBindingMode: WaitForFirstConsumer
+# 允许卷扩展
+allowVolumeExpansion: true
+
+# =============================================================================
+# 使用示例
+# =============================================================================
+# 创建备份PVC:
+#
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: backup-data-pvc
+#   namespace: backup
+# spec:
+#   accessModes:
+#     - ReadWriteOnce
+#   resources:
+#     requests:
+#       storage: 100Gi
+#   storageClassName: longhorn-backup
+#
+# ⚠️ 注意: 单副本无冗余，建议配合外部备份策略使用
+# =============================================================================

@@ -1,0 +1,124 @@
+###############################################################################
+# Longhorn Helm Values 配置 - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: Longhorn Helm Chart自定义配置
+# 前提: Helm 3.x已安装，Kubernetes集群已就绪
+# 部署: helm install longhorn longhorn/longhorn -n longhorn-system -f values.yaml
+###############################################################################
+
+# =============================================================================
+# 默认设置
+# =============================================================================
+defaultSettings:
+  # 默认副本数 (建议: 生产环境3, 开发环境2)
+  defaultReplicaCount: 3
+  # 默认数据存储路径
+  defaultDataPath: /var/lib/longhorn
+  # 默认预留空间 (百分比)
+  defaultReservedReplicaPercentage: 0
+  # 升级策略: ordered (有序) 或 concurrent (并发)
+  upgradeChecker: true
+  # 默认创建卷时的大小限制 (0=不限制)
+  defaultDataLocality: disabled
+  # 自动卸载卷超时 (秒)
+  defaultUnreplicatedReplicaCount: 1
+
+# =============================================================================
+# 持久卷配置
+# =============================================================================
+persistence:
+  enabled: true
+  # 默认StorageClass
+  defaultClass: true
+  # 回收策略: Delete 或 Retain
+  reclaimPolicy: Delete
+  # 卷绑定模式: Immediate 或 WaitForFirstConsumer
+  volumeBindingMode: WaitForFirstConsumer
+  # 允许卷扩展
+  allowVolumeExpansion: true
+
+# =============================================================================
+# CSI配置
+# =============================================================================
+csi:
+  enabled: true
+  # kubernetesClusterDomain
+  kubernetesClusterDomain: cluster.local
+  # CSI Driver资源
+  driver:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  # CSI Provisioner资源
+  provisioner:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+# =============================================================================
+# Ingress配置 (Dashboard)
+# =============================================================================
+ingress:
+  enabled: true
+  ingressClassName: nginx
+  host: longhorn.dashboard.local
+  tls: false
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "900"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "900"
+  path: /
+  pathType: Prefix
+  # 多路径支持 (Dashboard + API)
+  paths:
+    - path: /
+      pathType: Prefix
+
+# =============================================================================
+# Manager配置
+# =============================================================================
+manager:
+  # Manager副本数 (通常1个即可)
+  replicas: 1
+  # 资源限制
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # 安全上下文
+  securityContext: {}
+  # 挂载host目录用于Manager数据
+  data:
+    path: /var/lib/longhorn/
+    # hostPath类型
+    type: DirectoryOrCreate
+
+# =============================================================================
+# 驱逐配置
+# =============================================================================
+# 驱逐设置 (节点维护时的行为)
+evictionRequestTaintToleration: false
+
+# =============================================================================
+# 删除策略
+# =============================================================================
+# 删除Longhorn时是否删除所有数据
+deleteNamespace: false
+
+# =============================================================================
+# 自动快照清理
+# =============================================================================
+# 自动清理已删除PVC的快照
+autoSnapshotCleanup: true

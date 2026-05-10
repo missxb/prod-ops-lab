@@ -1,0 +1,229 @@
+###############################################################################
+# Rook-Ceph Operator 配置 - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: 部署Rook-Ceph Operator，管理Ceph集群生命周期
+# 前提: Kubernetes集群已就绪，至少3个节点，kubectl可用
+# 部署: kubectl apply -f operator.yaml
+# 验证: kubectl get pods -n rook-ceph -l app=rook-ceph-operator
+###############################################################################
+
+# =============================================================================
+# Namespace - Rook-Ceph命名空间
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rook-ceph
+  labels:
+    app.kubernetes.io/name: rook-ceph
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+    app.kubernetes.io/managed-by: 04-deploy-rook-ceph.sh
+
+---
+# =============================================================================
+# CustomResourceDefinition - Rook所需的所有CRD
+# 说明: Rook通过CRD定义Ceph资源，Operator监听并管理
+# =============================================================================
+# 注意: CRD通过GitHub manifests安装，此处为Operator Deployment
+
+---
+# =============================================================================
+# ClusterRole - Rook-Ceph Operator集群权限
+# 权限说明:
+#   - 管理Ceph集群CR和相关资源
+#   - 管理存储卷、节点、Pod等
+#   - 跨命名空间管理资源
+# =============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rook-ceph-operator
+  labels:
+    app.kubernetes.io/name: rook-ceph-operator
+rules:
+  # 核心资源权限
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "secrets", "namespaces", "persistentvolumeclaims", "persistentvolumes", "nodes", "events", "endpoints"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # Apps资源权限
+  - apiGroups: ["apps"]
+    resources: ["deployments", "daemonsets", "statefulsets", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # Batch资源权限
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # RBAC权限
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings", "serviceaccounts"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # Storage权限
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses", "volumeattachments"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # CRD权限
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # Ceph CRD权限 (rook.io)
+  - apiGroups: ["rook.io"]
+    resources: ["cephclusters", "cephblockpools", "cephfilesystems", "cephobjectstores", "cephobjectstorepools", "cephfilesystemsubvolumegroups", "cephclients"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # Rook Ceph CRD权限
+  - apiGroups: ["ceph.rook.io"]
+    resources: ["cephclusters", "cephblockpools", "cephfilesystems", "cephobjectstores", "cephobjectstorepools", "cephfilesystemsubvolumegroups", "cephclients"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # Coordination权限 (Leader选举)
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # Network权限
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # Pod Security Policy
+  - apiGroups: ["policy"]
+    resources: ["podsecuritypolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+
+---
+# =============================================================================
+# ClusterRoleBinding - 绑定Operator集群权限
+# =============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rook-ceph-operator
+  labels:
+    app.kubernetes.io/name: rook-ceph-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rook-ceph-operator
+subjects:
+  - kind: ServiceAccount
+    name: rook-ceph-operator
+    namespace: rook-ceph
+
+---
+# =============================================================================
+# ServiceAccount - Operator服务账户
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rook-ceph-operator
+  namespace: rook-ceph
+  labels:
+    app.kubernetes.io/name: rook-ceph-operator
+
+---
+# =============================================================================
+# Deployment - Rook-Ceph Operator
+# 功能: 监听CephCluster CR，管理Ceph集群生命周期
+# 说明: Operator负责创建和管理所有Ceph组件
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rook-ceph-operator
+  namespace: rook-ceph
+  labels:
+    app.kubernetes.io/name: rook-ceph-operator
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+    app.kubernetes.io/managed-by: 04-deploy-rook-ceph.sh
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rook-ceph-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rook-ceph-operator
+        app.kubernetes.io/component: operator
+    spec:
+      serviceAccountName: rook-ceph-operator
+      # 安全上下文
+      securityContext:
+        runAsUser: 0
+        fsGroup: 0
+      # 容忍度 - 允许调度到所有节点 (包括master)
+      tolerations:
+        - key: node-role.kubernetes.io/master
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/control-plane
+          effect: NoSchedule
+      containers:
+        - name: rook-ceph-operator
+          # Rook-Ceph Operator镜像
+          # 文档: https://rook.io/docs/rook/v1.14/
+          image: rook/ceph:v1.14.10
+          command: ["rook", "ceph", "operator"]
+          imagePullPolicy: IfNotPresent
+          env:
+            # 启用Ceph Dashboard
+            - name: ROOK_CEPH_CLUSTER_CRD
+              value: "true"
+            # 日志级别
+            - name: ROOK_LOG_LEVEL
+              value: "INFO"
+            # 健康检查间隔
+            - name: ROOK_CEPH_HEALTH_CHECK_INTERVAL
+              value: "60s"
+            # 资源限制
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            # 运行时配置
+            - name: default-config-dir
+              mountPath: /etc/rook
+      volumes:
+        - name: default-config-dir
+          emptyDir: {}
+---
+# =============================================================================
+# Service - Operator Metrics端点 (可选)
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: rook-ceph-operator-metrics
+  namespace: rook-ceph
+  labels:
+    app.kubernetes.io/name: rook-ceph-operator
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+spec:
+  ports:
+    - name: http-metrics
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: rook-ceph-operator
+
+# =============================================================================
+# 部署前说明
+# =============================================================================
+# 1. 确保CRD已安装:
+#    kubectl apply -f https://raw.githubusercontent.com/rook/rook/v1.14.10/deploy/examples/crds.yaml
+#
+# 2. 部署Operator:
+#    kubectl apply -f operator.yaml
+#
+# 3. 等待Operator就绪:
+#    kubectl -n rook-ceph rollout status deployment/rook-ceph-operator
+#
+# 4. 创建CephCluster:
+#    kubectl apply -f cluster.yaml
+# =============================================================================

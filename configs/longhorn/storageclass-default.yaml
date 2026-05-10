@@ -1,0 +1,95 @@
+###############################################################################
+# Longhorn 默认 StorageClass 配置 - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: 定义Longhorn默认存储类，用于通用读写场景
+# 前提: Longhorn已通过Helm部署
+# 部署: kubectl apply -f storageclass-default.yaml
+# 验证: kubectl get storageclass longhorn
+###############################################################################
+
+# =============================================================================
+# StorageClass - Longhorn 默认存储
+# 用途:
+#   - 通用有状态应用存储
+#   - 数据库存储 (MySQL, PostgreSQL)
+#   - 消息队列 (Kafka, RabbitMQ)
+# 性能: 中等 (分布式复制)
+# 优势: 数据3副本冗余, 支持在线扩容
+# =============================================================================
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn
+  annotations:
+    # 设置为默认StorageClass
+    storageclass.kubernetes.io/is-default-class: "true"
+  labels:
+    app.kubernetes.io/name: longhorn
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+    app.kubernetes.io/managed-by: 06-deploy-longhorn.sh
+# 驱动名称 (由Longhorn CSI提供)
+provisioner: driver.longhorn.io
+parameters:
+  # 副本数量 (数据冗余)
+  numberOfReplicas: "3"
+  # 卷数据本地性 (disabled=不限制, best-effort=尽量本地, required=必须本地)
+  dataLocality: "disabled"
+  # 存储预留 (百分比)
+  staleReplicaTimeout: "30"
+  # 卷前端类型: blockdev 或 filesystem
+  fsType: ext4
+  # 从快照创建时的快照名称
+  fromBackup: ""
+# 回收策略
+reclaimPolicy: Delete
+# 卷绑定模式 (等待Pod调度)
+volumeBindingMode: WaitForFirstConsumer
+# 允许卷扩展
+allowVolumeExpansion: true
+
+---
+# =============================================================================
+# StorageClass - Longhorn 保留策略
+# 用途: 需要保留数据的场景
+# =============================================================================
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: longhorn-retained
+  labels:
+    app.kubernetes.io/name: longhorn-retained
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+    app.kubernetes.io/managed-by: 06-deploy-longhorn.sh
+provisioner: driver.longhorn.io
+parameters:
+  numberOfReplicas: "3"
+  dataLocality: "disabled"
+  staleReplicaTimeout: "30"
+  fsType: ext4
+# 回收策略: 保留
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+
+# =============================================================================
+# 使用示例
+# =============================================================================
+# 创建PVC:
+#
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: mysql-data-pvc
+#   namespace: databases
+# spec:
+#   accessModes:
+#     - ReadWriteOnce
+#   resources:
+#     requests:
+#       storage: 50Gi
+#   storageClassName: longhorn
+#
+# 查看卷状态:
+#   kubectl get pvc -n databases
+#   kubectl get volumes.longhorn.io -n longhorn-system
+# =============================================================================

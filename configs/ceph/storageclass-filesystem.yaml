@@ -1,0 +1,95 @@
+###############################################################################
+# CephFS StorageClass 配置 - 企业级云原生运维平台
+# 项目: 企业级云原生运维平台
+# 功能: 定义CephFS文件存储类，用于多节点共享读写场景
+# 前提: CephCluster已部署，CephFilesystem(myfs)已创建
+# 部署: kubectl apply -f storageclass-filesystem.yaml
+# 验证: kubectl get storageclass ceph-filesystem
+###############################################################################
+
+# =============================================================================
+# StorageClass - CephFS 文件存储
+# 用途:
+#   - 共享配置存储
+#   - 日志聚合存储
+#   - 静态资源存储
+#   - 多Pod共享数据
+# 性能: 中等 (分布式文件系统)
+# 优势: 支持ReadWriteMany (多节点同时读写)
+# =============================================================================
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ceph-filesystem
+  annotations:
+    # 不设置为默认存储类
+    # storageclass.kubernetes.io/is-default-class: "true"
+  labels:
+    app.kubernetes.io/name: ceph-filesystem
+    app.kubernetes.io/part-of: enterprise-cloud-native-platform
+    app.kubernetes.io/managed-by: 04-deploy-rook-ceph.sh
+# CSI驱动名称 (由Rook-Ceph Operator部署)
+provisioner: rook-ceph.cephfs.csi.ceph.com
+parameters:
+  # Ceph集群ID
+  clusterID: rook-ceph
+  # CephFS文件系统名称 (对应CephFilesystem)
+  fsName: myfs
+  # CephFS数据池
+  pool: myfs-data0
+  # CSI密钥配置 (用于认证)
+  csi.storage.k8s.io/provisioner-secret-name: rook-ceph-csi
+  csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
+  csi.storage.k8s.io/node-stage-secret-name: rook-ceph-csi
+  csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
+# 回收策略
+reclaimPolicy: Delete
+# 允许卷扩展
+allowVolumeExpansion: true
+# 卷绑定模式
+volumeBindingMode: WaitForFirstConsumer
+# 挂载选项
+mountOptions:
+  - noatime
+  - nodiratime
+
+# =============================================================================
+# 使用示例
+# =============================================================================
+# 创建PVC (支持多Pod同时挂载):
+#
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: shared-data-pvc
+#   namespace: default
+# spec:
+#   accessModes:
+#     - ReadWriteMany  # 多节点同时读写
+#   resources:
+#     requests:
+#       storage: 10Gi
+#   storageClassName: ceph-filesystem
+#
+# 创建Pod挂载共享存储:
+#
+# apiVersion: v1
+# kind: Pod
+# metadata:
+#   name: shared-app
+#   namespace: default
+# spec:
+#   containers:
+#     - name: app
+#       image: nginx:latest
+#       volumeMounts:
+#         - name: shared-volume
+#           mountPath: /usr/share/nginx/html
+#   volumes:
+#     - name: shared-volume
+#       persistentVolumeClaim:
+#         claimName: shared-data-pvc
+#
+# 多Pod可以同时挂载同一个PVC:
+#   kubectl scale deployment app --replicas=3
+# =============================================================================

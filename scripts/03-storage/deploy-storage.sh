@@ -1,28 +1,43 @@
 #!/usr/bin/env bash
 ###############################################################################
 # 脚本名称: deploy-storage.sh
-# 功能描述: 阶段3存储层配置主部署脚本，协调NFS动态供给、StorageClass、功能验证
-# 适用系统: 需要kubectl可访问集群, NFS服务器已配置
-# 依赖条件: kubectl可用, NFS服务器已配置并导出, 阶段2集群已部署
+# 功能描述: 阶段3存储层配置主部署脚本，协调NFS/Ceph/Longhorn动态供给、StorageClass、功能验证
+# 适用系统: 需要kubectl可访问集群, 对应存储后端已配置
+# 依赖条件: kubectl可用, 阶段2集群已部署
 # 作者: 运维平台团队
 # 版本: 1.1.0
 # 创建日期: 2026-05-09
-# 更新日期: 2026-05-09
+# 更新日期: 2026-05-10
 #
 # 使用方法:
-#   ./deploy-storage.sh -s 192.168.1.100 -p /exports
+#   ./deploy-storage.sh -s 192.168.1.100 -p /exports           # NFS (默认)
+#   ./deploy-storage.sh --storage-type ceph deploy              # Rook-Ceph
+#   ./deploy-storage.sh --storage-type longhorn deploy          # Longhorn
+#   ./deploy-storage.sh --storage-type ceph verify              # 验证Ceph
+#   ./deploy-storage.sh --storage-type longhorn verify          # 验证Longhorn
 #   NFS_SERVER=10.0.0.5 ./deploy-storage.sh
 #   ./deploy-storage.sh -s 10.0.0.5 --skip-verify
 #
 # 环境变量:
-#   NFS_SERVER      - NFS服务器IP地址 (必填)
+#   STORAGE_TYPE    - 存储类型: nfs, ceph, longhorn (默认: nfs)
+#   NFS_SERVER      - NFS服务器IP地址 (NFS模式必填)
 #   NFS_PATH        - NFS导出路径 (默认: /exports)
 #   SKIP_VERIFY     - 跳过验证步骤 (默认: false)
 #
-# 部署步骤:
+# 部署步骤 (NFS):
 #   1. 部署NFS动态供给器 (nfs-subdir-external-provisioner)
 #   2. 创建StorageClass配置
 #   3. 验证存储功能
+#
+# 部署步骤 (Ceph):
+#   1. 部署Rook-Ceph Operator和CephCluster
+#   2. 创建Ceph StorageClass (block + filesystem)
+#   3. 验证Ceph存储功能
+#
+# 部署步骤 (Longhorn):
+#   1. 部署Longhorn (Helm)
+#   2. 创建Longhorn StorageClass
+#   3. 验证Longhorn存储功能
 ###############################################################################
 set -euo pipefail
 umask 077
@@ -39,6 +54,7 @@ DEPLOY_START=$(date +%s)
 NFS_SERVER="${NFS_SERVER:-}"
 NFS_PATH="${NFS_PATH:-/exports}"
 SKIP_VERIFY="${SKIP_VERIFY:-false}"
+STORAGE_TYPE="${STORAGE_TYPE:-nfs}"
 
 # ========================= 颜色定义 =========================
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -111,23 +127,37 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
-部署阶段3存储层：NFS动态供给、StorageClass、功能验证。
+部署阶段3存储层：NFS/Ceph/Longhorn动态供给、StorageClass、功能验证。
 
 OPTIONS:
-    -s, --server <IP>     NFS服务器地址 (必填)
-    -p, --path <path>     NFS导出路径 (默认: /exports)
-    --skip-verify         跳过验证步骤
-    -h, --help            显示帮助
+    -s, --server <IP>          NFS服务器地址 (NFS模式必填)
+    -p, --path <path>          NFS导出路径 (默认: /exports)
+    -t, --storage-type <type>  存储类型: nfs, ceph, longhorn (默认: nfs)
+    --skip-verify              跳过验证步骤
+    -h, --help                 显示帮助
 
 ENVIRONMENT VARIABLES:
-    NFS_SERVER            NFS服务器地址
-    NFS_PATH              NFS导出路径
-    SKIP_VERIFY=true      跳过验证
+    STORAGE_TYPE            存储类型: nfs, ceph, longhorn
+    NFS_SERVER              NFS服务器地址 (NFS模式)
+    NFS_PATH                NFS导出路径
+    SKIP_VERIFY=true        跳过验证
 
 EXAMPLES:
+    # NFS (默认)
     $(basename "$0") -s 192.168.1.100 -p /exports
     NFS_SERVER=10.0.0.5 SKIP_VERIFY=true $(basename "$0")
-    $(basename "$0") -s 10.0.0.5 -p /exports/shared
+
+    # Rook-Ceph
+    $(basename "$0") -t ceph deploy
+    $(basename "$0") -t ceph verify
+    $(basename "$0") -t ceph status
+    $(basename "$0") -t ceph delete
+
+    # Longhorn
+    $(basename "$0") -t longhorn deploy
+    $(basename "$0") -t longhorn verify
+    $(basename "$0") -t longhorn status
+    $(basename "$0") -t longhorn delete
 EOF
 }
 
@@ -176,51 +206,102 @@ main() {
     # 解析命令行参数
     while [[ $# -gt 0 ]]; do
         case $1 in
-            -s|--server)      NFS_SERVER="$2"; shift 2 ;;
-            -p|--path)        NFS_PATH="$2"; shift 2 ;;
-            --skip-verify)    SKIP_VERIFY=true; shift ;;
-            -h|--help)        usage; exit 0 ;;
-            *)                log_error "未知参数: $1"; usage; exit 1 ;;
+            -s|--server)       NFS_SERVER="$2"; shift 2 ;;
+            -p|--path)         NFS_PATH="$2"; shift 2 ;;
+            -t|--storage-type) STORAGE_TYPE="$2"; shift 2 ;;
+            --skip-verify)     SKIP_VERIFY=true; shift ;;
+            -h|--help)         usage; exit 0 ;;
+            *)                 log_error "未知参数: $1"; usage; exit 1 ;;
         esac
     done
 
-    # 验证必填参数
-    if [[ -z "${NFS_SERVER}" ]]; then
-        log_error "NFS服务器地址未指定 (-s / NFS_SERVER)"
-        usage
-        exit 1
+    # 验证存储类型
+    case "${STORAGE_TYPE}" in
+        nfs|ceph|longhorn)
+            ;;
+        *)
+            log_error "不支持的存储类型: ${STORAGE_TYPE}"
+            log_error "支持的类型: nfs, ceph, longhorn"
+            usage
+            exit 1
+            ;;
+    esac
+
+    # NFS模式需要验证必填参数
+    if [[ "${STORAGE_TYPE}" == "nfs" ]]; then
+        if [[ -z "${NFS_SERVER}" ]]; then
+            log_error "NFS服务器地址未指定 (-s / NFS_SERVER)"
+            usage
+            exit 1
+        fi
     fi
 
     banner
-    log_info "NFS服务器: ${NFS_SERVER}"
-    log_info "NFS路径:   ${NFS_PATH}"
+    log_info "存储类型: ${STORAGE_TYPE}"
+    log_info "NFS服务器: ${NFS_SERVER:-N/A}"
+    log_info "NFS路径:   ${NFS_PATH:-N/A}"
     log_info "跳过验证:  ${SKIP_VERIFY}"
 
     # 前置检查
     preflight_check
 
-    # 步骤1: 部署NFS动态供给器
-    log_step "步骤1/3: 部署NFS动态供给器"
-    bash "${SCRIPT_DIR}/01-nfs-provisioner.sh" \
-        --server "${NFS_SERVER}" \
-        --path "${NFS_PATH}" 2>&1 | tee -a "$LOG_FILE"
-    log_success "步骤1完成 ✓"
+    case "${STORAGE_TYPE}" in
+        nfs)
+            # NFS部署流程 (保持原有逻辑)
+            # 步骤1: 部署NFS动态供给器
+            log_step "步骤1/3: 部署NFS动态供给器"
+            bash "${SCRIPT_DIR}/01-nfs-provisioner.sh" \
+                --server "${NFS_SERVER}" \
+                --path "${NFS_PATH}" 2>&1 | tee -a "$LOG_FILE"
+            log_success "步骤1完成 ✓"
 
-    # 步骤2: 创建StorageClass
-    log_step "步骤2/3: 创建StorageClass"
-    bash "${SCRIPT_DIR}/02-storageclass.sh" 2>&1 | tee -a "$LOG_FILE"
-    log_success "步骤2完成 ✓"
+            # 步骤2: 创建StorageClass
+            log_step "步骤2/3: 创建StorageClass"
+            bash "${SCRIPT_DIR}/02-storageclass.sh" 2>&1 | tee -a "$LOG_FILE"
+            log_success "步骤2完成 ✓"
 
-    # 步骤3: 验证 (可选)
-    if [[ "${SKIP_VERIFY}" != "true" ]]; then
-        log_step "步骤3/3: 存储功能验证"
-        bash "${SCRIPT_DIR}/03-verify-storage.sh" 2>&1 | tee -a "$LOG_FILE"
-        log_success "步骤3完成 ✓"
-    else
-        log_warn "步骤3已跳过 (--skip-verify)"
-    fi
+            # 步骤3: 验证 (可选)
+            if [[ "${SKIP_VERIFY}" != "true" ]]; then
+                log_step "步骤3/3: 存储功能验证"
+                bash "${SCRIPT_DIR}/03-verify-storage.sh" 2>&1 | tee -a "$LOG_FILE"
+                log_success "步骤3完成 ✓"
+            else
+                log_warn "步骤3已跳过 (--skip-verify)"
+            fi
+            ;;
 
-    log_success "阶段3存储层部署完成"
+        ceph)
+            # Rook-Ceph部署流程
+            log_step "Rook-Ceph 存储部署"
+            bash "${SCRIPT_DIR}/04-deploy-rook-ceph.sh" deploy 2>&1 | tee -a "$LOG_FILE"
+            log_success "Rook-Ceph部署完成 ✓"
+
+            if [[ "${SKIP_VERIFY}" != "true" ]]; then
+                log_step "Rook-Ceph 存储验证"
+                bash "${SCRIPT_DIR}/05-verify-ceph.sh" 2>&1 | tee -a "$LOG_FILE"
+                log_success "Rook-Ceph验证完成 ✓"
+            else
+                log_warn "Ceph验证已跳过 (--skip-verify)"
+            fi
+            ;;
+
+        longhorn)
+            # Longhorn部署流程
+            log_step "Longhorn 分布式存储部署"
+            bash "${SCRIPT_DIR}/06-deploy-longhorn.sh" deploy 2>&1 | tee -a "$LOG_FILE"
+            log_success "Longhorn部署完成 ✓"
+
+            if [[ "${SKIP_VERIFY}" != "true" ]]; then
+                log_step "Longhorn 存储验证"
+                bash "${SCRIPT_DIR}/07-verify-longhorn.sh" 2>&1 | tee -a "$LOG_FILE"
+                log_success "Longhorn验证完成 ✓"
+            else
+                log_warn "Longhorn验证已跳过 (--skip-verify)"
+            fi
+            ;;
+    esac
+
+    log_success "阶段3存储层部署完成 (${STORAGE_TYPE})"
 }
 
 main "$@"
