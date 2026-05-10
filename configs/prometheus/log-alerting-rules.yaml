@@ -1,0 +1,224 @@
+###############################################################################
+# 日志告警规则配置
+# 项目: 企业级云原生运维平台
+# 阶段: 07 - 日志系统
+# 用途: Prometheus告警规则，监控EFK日志栈健康状态
+# 版本: 1.1.0
+# 作者: 运维平台团队
+###############################################################################
+
+groups:
+  # ==================== 日志告警规则组 ====================
+  - name: log-alerting
+    rules:
+      # ==================== Fluentd告警 ====================
+
+      # 日志量异常增高
+      - alert: HighLogVolume
+        expr: rate(fluentd_output_status_num_records_total[5m]) > 10000
+        for: 5m
+        labels:
+          severity: warning
+          team: operations
+        annotations:
+          summary: "日志量异常增高"
+          description: "过去5分钟日志速率超过10000条/秒，可能存在日志风暴或异常事件"
+          runbook: "检查应用日志，确认是否有异常循环或错误日志输出"
+
+      # Fluentd输出错误
+      - alert: FluentdErrors
+        expr: rate(fluentd_output_status_num_errors_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+          team: operations
+        annotations:
+          summary: "Fluentd输出错误"
+          description: "Fluentd在过去2分钟内有输出错误，日志可能丢失"
+          runbook: "检查Fluentd配置和目标服务（ES/Kafka）连通性"
+
+      # Fluentd缓冲区使用率过高
+      - alert: FluentdBufferHighUsage
+        expr: fluentd_output_status_buffer_stage_length / fluentd_output_status_buffer_total_limit_length > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          team: operations
+        annotations:
+          summary: "Fluentd缓冲区使用率过高"
+          description: "Fluentd缓冲区使用率超过80%，可能导致日志丢失"
+          runbook: "检查下游服务（ES）处理能力，考虑增加缓冲区大小"
+
+      # Fluentd重试次数过多
+      - alert: FluentdRetryExcessive
+        expr: rate(fluentd_output_status_retry_count[5m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          team: operations
+        annotations:
+          summary: "Fluentd重试次数过多"
+          description: "Fluentd在过去5分钟内重试次数超过5次/秒"
+          runbook: "检查目标服务健康状态和网络连通性"
+
+      # ==================== Elasticsearch告警 ====================
+
+      # ES集群状态为RED
+      - alert: ElasticsearchClusterRed
+        expr: elasticsearch_cluster_health_status{color="red"} == 1
+        for: 1m
+        labels:
+          severity: critical
+          team: operations
+        annotations:
+          summary: "ES集群状态为RED"
+          description: "Elasticsearch集群状态变为RED，存在未分配分片，部分数据不可用"
+          runbook: "立即检查ES节点状态，查看未分配分片原因"
+
+      # ES集群状态为YELLOW
+      - alert: ElasticsearchClusterYellow
+        expr: elasticsearch_cluster_health_status{color="yellow"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          team: operations
+        annotations:
+          summary: "ES集群状态为YELLOW"
+          description: "Elasticsearch集群状态持续YELLOW超过5分钟，存在未分配副本分片"
+          runbook: "检查副本分片分配情况，确认节点磁盘空间"
+
+      # ES磁盘使用率超过85%
+      - alert: ElasticsearchHighDiskUsage
+        expr: elasticsearch_filesystem_data_used_percent > 85
+        for: 10m
+        labels:
+          severity: warning
+          team: operations
+        annotations:
+          summary: "ES磁盘使用率超过85%"
+          description: "ES节点{{ $labels.instance }}磁盘使用率{{ $value }}%，接近水位线"
+          runbook: "清理旧索引，调整ILM策略，考虑扩容存储"
+
+      # ES磁盘使用率超过95%（紧急）
+      - alert: ElasticsearchCriticalDiskUsage
+        expr: elasticsearch_filesystem_data_used_percent > 95
+        for: 5m
+        labels:
+          severity: critical
+          team: operations
+        annotations:
+          summary: "ES磁盘使用率超过95%"
+          description: "ES节点{{ $labels.instance }}磁盘使用率{{ $value }}%，即将触发只读模式"
+          runbook: "紧急清理磁盘空间，删除旧索引数据"
+
+      # ES JVM堆内存使用超过80%
+      - alert: ElasticsearchHighHeapUsage
+        expr: elasticsearch_jvm_mem_heap_used_percent > 80
+        for: 5m
+        labels:
+          severity: warning
+          team: operations
+        annotations:
+          summary: "ES JVM堆内存使用超过80%"
+          description: "ES节点{{ $labels.instance }}JVM堆使用率{{ $value }}%"
+          runbook: "检查慢查询，调整JVM堆大小，优化索引映射"
+
+      # ES JVM堆内存使用超过95%（紧急）
+      - alert: ElasticsearchCriticalHeapUsage
+        expr: elasticsearch_jvm_mem_heap_used_percent > 95
+        for: 2m
+        labels:
+          severity: critical
+          team: operations
+        annotations:
+          summary: "ES JVM堆内存使用超过95%"
+          description: "ES节点{{ $labels.instance }}JVM堆使用率{{ $value }}%，即将OOM"
+          runbook: "立即重启ES节点，检查内存泄漏"
+
+      # ES主分片未分配
+      - alert: ElasticsearchUnassignedShards
+        expr: elasticsearch_cluster_health_unassigned_shards > 0
+        for: 10m
+        labels:
+          severity: warning
+          team: operations
+        annotations:
+          summary: "ES存在未分配分片"
+          description: "ES集群存在{{ $value }}个未分配分片"
+          runbook: "检查节点状态和磁盘水位线设置"
+
+      # ES节点离线
+      - alert: ElasticsearchNodeDown
+        expr: elasticsearch_cluster_health_number_of_nodes < 3
+        for: 2m
+        labels:
+          severity: critical
+          team: operations
+        annotations:
+          summary: "ES节点数量不足"
+          description: "ES集群节点数量降至{{ $value }}，低于最低要求"
+          runbook: "检查离线节点，确认网络和磁盘状态"
+
+      # ==================== Kibana告警 ====================
+
+      # Kibana服务不可用
+      - alert: KibanaDown
+        expr: up{job="kibana"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: operations
+        annotations:
+          summary: "Kibana服务不可用"
+          description: "Kibana服务已宕机，无法访问日志查询界面"
+          runbook: "检查Kibana容器状态和ES连接"
+
+      # Kibana响应时间过长
+      - alert: KibanaHighResponseTime
+        expr: http_request_duration_seconds{job="kibana"} > 5
+        for: 5m
+        labels:
+          severity: warning
+          team: operations
+        annotations:
+          summary: "Kibana响应时间过长"
+          description: "Kibana平均响应时间超过5秒"
+          runbook: "检查ES集群性能，优化Kibana查询"
+
+      # ==================== 日志内容告警 ====================
+
+      # 容器错误日志速率过高
+      - alert: HighErrorLogRate
+        expr: rate(container_logs_errors_total[5m]) > 100
+        for: 5m
+        labels:
+          severity: warning
+          team: development
+        annotations:
+          summary: "容器错误日志速率过高"
+          description: "过去5分钟错误日志速率超过100条/秒"
+          runbook: "检查应用日志，排查错误原因"
+
+      # OOM Kill日志检测
+      - alert: OOMKillDetected
+        expr: increase(container_logs_errors_total{container="OOMKilled"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          team: development
+        annotations:
+          summary: "检测到OOM Kill事件"
+          description: "过去5分钟内检测到OOM Kill事件"
+          runbook: "检查容器内存限制和应用内存使用"
+
+      # 容器重启日志检测
+      - alert: ContainerRestartDetected
+        expr: increase(kube_pod_container_status_restarts_total[1h]) > 3
+        for: 0m
+        labels:
+          severity: warning
+          team: development
+        annotations:
+          summary: "容器频繁重启"
+          description: "容器{{ $labels.pod }}在过去1小时内重启超过3次"
+          runbook: "检查容器日志，排查重启原因"

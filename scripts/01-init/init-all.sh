@@ -25,6 +25,8 @@
 #   4. 内核参数优化 (04-kernel.sh)
 #   5. Docker/containerd安装 (05-docker.sh)
 #   6. NFS服务端配置 (06-nfs.sh)
+#   7. 系统时区设置 (07-timezone.sh)
+#   8. 防火墙配置 (08-firewall.sh)
 #
 # 特性:
 #   - 支持选择性执行 (指定/跳过任务)
@@ -42,6 +44,8 @@
 #   4 - 内核参数优化
 #   5 - Docker/containerd安装
 #   6 - NFS服务端配置
+#   7 - 系统时区设置
+#   8 - 防火墙配置
 ###############################################################################
 set -euo pipefail
 umask 077
@@ -62,6 +66,8 @@ declare -A TASKS=(
     [4]="04-kernel.sh"
     [5]="05-docker.sh"
     [6]="06-nfs.sh"
+    [7]="07-timezone.sh"
+    [8]="08-firewall.sh"
 )
 
 declare -A TASK_DESC=(
@@ -71,10 +77,12 @@ declare -A TASK_DESC=(
     [4]="内核参数优化"
     [5]="Docker/containerd安装"
     [6]="NFS服务端配置"
+    [7]="系统时区设置"
+    [8]="防火墙配置"
 )
 
 # 默认执行所有任务
-EXECUTE_TASKS="1,2,3,4,5,6"
+EXECUTE_TASKS="1,2,3,4,5,6,7,8"
 SKIP_TASKS=""
 DRY_RUN=false
 VERBOSE=false

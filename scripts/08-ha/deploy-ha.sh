@@ -74,6 +74,8 @@ usage() {
   nginx        仅部署Nginx负载均衡
   mysql        仅部署MySQL高可用
   redis        仅部署Redis Sentinel
+  postgresql   仅部署PostgreSQL高可用
+  consistency  仅运行数据一致性验证
   test         仅运行故障转移测试
   status       查看各组件运行状态
   help         显示此帮助信息
@@ -81,6 +83,8 @@ usage() {
 示例:
   $(basename "$0") deploy        # 一键部署全部HA组件
   $(basename "$0") keepalived    # 仅部署Keepalived VIP漂移
+  $(basename "$0") postgresql    # 仅部署PostgreSQL高可用
+  $(basename "$0") consistency   # 仅运行数据一致性验证
   $(basename "$0") status       # 查看各组件运行状态
 
 环境变量:
@@ -118,7 +122,7 @@ init() {
 # 参数: 无
 # 返回: 无（不可用条件则exit 1）
 check_environment() {
-    log_step "[1/7] 检查运行环境..."
+    log_step "[1/8] 检查运行环境..."
 
     # 检查网络连通性
     if ! ping -c 1 -W 2 8.8.8.8 &>/dev/null; then
@@ -158,7 +162,7 @@ check_environment() {
 # 功能: 调用Keepalived部署脚本，实现VIP漂移
 # 日志: 输出到 $LOG_DIR/keepalived_$TIMESTAMP.log
 deploy_keepalived() {
-    log_step "[2/7] 部署Keepalived (VIP漂移)..."
+    log_step "[2/8] 部署Keepalived (VIP漂移)..."
     bash "$SCRIPT_DIR/01-deploy-keepalived.sh" 2>&1 | tee -a "$LOG_DIR/keepalived_${TIMESTAMP}.log"
     log_success "Keepalived部署完成"
 }
@@ -168,7 +172,7 @@ deploy_keepalived() {
 # 功能: 调用Nginx LB部署脚本，实现7层负载均衡
 # 日志: 输出到 $LOG_DIR/nginx-lb_$TIMESTAMP.log
 deploy_nginx_lb() {
-    log_step "[3/7] 部署Nginx负载均衡..."
+    log_step "[3/8] 部署Nginx负载均衡..."
     bash "$SCRIPT_DIR/02-deploy-nginx-lb.sh" 2>&1 | tee -a "$LOG_DIR/nginx-lb_${TIMESTAMP}.log"
     log_success "Nginx负载均衡部署完成"
 }
@@ -178,7 +182,7 @@ deploy_nginx_lb() {
 # 功能: 调用MySQL高可用部署脚本，实现主从复制
 # 日志: 输出到 $LOG_DIR/mysql-ha_$TIMESTAMP.log
 deploy_mysql_ha() {
-    log_step "[4/7] 部署MySQL高可用 (主从复制)..."
+    log_step "[4/8] 部署MySQL高可用 (主从复制)..."
     bash "$SCRIPT_DIR/03-deploy-mysql-ha.sh" 2>&1 | tee -a "$LOG_DIR/mysql-ha_${TIMESTAMP}.log"
     log_success "MySQL高可用部署完成"
 }
@@ -188,9 +192,23 @@ deploy_mysql_ha() {
 # 功能: 调用Redis Sentinel部署脚本，实现自动故障转移
 # 日志: 输出到 $LOG_DIR/redis-sentinel_$TIMESTAMP.log
 deploy_redis_sentinel() {
-    log_step "[5/7] 部署Redis Sentinel..."
+    log_step "[5/8] 部署Redis Sentinel..."
     bash "$SCRIPT_DIR/04-deploy-redis-sentinel.sh" 2>&1 | tee -a "$LOG_DIR/redis-sentinel_${TIMESTAMP}.log"
     log_success "Redis Sentinel部署完成"
+}
+
+# ==================== 部署PostgreSQL高可用 ====================
+deploy_postgresql_ha() {
+    log_step "[6/8] 部署PostgreSQL高可用 (主从复制)..."
+    bash "$SCRIPT_DIR/06-deploy-postgresql-ha.sh" 2>&1 | tee -a "$LOG_DIR/postgresql-ha_${TIMESTAMP}.log"
+    log_success "PostgreSQL高可用部署完成"
+}
+
+# ==================== 验证数据一致性 ====================
+verify_data_consistency() {
+    log_step "[7/8] 验证数据一致性..."
+    bash "$SCRIPT_DIR/07-verify-data-consistency.sh" 2>&1 | tee -a "$LOG_DIR/data-consistency_${TIMESTAMP}.log"
+    log_success "数据一致性验证完成"
 }
 
 # ==================== 运行故障转移测试 ====================
@@ -198,7 +216,7 @@ deploy_redis_sentinel() {
 # 功能: 验证各组件故障转移能力
 # 注意: 生产环境建议设置 SKIP_FAILOVER_TEST=true
 run_failover_test() {
-    log_step "[6/7] 运行故障转移测试..."
+    log_step "[8/8] 运行故障转移测试..."
     bash "$SCRIPT_DIR/05-test-failover.sh" 2>&1 | tee -a "$LOG_DIR/failover-test_${TIMESTAMP}.log"
     log_success "故障转移测试完成"
 }
@@ -269,6 +287,8 @@ main() {
             deploy_nginx_lb
             deploy_mysql_ha
             deploy_redis_sentinel
+            deploy_postgresql_ha
+            verify_data_consistency
             run_failover_test
             generate_report
             ;;
@@ -288,6 +308,14 @@ main() {
             init
             deploy_redis_sentinel
             ;;
+        postgresql)
+            init
+            deploy_postgresql_ha
+            ;;
+        consistency)
+            init
+            verify_data_consistency
+            ;;
         test)
             init
             run_failover_test
@@ -296,7 +324,7 @@ main() {
             show_status
             ;;
         *)
-            echo "用法: $0 {deploy|keepalived|nginx|mysql|redis|test|status}"
+            echo "用法: $0 {deploy|keepalived|nginx|mysql|redis|postgresql|consistency|test|status}"
             exit 1
             ;;
     esac

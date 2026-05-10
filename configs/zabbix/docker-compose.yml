@@ -1,0 +1,65 @@
+version: '3.8'
+services:
+  mysql-server:
+    image: mysql:8.0
+    container_name: zabbix-mysql
+    restart: always
+    environment:
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: zabbix_password_2026
+      MYSQL_ROOT_PASSWORD: root_password_2026
+    volumes:
+      - zabbix-mysql-data:/var/lib/mysql
+    networks:
+      - zabbix-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zabbix-server:
+    image: zabbix/zabbix-server-mysql:7.0-latest
+    container_name: zabbix-server
+    restart: always
+    environment:
+      DB_SERVER_HOST: mysql-server
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: zabbix_password_2026
+      ZBX_CACHESIZE: 512M
+      ZBX_HISTORYCACHESIZE: 256M
+    ports:
+      - "10051:10051"
+    depends_on:
+      mysql-server:
+        condition: service_healthy
+    networks:
+      - zabbix-net
+
+  zabbix-web:
+    image: zabbix/zabbix-web-nginx-mysql:7.0-latest
+    container_name: zabbix-web
+    restart: always
+    environment:
+      DB_SERVER_HOST: mysql-server
+      MYSQL_DATABASE: zabbix
+      MYSQL_USER: zabbix
+      MYSQL_PASSWORD: zabbix_password_2026
+      ZBX_SERVER_HOST: zabbix-server
+      PHP_TZ: Asia/Shanghai
+    ports:
+      - "8080:8080"
+    depends_on:
+      zabbix-server:
+        condition: service_started
+    networks:
+      - zabbix-net
+
+networks:
+  zabbix-net:
+    driver: bridge
+
+volumes:
+  zabbix-mysql-data:

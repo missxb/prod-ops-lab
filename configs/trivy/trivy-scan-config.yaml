@@ -1,0 +1,273 @@
+###############################################################################
+# Trivy 扫描配置
+# 项目: 企业级云原生运维平台
+# 功能: 定义Trivy扫描策略和规则
+###############################################################################
+
+# ==================== 全局扫描配置 ====================
+# 扫描模式
+scan:
+  # 漏洞扫描
+  vulnerability:
+    enabled: true
+    # 严重级别过滤
+    severity:
+      - CRITICAL
+      - HIGH
+      - MEDIUM
+      - LOW
+    # 忽略的漏洞ID
+    ignore-unfixed: false
+    # 跳过的漏洞
+    skip-dirs:
+      - vendor
+      - node_modules
+      - .git
+
+  # 配置扫描
+  config:
+    enabled: true
+    # 配置文件类型
+    types:
+      - dockerfile
+      - terraform
+      - kubernetes
+      - cloudformation
+
+  # 密钥扫描
+  secret:
+    enabled: true
+    # 密钥类型
+    types:
+      - aws-access-key
+      - aws-secret-access-key
+      - private-key
+      - api-key
+
+  # SBOM扫描
+  sbom:
+    enabled: false
+
+# ==================== 镜像扫描策略 ====================
+image:
+  # 镜像来源
+  sources:
+    - docker-hub
+    - github-ecr
+    - private-registry
+
+  # 排除的镜像
+  exclude-images:
+    - "registry.k8s.io/pause:*"
+    - "k8s.gcr.io/pause:*"
+
+  # 推荐的基础镜像
+  recommended-base-images:
+    - name: "nginx"
+      recommended: "nginx:1.25-alpine"
+      reason: "Alpine版本更小更安全"
+    - name: "python"
+      recommended: "python:3.12-slim"
+      reason: "Slim版本减少攻击面"
+    - name: "node"
+      recommended: "node:20-alpine"
+      reason: "Alpine版本更小更安全"
+    - name: "java"
+      recommended: "eclipse-temurin:21-jre-alpine"
+      reason: "OpenJDK Alpine版本"
+    - name: "golang"
+      recommended: "golang:1.22-alpine"
+      reason: "Alpine版本更小更安全"
+
+# ==================== 系统包扫描策略 ====================
+system:
+  # 包管理器类型
+  package-managers:
+    - yum
+    - dnf
+    - apt-get
+    - apk
+    - rpm
+
+  # 排除的包
+  exclude-packages:
+    - "kernel*"
+    - "glibc*"
+
+  # 自动更新策略
+  auto-update:
+    enabled: false
+    # 更新级别
+    levels:
+      - CRITICAL
+      - HIGH
+
+# ==================== Kubernetes扫描策略 ====================
+kubernetes:
+  # 检查项
+  checks:
+    # 镜像标签检查
+    - id: "k8s-image-tag"
+      name: "镜像标签检查"
+      severity: HIGH
+      description: "检查是否使用latest标签或无标签"
+      enabled: true
+
+    # 特权容器检查
+    - id: "k8s-privileged"
+      name: "特权容器检查"
+      severity: CRITICAL
+      description: "检查是否运行特权容器"
+      enabled: true
+
+    # hostNetwork检查
+    - id: "k8s-host-network"
+      name: "hostNetwork检查"
+      severity: HIGH
+      description: "检查是否使用hostNetwork"
+      enabled: true
+
+    # hostPID检查
+    - id: "k8s-host-pid"
+      name: "hostPID检查"
+      severity: HIGH
+      description: "检查是否使用hostPID"
+      enabled: true
+
+    # 资源限制检查
+    - id: "k8s-resource-limits"
+      name: "资源限制检查"
+      severity: MEDIUM
+      description: "检查是否设置资源限制"
+      enabled: true
+
+    # 安全上下文检查
+    - id: "k8s-security-context"
+      name: "安全上下文检查"
+      severity: MEDIUM
+      description: "检查安全上下文配置"
+      enabled: true
+
+    # 只读根文件系统检查
+    - id: "k8s-readonly-rootfs"
+      name: "只读根文件系统检查"
+      severity: LOW
+      description: "检查是否使用只读根文件系统"
+      enabled: true
+
+  # 排除的命名空间
+  exclude-namespaces:
+    - kube-system
+    - kube-public
+    - kube-node-lease
+
+# ==================== 修复策略 ====================
+remediation:
+  # 修复优先级
+  priority:
+    CRITICAL:
+      action: "immediate"
+      max-time: "2h"
+      rollback-plan: "使用快照恢复或回退镜像版本"
+    HIGH:
+      action: "urgent"
+      max-time: "1d"
+      rollback-plan: "逐个验证修复，保留原镜像备份"
+    MEDIUM:
+      action: "planned"
+      max-time: "7d"
+      rollback-plan: "灰度发布，逐步替换"
+    LOW:
+      action: "low"
+      max-time: "30d"
+      rollback-plan: "常规发布流程"
+
+  # 修复命令模板
+  commands:
+    # Docker镜像更新
+    docker-image-update: |
+      # 1. 拉取新镜像
+      docker pull {{new_image}}
+      # 2. 停止旧容器
+      docker stop {{container_name}}
+      # 3. 备份旧容器
+      docker commit {{container_name}} {{container_name}}-backup-$(date +%Y%m%d)
+      # 4. 删除旧容器
+      docker rm {{container_name}}
+      # 5. 启动新容器
+      docker run -d --name {{container_name}} {{new_image}}
+
+    # 系统包更新
+    system-package-update: |
+      # CentOS/RHEL
+      yum update -y {{package_name}}
+      # 或 Debian/Ubuntu
+      apt-get update && apt-get install -y {{package_name}}
+
+    # Kubernetes清单更新
+    k8s-manifest-update: |
+      # 更新镜像标签
+      kubectl set image deployment/{{deployment}} {{container}}={{new_image}} -n {{namespace}}
+      # 验证更新
+      kubectl rollout status deployment/{{deployment}} -n {{namespace}}
+
+# ==================== 报告配置 ====================
+report:
+  # 输出格式
+  formats:
+    - text
+    - json
+    - sarif
+    - html
+
+  # 报告目录
+  output-dir: "./reports/vulnerability"
+
+  # 保留天数
+  retention-days: 30
+
+  # 通知配置
+  notification:
+    enabled: false
+    # 通知渠道
+    channels:
+      - email
+      - slack
+      - webhook
+
+# ==================== 合规性配置 ====================
+compliance:
+  # 合规标准
+  standards:
+    - name: "CIS Docker Benchmark"
+      version: "1.6.0"
+      enabled: true
+    - name: "CIS Kubernetes Benchmark"
+      version: "1.8.0"
+      enabled: true
+    - name: "NIST SP 800-190"
+      enabled: false
+
+  # 合规检查项
+  checks:
+    # Docker安全配置
+    - id: "cis-docker-2.1"
+      name: "限制默认网桥上的容器间通信"
+      severity: HIGH
+      enabled: true
+
+    - id: "cis-docker-4.1"
+      name: "确保AppArmor配置文件已启用"
+      severity: MEDIUM
+      enabled: true
+
+    # Kubernetes安全配置
+    - id: "cis-k8s-5.1.1"
+      name: "确保集群中未配置匿名身份验证"
+      severity: CRITICAL
+      enabled: true
+
+    - id: "cis-k8s-5.2.1"
+      name: "确保PodSecurityPolicy已启用"
+      severity: HIGH
+      enabled: true

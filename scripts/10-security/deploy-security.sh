@@ -98,6 +98,7 @@ show_menu() {
     echo "  [5] Kubernetes RBAC Configuration"
     echo "  [6] Network Policies"
     echo "  [7] Pod Security Policies"
+    echo "  [8] Vulnerability Remediation"
     echo "  [A] Deploy ALL modules"
     echo "  [Q] Quit"
     echo ""
@@ -166,6 +167,14 @@ deploy_pod_security() {
     log INFO "Pod security policies applied"
 }
 
+# Deploy Vulnerability Remediation
+# 功能: 漏洞扫描、分析与修复工作流
+# 脚本: 06-vulnerability-remediation.sh
+deploy_vulnerability_remediation() {
+    log STEP "Deploying Vulnerability Remediation..."
+    bash "${SCRIPT_DIR}/06-vulnerability-remediation.sh" 2>&1 | tee -a "$LOG_FILE"
+}
+
 deploy_all() {
     log STEP "Deploying ALL security modules..."
     deploy_ssl
@@ -175,6 +184,7 @@ deploy_all() {
     deploy_k8s_rbac
     deploy_network_policy
     deploy_pod_security
+    deploy_vulnerability_remediation
     log INFO "All security modules deployed successfully"
 }
 
@@ -197,6 +207,7 @@ main() {
             5) deploy_k8s_rbac ;;
             6) deploy_network_policy ;;
             7) deploy_pod_security ;;
+            8) deploy_vulnerability_remediation ;;
             [Aa]) deploy_all ;;
             [Qq])
                 log INFO "Exiting security hardening deployment"

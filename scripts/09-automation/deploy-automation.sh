@@ -202,6 +202,19 @@ cmd_backup() {
     fi
 }
 
+# cmd_asset: 执行资产信息采集
+# 功能: 采集主机信息、多格式报告、多主机扫描
+cmd_asset() {
+    log_info "========== 执行资产信息采集 =========="
+    bash "${SCRIPT_DIR}/05-asset-management.sh" 2>&1 | tee -a "${LOG_DIR}/asset_${DATE}.log"
+    local rc=${PIPESTATUS[0]}
+    if [[ ${rc} -eq 0 ]]; then
+        log_success "资产信息采集完成"
+    else
+        log_warn "资产信息采集有问题 (exit: ${rc})"
+    fi
+}
+
 # cmd_full: 执行完整运维流程
 # 功能: 巡检 -> 备份 -> 清理
 cmd_full() {
@@ -211,6 +224,7 @@ cmd_full() {
     cmd_health
     cmd_backup
     cmd_clean
+    cmd_asset
     
     local elapsed=$(( SECONDS - start_time ))
     log_success "完整运维流程完成，耗时: ${elapsed}s"
@@ -232,6 +246,7 @@ usage() {
   health             执行健康巡检并生成报告
   clean              执行日志清理
   backup             执行备份与完整性校验
+  asset              执行资产信息采集与报告生成
   full               执行完整运维流程 (巡检 -> 备份 -> 清理)
 
 选项:
@@ -247,6 +262,7 @@ usage() {
   $(basename "$0") deploy                   # 全量部署
   $(basename "$0") deploy -t docker         # 仅部署Docker相关
   $(basename "$0") health                   # 健康巡检
+  $(basename "$0") asset                    # 资产信息采集
   $(basename "$0") full                     # 完整运维流程
   $(basename "$0") deploy -l "webserver"    # 仅对webserver组部署
 
@@ -266,7 +282,7 @@ main() {
     # 解析参数
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            setup|deploy|health|clean|backup|full)
+            setup|deploy|health|clean|backup|asset|full)
                 command="$1"
                 shift
                 ;;
@@ -325,6 +341,7 @@ main() {
         health)   cmd_health ;;
         clean)    cmd_clean ;;
         backup)   cmd_backup ;;
+        asset)    cmd_asset ;;
         full)     cmd_full ;;
         *)
             log_error "请指定一个命令"
