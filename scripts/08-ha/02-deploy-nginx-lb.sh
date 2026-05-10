@@ -9,6 +9,14 @@ set -euo pipefail
 
 # 错误处理
 trap 'log_error "Nginx LB部署脚本异常退出 (行号: $LINENO)"' ERR
+cleanup() {
+    local exit_code=$?
+    if [[ $exit_code -ne 0 ]]; then
+        log_error "脚本执行失败，退出码: $exit_code"
+    fi
+    return $exit_code
+}
+trap cleanup EXIT
 
 # 颜色输出
 RED='\033[0;31m'

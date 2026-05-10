@@ -7,9 +7,6 @@
 ###############################################################################
 set -euo pipefail
 
-# 加载共享库
-source "$SCRIPT_DIR/../../scripts/lib/common.sh"
-
 # ========================= 全局变量 =========================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -18,6 +15,9 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_FILE="${LOG_DIR}/teardown-phase1_${TIMESTAMP}.log"
 REPORT_FILE="${LOG_DIR}/rollback-report-phase1_${TIMESTAMP}.txt"
 START_TIME=$(date +%s)
+
+# 加载共享库
+source "$SCRIPT_DIR/../../scripts/lib/common.sh"
 
 # ========================= 颜色定义 =========================
 RED='\033[0;31m'

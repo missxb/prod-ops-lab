@@ -2004,7 +2004,46 @@ groups:
 
 ---
 
+## 8. 新增脚本说明
+
+### 8.1 Zabbix 物理机监控部署脚本 (`01-deploy-zabbix.sh`)
+
+该脚本用于部署 Zabbix 物理机监控系统，采用 Docker Compose 方式部署 Server + Web + MySQL。
+
+**使用方法：**
+```bash
+# 部署 Zabbix 监控
+bash scripts/06-monitor/01-deploy-zabbix.sh
+```
+
+**部署组件：**
+- Zabbix Server：监控核心服务
+- Zabbix Web：Web 管理界面
+- MySQL：数据存储
+- Zabbix Agent：物理机数据采集
+
+### 8.2 Zabbix 配置文件 (`configs/zabbix/`)
+
+配置目录包含以下文件：
+
+| 文件 | 说明 |
+|------|------|
+| `docker-compose.yaml` | Docker Compose 编排文件 |
+| `agent/zabbix_agentd.conf` | Agent 配置文件 |
+| `install-agent-remote.sh` | 远程批量安装 Agent 脚本 |
+
+**使用示例：**
+```bash
+# 使用 Docker Compose 部署
+cd configs/zabbix/
+docker-compose up -d
+
+# 远程安装 Agent 到多台物理机
+bash configs/zabbix/install-agent-remote.sh --hosts "192.168.1.20,192.168.1.21" --server 192.168.1.10
+```
+
 ## 小结
+
 
 本阶段构建了完整的监控告警体系，包括：
 

@@ -341,7 +341,64 @@ curl -s localhost:9200/_cat/indices?v
 # 使用filter代替query
 ```
 
-## 9. 最佳实践
+## 9. 新增脚本说明
+
+### 9.1 日志告警管理脚本 (`05-log-alerting.sh`)
+
+该脚本用于管理日志告警规则，基于 Prometheus 的 PrometheusRule CRD 实现。
+
+**使用方法：**
+```bash
+# 创建日志告警规则
+bash scripts/07-logging/05-log-alerting.sh --action create
+
+# 启用所有告警规则
+bash scripts/07-logging/05-log-alerting.sh --action enable
+
+# 禁用特定告警
+bash scripts/07-logging/05-log-alerting.sh --action disable --rule HighErrorRate
+
+# 删除所有告警规则
+bash scripts/07-logging/05-log-alerting.sh --action delete
+```
+
+**功能：**
+- `--action create`：创建日志告警规则
+- `--action enable`：启用已创建的告警规则
+- `--action disable`：禁用特定告警规则
+- `--action delete`：删除日志告警规则
+- `--rule`：指定操作的告警规则名称
+
+### 9.2 日志告警规则配置 (`configs/prometheus/log-alerting-rules.yaml`)
+
+该配置文件包含 15 条日志相关告警规则：
+
+| 规则名称 | 级别 | 说明 |
+|----------|------|------|
+| HighErrorRate | critical | 错误率超过阈值 |
+| ExcessiveErrorLogs | warning | 错误日志数量异常 |
+| CriticalErrorSpike | critical | 严重错误突增 |
+| LogVolumeDrop | warning | 日志量骤降 |
+| LogVolumeSpike | warning | 日志量突增 |
+| HighWarningRate | warning | 警告日志率过高 |
+| LogPatternAnomaly | warning | 日志模式异常 |
+| ElasticsearchHighRejectionRate | critical | ES 拒绝率高 |
+| ElasticsearchClusterRed | critical | ES 集群红色 |
+| ElasticsearchHighQueryRate | warning | ES 查询率过高 |
+| FluentdBufferOverflow | warning | Fluentd 缓冲区满 |
+| FluentdErrorsHigh | critical | Fluentd 错误过多 |
+| KibanaHighSearchLatency | warning | Kibana 搜索延迟高 |
+| AuditLogAnomaly | warning | 审计日志异常 |
+| PodCrashLoopBackOff | critical | Pod 持续崩溃 |
+
+**应用配置：**
+```bash
+# 应用日志告警规则
+kubectl apply -f configs/prometheus/log-alerting-rules.yaml
+```
+
+## 10. 最佳实践
+
 
 1. **索引命名**: 使用时间戳命名索引，如`kubernetes-2024.01.01`
 2. **ILM策略**: 配置自动 rollover 和删除策略

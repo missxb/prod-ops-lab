@@ -1,166 +1,170 @@
 # 企业级云原生运维平台
 
-> 从零搭建生产级K8s集群 + CI/CD + 监控日志 + 高可用架构
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-CentOS%207%2F8%2FRocky%20Linux-green.svg)]()
+[![Kubernetes](https://img.shields.io/badge/kubernetes-1.28%2B-blue.svg)]()
 
-## 项目定位
+> 从零搭建企业级云原生运维平台，覆盖基础环境、K8s集群、存储、CI/CD、应用部署、监控、日志、高可用、自动化、安全加固十大核心领域。
 
-本项目是一个**完整链路的生产级云原生运维平台**，涵盖从基础设施到应用部署的全栈技术。适合运维工程师学习和面试使用。
-
-## 技术栈
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      用户访问层                              │
-│              Nginx反向代理 + Keepalived VIP                  │
-├─────────────────────────────────────────────────────────────┤
-│                      应用服务层                              │
-│         K8s集群 (3 Master + 3 Worker) + Calico             │
-├─────────────────────────────────────────────────────────────┤
-│                      CI/CD层                                │
-│         GitLab + Jenkins + Harbor + Trivy                   │
-├─────────────────────────────────────────────────────────────┤
-│                      监控日志层                              │
-│         Prometheus + Grafana + Alertmanager                  │
-│         Elasticsearch + Fluentd + Kibana                     │
-├─────────────────────────────────────────────────────────────┤
-│                      存储层                                  │
-│              NFS + StorageClass + PV/PVC                    │
-├─────────────────────────────────────────────────────────────┤
-│                      数据层                                  │
-│         MySQL主从 + Redis Sentinel                           │
-├─────────────────────────────────────────────────────────────┤
-│                      基础设施层                              │
-│           8台虚拟机 + Ansible自动化                          │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## 资源规划
-
-| 主机名 | IP | 角色 | 配置 |
-|--------|-----|------|------|
-| master1 | 192.168.1.10 | K8s Master + etcd | 2C4G |
-| master2 | 192.168.1.11 | K8s Master + etcd | 2C4G |
-| master3 | 192.168.1.12 | K8s Master + etcd | 2C4G |
-| worker1 | 192.168.1.20 | K8s Worker | 2C4G |
-| worker2 | 192.168.1.21 | K8s Worker | 2C4G |
-| worker3 | 192.168.1.22 | K8s Worker | 2C4G |
-| infra1 | 192.168.1.30 | GitLab + Jenkins + Harbor | 4C8G |
-| monitor | 192.168.1.40 | Prometheus + Grafana + ELK | 4C8G |
-
-**总计：20C40G**
-
-## 项目结构
+## 项目架构
 
 ```
 enterprise-cloud-native-platform/
-├── README.md                    # 项目说明
-├── ARCHITECTURE.md              # 架构设计文档
-├── DEPLOYMENT.md                # 部署指南
-├── TROUBLESHOOTING.md           # 故障排查手册
-├── docs/                        # 详细文档
-│   ├── 01-init.md               # 基础环境初始化
-│   ├── 02-k8s.md                # K8s集群部署
-│   ├── 03-storage.md            # 存储层配置
-│   ├── 04-cicd.md               # CI/CD流水线
-│   ├── 05-app.md                # 应用部署
-│   ├── 06-monitor.md            # 监控告警
-│   ├── 07-logging.md            # 日志系统
-│   ├── 08-ha.md                 # 高可用架构
-│   ├── 09-automation.md         # 自动化运维
-│   └── 10-security.md           # 安全加固
-├── scripts/                     # 部署脚本
-│   ├── 01-init/                 # 基础环境脚本
-│   ├── 02-k8s/                  # K8s部署脚本
-│   ├── 03-storage/              # 存储配置脚本
-│   ├── 04-cicd/                 # CI/CD部署脚本
-│   ├── 05-app/                  # 应用部署脚本
-│   ├── 06-monitor/              # 监控部署脚本
-│   ├── 07-logging/              # 日志部署脚本
-│   ├── 08-ha/                   # 高可用脚本
-│   ├── 09-automation/           # 自动化脚本
-│   └── 10-security/             # 安全加固脚本
-├── configs/                     # 配置文件模板
-│   ├── k8s/                     # K8s配置
-│   ├── calico/                  # Calico网络配置
-│   ├── nfs/                     # NFS配置
-│   ├── prometheus/              # Prometheus配置
-│   ├── grafana/                 # Grafana配置
-│   ├── elk/                     # ELK配置
-│   ├── harbor/                  # Harbor配置
-│   ├── jenkins/                 # Jenkins配置
-│   ├── gitlab/                  # GitLab配置
-│   ├── keepalived/              # Keepalived配置
-│   ├── nginx/                   # Nginx配置
-│   ├── mysql/                   # MySQL配置
-│   └── redis/                   # Redis配置
-├── ansible/                     # Ansible自动化
-│   ├── inventory/               # 主机清单
-│   ├── playbooks/               # Playbook
-│   └── roles/                   # Role
-└── manifests/                   # K8s清单文件
-    ├── namespace/               # 命名空间
-    ├── app/                     # 应用部署
-    ├── monitoring/              # 监控组件
-    └── logging/                 # 日志组件
+├── scripts/           # 部署脚本（10阶段 × 多个子脚本）
+│   ├── 01-init/       # 基础环境初始化
+│   ├── 02-k8s/        # Kubernetes集群搭建
+│   ├── 03-storage/    # 存储方案
+│   ├── 04-cicd/       # CI/CD流水线
+│   ├── 05-app/        # 应用部署
+│   ├── 06-monitor/    # 监控告警
+│   ├── 07-logging/    # 日志系统
+│   ├── 08-ha/         # 高可用架构
+│   ├── 09-automation/ # 自动化运维
+│   ├── 10-security/   # 安全加固
+│   ├── lib/           # 共享函数库
+│   ├── verify-*.sh    # 验证脚本
+│   └── teardown/      # 回滚脚本
+├── configs/           # 配置文件
+├── manifests/         # Kubernetes Manifests
+├── ansible/           # Ansible自动化
+├── docs/              # 文档
+└── reports/           # 报告输出
 ```
 
-## 实施阶段
+## 技术栈
 
-| 阶段 | 内容 | 预计时间 | 状态 |
-|------|------|----------|------|
-| 1 | 基础环境初始化 | 1-2天 | ⬜ |
-| 2 | K8s集群部署 | 2-3天 | ⬜ |
-| 3 | 存储层配置 | 1天 | ⬜ |
-| 4 | CI/CD流水线 | 2-3天 | ⬜ |
-| 5 | 应用部署 | 1-2天 | ⬜ |
-| 6 | 监控告警 | 2-3天 | ⬜ |
-| 7 | 日志系统 | 1-2天 | ⬜ |
-| 8 | 高可用架构 | 1-2天 | ⬜ |
-| 9 | 自动化运维 | 1-2天 | ⬜ |
-| 10 | 安全加固 | 1天 | ⬜ |
+| 领域 | 技术 |
+|------|------|
+| 容器运行时 | Docker CE + containerd |
+| 容器编排 | Kubernetes 1.28 + kubeadm |
+| CNI网络 | Calico |
+| 存储 | NFS + Longhorn |
+| CI/CD | GitLab + Jenkins + Harbor + Trivy |
+| 监控 | Prometheus + Grafana + Zabbix |
+| 日志 | Elasticsearch + Fluentd + Kibana |
+| 高可用 | Keepalived + Nginx + MySQL主从 + Redis哨兵 + PostgreSQL主从 |
+| 自动化 | Ansible |
+| 安全 | cert-manager + RBAC + NetworkPolicy + OPA/Gatekeeper |
 
 ## 快速开始
+
+### 环境要求
+- 操作系统: CentOS 7/8 或 Rocky Linux 8/9
+- 内存: ≥4GB
+- 磁盘: ≥40GB
+- 网络: 节点间可通信
+- 权限: root
+
+### 部署步骤
 
 ```bash
 # 1. 克隆项目
 git clone https://github.com/missxb/enterprise-cloud-native-platform.git
 cd enterprise-cloud-native-platform
 
-# 2. 修改配置
-cp configs/k8s/kubeadm-config.yaml.example configs/k8s/kubeadm-config.yaml
-vim configs/k8s/kubeadm-config.yaml
-
-# 3. 执行初始化
+# 2. 阶段1: 基础环境初始化
 bash scripts/01-init/init-all.sh
 
-# 4. 部署K8s集群
+# 3. 验证部署
+bash scripts/verify-phase1.sh
+
+# 4. 继续后续阶段...
+# bash scripts/02-k8s/deploy-k8s.sh
+# bash scripts/03-storage/deploy-storage.sh
+# ...
+```
+
+### 完整部署
+
+```bash
+# 部署所有阶段
+bash scripts/01-init/init-all.sh
 bash scripts/02-k8s/deploy-k8s.sh
+bash scripts/03-storage/deploy-storage.sh
+bash scripts/04-cicd/deploy-cicd.sh
+bash scripts/05-app/deploy-app.sh
+bash scripts/06-monitor/deploy-monitor.sh
+bash scripts/07-logging/deploy-logging.sh
+bash scripts/08-ha/deploy-ha.sh
+bash scripts/09-automation/deploy-automation.sh
+bash scripts/10-security/deploy-security.sh
 
-# 5. 按阶段继续部署...
+# 全局验证
+bash scripts/verify-all.sh
 ```
 
-## 学习路径
+### 回滚
 
-```
-阶段1-3: 基础设施 → 能搭建K8s集群
-    ↓
-阶段4-5: CI/CD + 应用 → 能实现自动化部署
-    ↓
-阶段6-7: 监控日志 → 能保障系统可观测性
-    ↓
-阶段8-10: 高可用+自动化+安全 → 能达到生产级标准
+```bash
+# 回滚单个阶段
+bash scripts/teardown/teardown-phase1.sh
+
+# 回滚所有阶段
+bash scripts/teardown/teardown-all.sh
 ```
 
-## 简历亮点
+## 各阶段说明
 
-完成本项目后，你可以在简历中写：
+### 阶段1: 基础环境初始化
+主机名设置、SSH免密、NTP时间同步、内核参数优化、Docker/containerd安装、NFS配置、时区设置、防火墙基础配置。
 
-- 从零搭建3节点高可用Kubernetes集群（kubeadm + etcd + Calico）
-- 实现CI/CD全流程自动化（GitLab → Jenkins → Harbor → Trivy → K8s）
-- 建立Prometheus + Grafana + ELK全方位监控日志体系
-- 设计Keepalived + Nginx + MySQL主从 + Redis Sentinel高可用架构
-- 使用Ansible实现批量自动化运维（初始化、巡检、备份）
-- 实施容器安全扫描（Trivy）和等保2.0基础合规
+### 阶段2: Kubernetes集群搭建
+kubeadm安装、Master初始化、Worker加入、Calico网络插件、CoreDNS验证、集群高可用测试。
+
+### 阶段3: 存储方案
+NFS动态供给、StorageClass、Longhorn分布式存储、VolumeSnapshot、Velero备份。
+
+### 阶段4: CI/CD流水线
+GitLab代码仓库、Jenkins持续集成、Harbor镜像仓库、Trivy安全扫描、完整流水线配置。
+
+### 阶段5: 应用部署
+示例应用、Deployment/Service/Ingress、ConfigMap/Secret、HPA自动扩缩容、滚动更新、故障转移。
+
+### 阶段6: 监控告警
+Prometheus + Grafana + Alertmanager、Node Exporter、自定义监控指标、Zabbix物理机监控。
+
+### 阶段7: 日志系统
+Elasticsearch集群、Fluentd日志收集、Kibana可视化、日志告警规则。
+
+### 阶段8: 高可用架构
+Keepalived VIP漂移、Nginx负载均衡、MySQL主从、PostgreSQL主从、Redis哨兵、数据一致性验证。
+
+### 阶段9: 自动化运维
+Ansible自动化、健康检查、日志清理、备份校验、资产管理。
+
+### 阶段10: 安全加固
+SSL证书管理、SSH加固、防火墙策略、容器安全扫描、K8s RBAC、漏洞修复流程。
+
+## 脚本特性
+
+- `set -euo pipefail` 严格错误处理
+- `umask 077` 安全权限
+- `trap ERR/EXIT/INT/TERM` 完整信号处理
+- 锁文件防并发执行
+- 统一日志框架（彩色输出）
+- `--help` 帮助信息
+- `--dry-run` 干运行模式
+- `--task/--skip` 选择性执行
+- 中文注释全覆盖
+
+## 文档
+
+- [基础环境初始化](docs/01-init.md)
+- [Kubernetes集群搭建](docs/02-k8s.md)
+- [存储方案](docs/03-storage.md)
+- [CI/CD流水线](docs/04-cicd.md)
+- [应用部署](docs/05-app.md)
+- [监控告警](docs/06-monitor.md)
+- [日志系统](docs/07-logging.md)
+- [高可用架构](docs/08-ha.md)
+- [自动化运维](docs/09-automation.md)
+- [安全加固](docs/10-security.md)
+- [架构深度解析](docs/architecture-deep-dive.md)
+- [部署检查清单](docs/deployment-checklist.md)
+- [监控运维手册](docs/monitoring-runbook.md)
+- [安全运维手册](docs/security-runbook.md)
+- [常见问题](docs/faq.md)
+- [最佳实践](docs/best-practices.md)
 
 ## License
 

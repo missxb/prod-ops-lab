@@ -353,7 +353,52 @@ kubectl get rolebinding,clusterrolebinding -A
 kubectl auth can-i --list --as=system:serviceaccount:default:default
 ```
 
-## 9. 最佳实践
+## 9. 新增脚本说明
+
+### 9.1 漏洞修复流程脚本 (`06-vulnerability-remediation.sh`)
+
+该脚本用于执行漏洞扫描、分析、修复和报告生成的完整流程。
+
+**使用方法：**
+```bash
+# 执行完整漏洞修复流程
+bash scripts/10-security/06-vulnerability-remediation.sh
+
+# 仅扫描不修复
+bash scripts/10-security/06-vulnerability-remediation.sh --scan-only
+
+# 生成修复报告
+bash scripts/10-security/06-vulnerability-remediation.sh --report
+```
+
+**流程：**
+1. **扫描**：使用 Trivy 扫描镜像和文件系统
+2. **分析**：分析漏洞严重程度和影响范围
+3. **修复**：自动修复可修复的漏洞（更新镜像、打补丁等）
+4. **报告**：生成详细的漏洞修复报告
+
+### 9.2 Trivy 扫描策略配置 (`configs/trivy/trivy-scan-config.yaml`)
+
+该配置文件定义了 Trivy 的扫描策略和规则：
+
+**配置内容：**
+- 扫描目标（镜像、文件系统、K8s 集群）
+- 严重程度过滤（Critical, High, Medium, Low）
+- 忽略规则（已接受的风险）
+- 输出格式（JSON, Table, SARIF）
+- 扫描排除路径
+
+**使用示例：**
+```bash
+# 使用自定义配置扫描
+trivy image --config configs/trivy/trivy-scan-config.yaml nginx:latest
+
+# 扫描文件系统
+trivy fs --config configs/trivy/trivy-scan-config.yaml .
+```
+
+## 10. 最佳实践
+
 
 1. **最小权限原则**: 只授予必要的权限
 2. **定期轮换**: 定期轮换证书和密钥

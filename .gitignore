@@ -1,43 +1,36 @@
 # Logs
-*.log
 logs/
+*.log
 
-# Temporary files
+# Reports
+reports/
+
+# Temp files
 *.tmp
 *.swp
-*.swo
+*.bak
 *~
+
+# Lock files
+*.lock
+
+# Sensitive files
+.env
+.env.*
+*.pem
+*.key
+id_rsa
+id_rsa.pub
 
 # OS files
 .DS_Store
 Thumbs.db
 
-# IDE files
+# Editor files
 .vscode/
 .idea/
-*.iml
+*.sublime-*
 
-# Secrets (never commit)
-*.key
-*.pem
-*.crt
-*.p12
-.env
-.env.local
-secrets.yaml
-
-# Kubernetes secrets (generated)
-*-secret.yaml
-
-# Helm charts dependencies
-charts/
-*.tgz
-
-# Backup files
-*.bak
-*.backup
-*.old
-
-# Ansible
-*.retry
-ansible.cfg
+# Compiled
+*.pyc
+__pycache__/

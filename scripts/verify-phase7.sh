@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ========================= 全局变量 =========================
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+REPORT_DIR="$PROJECT_DIR/reports"
+REPORT_FILE="$REPORT_DIR/verify-phase7-$(date +%Y%m%d-%H%M%S).log"
+TIMESTAMP_REPORT="$REPORT_DIR/verify-phase7-$(date +%Y%m%d-%H%M%S).txt"
+
 # 加载共享库
 source "$SCRIPT_DIR/lib/common.sh"
 
@@ -8,12 +15,6 @@ source "$SCRIPT_DIR/lib/common.sh"
 # 阶段7: 日志系统验证
 # 验证项目: Elasticsearch、Fluentd、Kibana
 ##############################################################################
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-REPORT_DIR="$PROJECT_DIR/reports"
-REPORT_FILE="$REPORT_DIR/verify-phase7-$(date +%Y%m%d-%H%M%S).log"
-TIMESTAMP_REPORT="$REPORT_DIR/verify-phase7-$(date +%Y%m%d-%H%M%S).txt"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'

@@ -366,7 +366,37 @@ df -h /backup
 ls -la /backup
 ```
 
-## 8. 最佳实践
+## 8. 新增脚本说明
+
+### 8.1 资产管理脚本 (`05-asset-management.sh`)
+
+该脚本用于管理运维资产信息，支持多种输出格式和批量扫描。
+
+**使用方法：**
+```bash
+# 生成文本格式报告
+bash scripts/09-automation/05-asset-management.sh --format text
+
+# 生成 JSON 格式报告
+bash scripts/09-automation/05-asset-management.sh --format json
+
+# 生成 CSV 格式报告
+bash scripts/09-automation/05-asset-management.sh --format csv
+
+# SSH 批量扫描资产
+bash scripts/09-automation/05-asset-management.sh --scan --hosts "192.168.1.0/24"
+```
+
+**功能：**
+- `--format text|json|csv`：指定输出格式
+- `--scan`：启用 SSH 批量扫描
+- `--hosts`：指定扫描的主机范围
+- 收集主机名、IP、操作系统、CPU、内存、磁盘等信息
+- 自动生成资产清单报告
+- 支持定时扫描（可配合 crontab）
+
+## 9. 最佳实践
+
 
 1. **版本控制**: 将Playbook和配置文件纳入Git管理
 2. **测试环境**: 先在测试环境验证Playbook

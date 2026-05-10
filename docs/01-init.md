@@ -478,7 +478,49 @@ rm /etc/sysctl.d/k8s.conf
 sysctl --system
 ```
 
-## 8. 最佳实践
+## 8. 新增脚本说明
+
+### 8.1 时区设置脚本 (`07-timezone.sh`)
+
+该脚本用于设置和管理系统时区，支持通过 `--timezone` 参数指定时区。
+
+**使用方法：**
+```bash
+# 设置时区为上海
+bash scripts/01-init/07-timezone.sh --timezone Asia/Shanghai
+
+# 查看当前时区
+bash scripts/01-init/07-timezone.sh
+```
+
+**功能：**
+- 自动检测当前时区设置
+- 支持 `--timezone` 参数设置新时区
+- 同步设置 `timedatectl` 和 `/etc/localtime`
+- 验证时区是否生效
+
+### 8.2 防火墙基础配置 (`08-firewall.sh`)
+
+该脚本用于配置基础防火墙规则，支持 `firewalld` 和 `iptables` 两种管理方式。
+
+**使用方法：**
+```bash
+# 自动检测并配置防火墙
+bash scripts/01-init/08-firewall.sh
+
+# 配置 K8s 所需端口
+bash scripts/01-init/08-firewall.sh --role master
+bash scripts/01-init/08-firewall.sh --role worker
+```
+
+**功能：**
+- 自动检测 firewalld/iptables 并选择对应方式
+- 配置 K8s 集群所需端口（6443, 2379-2380, 10250 等）
+- 支持 `--role` 参数区分 Master/Worker 端口
+- 验证端口开放状态
+
+## 9. 最佳实践
+
 
 1. **版本锁定**：使用 `apt-mark hold` 锁定 kubeadm/kubelet/kubectl 版本
 2. **配置管理**：所有配置文件使用版本控制管理，变更需审批
