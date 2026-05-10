@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 ###############################################################################
 # 脚本名称: 07-verify-longhorn.sh
-# 功能描述: 全面验证Longhorn分布式存储功能，包括Manager、CSI、PVC读写等
+# 功能描述: 全面验证Longhorn分布式存储功能，包括Manager、CSI、PVC读写、性能、快照等
 # 适用系统: 需要kubectl可访问集群, Longhorn已部署
 # 依赖条件: kubectl可用, Longhorn已通过Helm部署
 # 作者: 运维平台团队
-# 版本: 1.1.0
+# 版本: 1.2.0
 # 创建日期: 2026-05-10
 # 更新日期: 2026-05-10
 #
@@ -25,8 +25,9 @@
 #   5. PVC动态创建 (ReadWriteOnce)
 #   6. Pod挂载读写测试
 #   7. Longhorn Dashboard可达性
-#   8. Volume快照功能 (可选)
-#   9. PASS/FAIL汇总报告
+#   8. Volume快照功能 (创建-验证-恢复)
+#   9. 写入性能测试
+#  10. PASS/FAIL汇总报告
 ###############################################################################
 set -euo pipefail
 umask 077
@@ -43,6 +44,10 @@ LOG_FILE="${LOG_DIR}/07-verify-longhorn_$(date +%Y%m%d_%H%M%S).log"
 TEST_NS="${TEST_NS:-longhorn-test}"
 LONGHORN_NAMESPACE="${LONGHORN_NAMESPACE:-longhorn-system}"
 RESULTS=()
+TOTAL_TESTS=0
+PASS_COUNT=0
+FAIL_COUNT=0
+SKIP_COUNT=0
 
 # ========================= 日志函数 =========================
 log_info()    { echo -e "${GREEN}[INFO]${NC}  $(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG_FILE"; }
@@ -51,7 +56,17 @@ log_error()   { echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*" | t
 log_step()    { echo -e "${CYAN}[STEP]${NC}  $(date '+%Y-%m-%d %H:%M:%S') === $* ===" | tee -a "$LOG_FILE"; }
 log_pass()    { echo -e "${GREEN}[PASS]${NC}  $(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG_FILE"; }
 log_fail()    { echo -e "${RED}[FAIL]${NC}  $(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG_FILE"; }
+log_skip()    { echo -e "${YELLOW}[SKIP]${NC}  $(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG_FILE"; }
 log_success() { echo -e "${GREEN}[OK]${NC}    $(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG_FILE"; }
+
+banner() {
+    echo -e "" | tee -a "$LOG_FILE"
+    echo -e "${BOLD}${BLUE}" | tee -a "$LOG_FILE"
+    echo "╔══════════════════════════════════════════════════════╗" | tee -a "$LOG_FILE"
+    echo "║   Longhorn 存储功能验证                             ║" | tee -a "$LOG_FILE"
+    echo "╚══════════════════════════════════════════════════════╝" | tee -a "$LOG_FILE"
+    echo -e "${NC}" | tee -a "$LOG_FILE"
+}
 
 # ========================= 错误处理 =========================
 cleanup() {
@@ -67,17 +82,46 @@ trap 'log_error "收到信号，正在退出..."; exit 1' SIGINT SIGTERM
 # ========================= 测试框架函数 =========================
 
 # 运行单个测试用例
-# 参数: $1=测试名称, $2=测试函数名
+# 参数: $1=步骤号, $2=测试名称, $3=测试函数名
 run_test() {
-    local test_name="$1"
-    local test_func="$2"
-    log_info "测试: ${test_name}"
+    local step_num="$1"
+    local test_name="$2"
+    local test_func="$3"
+    TOTAL_TESTS=$((TOTAL_TESTS + 1))
+
+    echo -ne "  ${CYAN}[${step_num}]${NC} ${test_name} ... " | tee -a "$LOG_FILE"
     if eval "${test_func}" &>/dev/null; then
+        echo -e "${GREEN}PASS${NC}" | tee -a "$LOG_FILE"
         log_pass "${test_name}"
         RESULTS+=("PASS: ${test_name}")
+        PASS_COUNT=$((PASS_COUNT + 1))
     else
+        echo -e "${RED}FAIL${NC}" | tee -a "$LOG_FILE"
         log_fail "${test_name}"
         RESULTS+=("FAIL: ${test_name}")
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+}
+
+# 运行可选测试 (失败不计入FAIL)
+# 参数: $1=步骤号, $2=测试名称, $3=测试函数名
+run_optional_test() {
+    local step_num="$1"
+    local test_name="$2"
+    local test_func="$3"
+    TOTAL_TESTS=$((TOTAL_TESTS + 1))
+
+    echo -ne "  ${CYAN}[${step_num}]${NC} ${test_name} ... " | tee -a "$LOG_FILE"
+    if eval "${test_func}" &>/dev/null; then
+        echo -e "${GREEN}PASS${NC}" | tee -a "$LOG_FILE"
+        log_pass "${test_name}"
+        RESULTS+=("PASS: ${test_name}")
+        PASS_COUNT=$((PASS_COUNT + 1))
+    else
+        echo -e "${YELLOW}SKIP${NC}" | tee -a "$LOG_FILE"
+        log_skip "${test_name} (可选)"
+        RESULTS+=("SKIP: ${test_name}")
+        SKIP_COUNT=$((SKIP_COUNT + 1))
     fi
 }
 
@@ -112,12 +156,8 @@ test_csi_provisioner_running() {
 
 # 测试4: 集群节点在Longhorn中就绪
 test_nodes_ready() {
-    # 检查Longhorn是否识别了节点
     local node_count
     node_count=$(kubectl get nodes.longhorn.io -n "${LONGHORN_NAMESPACE}" --no-headers 2>/dev/null | wc -l)
-    local k8s_node_count
-    k8s_node_count=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
-    # Longhorn节点数应 ≥ 1
     [[ "${node_count}" -ge 1 ]] 2>/dev/null
 }
 
@@ -133,7 +173,6 @@ test_pvc_rwo() {
 
     # 检查longhorn StorageClass是否存在
     if ! kubectl get storageclass longhorn &>/dev/null; then
-        log_warn "longhorn StorageClass不存在"
         return 1
     fi
 
@@ -160,7 +199,6 @@ EOF
         phase=$(kubectl get pvc test-longhorn-rwo -n "${TEST_NS}" \
             -o jsonpath='{.status.phase}' 2>/dev/null)
         if [[ "${phase}" == "Bound" ]]; then
-            log_info "Longhorn PVC ReadWriteOnce 已绑定"
             return 0
         fi
         sleep 3
@@ -172,7 +210,6 @@ EOF
 # 测试7: Pod挂载PVC并读写数据
 test_pod_mount() {
     if ! kubectl get pvc test-longhorn-rwo -n "${TEST_NS}" &>/dev/null; then
-        log_warn "test-longhorn-rwo PVC不存在，跳过"
         return 1
     fi
 
@@ -208,11 +245,9 @@ EOF
             local output
             output=$(kubectl logs longhorn-test-pod -n "${TEST_NS}" 2>/dev/null)
             if echo "${output}" | grep -q "longhorn-test-data"; then
-                log_info "Pod挂载读写测试通过"
                 return 0
             fi
         elif [[ "${phase}" == "Failed" ]]; then
-            kubectl logs longhorn-test-pod -n "${TEST_NS}" 2>/dev/null | tee -a "$LOG_FILE"
             return 1
         fi
         sleep 3
@@ -227,7 +262,6 @@ test_dashboard() {
     dashboard_svc=$(kubectl get svc -n "${LONGHORN_NAMESPACE}" longhorn-frontend \
         -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
     if [[ -z "${dashboard_svc}" ]]; then
-        log_warn "Longhorn Dashboard Service未找到"
         return 1
     fi
 
@@ -242,17 +276,20 @@ test_dashboard() {
     return 1
 }
 
-# 测试9: Volume快照功能 (可选)
+# 测试9: Volume快照功能 (创建-验证-恢复)
 test_volume_snapshot() {
     # 检查VolumeSnapshotClass是否存在
     if ! kubectl get volumesnapshotclass 2>/dev/null | grep -q "longhorn"; then
-        log_info "VolumeSnapshotClass未配置，跳过快照测试"
+        log_info "VolumeSnapshotClass未配置"
         return 1  # 视为跳过
     fi
 
     # 如果有快照类，尝试创建快照
-    if kubectl get pvc test-longhorn-rwo -n "${TEST_NS}" &>/dev/null; then
-        cat <<EOF | kubectl apply -f - >/dev/null 2>&1
+    if ! kubectl get pvc test-longhorn-rwo -n "${TEST_NS}" &>/dev/null; then
+        return 1
+    fi
+
+    cat <<EOF | kubectl apply -f - >/dev/null 2>&1
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshot
 metadata:
@@ -263,49 +300,194 @@ spec:
   source:
     persistentVolumeClaimName: test-longhorn-rwo
 EOF
-        # 等待快照创建
-        local max_wait=60
-        local waited=0
-        while [[ $waited -lt $max_wait ]]; do
-            local ready
-            ready=$(kubectl get volumesnapshot test-longhorn-snapshot -n "${TEST_NS}" \
-                -o jsonpath='{.status.readyToUse}' 2>/dev/null || echo "false")
-            if [[ "${ready}" == "true" ]]; then
-                log_info "Volume快照创建成功"
+    # 等待快照创建
+    local max_wait=60
+    local waited=0
+    while [[ $waited -lt $max_wait ]]; do
+        local ready
+        ready=$(kubectl get volumesnapshot test-longhorn-snapshot -n "${TEST_NS}" \
+            -o jsonpath='{.status.readyToUse}' 2>/dev/null || echo "false")
+        if [[ "${ready}" == "true" ]]; then
+            log_info "Volume快照创建成功"
+            return 0
+        fi
+        sleep 5
+        waited=$((waited + 5))
+    done
+    return 1
+}
+
+# 测试10: 快照恢复测试
+test_snapshot_restore() {
+    if ! kubectl get volumesnapshot test-longhorn-snapshot -n "${TEST_NS}" &>/dev/null; then
+        return 1
+    fi
+
+    # 从快照创建新PVC
+    cat <<EOF | kubectl apply -f - >/dev/null 2>&1
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: test-longhorn-restored
+  namespace: ${TEST_NS}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 2Gi
+  dataSource:
+    name: test-longhorn-snapshot
+    kind: VolumeSnapshot
+    apiGroup: snapshot.storage.k8s.io
+EOF
+
+    # 等待恢复的PVC绑定
+    local max_wait=60
+    local waited=0
+    while [[ $waited -lt $max_wait ]]; do
+        local phase
+        phase=$(kubectl get pvc test-longhorn-restored -n "${TEST_NS}" \
+            -o jsonpath='{.status.phase}' 2>/dev/null)
+        if [[ "${phase}" == "Bound" ]]; then
+            log_info "快照恢复PVC已绑定"
+            return 0
+        fi
+        sleep 3
+        waited=$((waited + 3))
+    done
+    return 1
+}
+
+# 测试11: 写入性能测试
+test_performance() {
+    if ! kubectl get pvc test-longhorn-rwo -n "${TEST_NS}" &>/dev/null; then
+        return 1
+    fi
+
+    # 创建性能测试Pod
+    cat <<'PERFPOD' | kubectl apply -f - >/dev/null 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: longhorn-perf-test
+  namespace: TEST_NS_PLACEHOLDER
+spec:
+  containers:
+    - name: perf
+      image: busybox:1.36
+      command: ["sh", "-c"]
+      args:
+        - |
+          # 写入性能测试: 100MB
+          echo "=== 写入性能测试 (100MB) ==="
+          dd if=/dev/zero of=/data/perf_testfile bs=1M count=100 2>&1
+          sync
+          echo ""
+          echo "=== 读取性能测试 ==="
+          dd if=/data/perf_testfile of=/dev/null bs=1M 2>&1
+          echo ""
+          echo "=== 性能测试完成 ==="
+          rm -f /data/perf_testfile
+      volumeMounts:
+        - name: test-vol
+          mountPath: /data
+  volumes:
+    - name: test-vol
+      persistentVolumeClaim:
+        claimName: test-longhorn-rwo
+PERFPOD
+
+    # 替换命名空间
+    kubectl get pod longhorn-perf-test -n "${TEST_NS}" &>/dev/null 2>&1 || \
+        sed "s/TEST_NS_PLACEHOLDER/${TEST_NS}/g" <<'PERFPOD' | kubectl apply -f - >/dev/null 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: longhorn-perf-test
+  namespace: TEST_NS_PLACEHOLDER
+spec:
+  containers:
+    - name: perf
+      image: busybox:1.36
+      command: ["sh", "-c"]
+      args:
+        - |
+          echo "=== 写入性能测试 (100MB) ==="
+          dd if=/dev/zero of=/data/perf_testfile bs=1M count=100 2>&1
+          sync
+          echo ""
+          echo "=== 读取性能测试 ==="
+          dd if=/data/perf_testfile of=/dev/null bs=1M 2>&1
+          echo ""
+          echo "=== 性能测试完成 ==="
+          rm -f /data/perf_testfile
+      volumeMounts:
+        - name: test-vol
+          mountPath: /data
+  volumes:
+    - name: test-vol
+      persistentVolumeClaim:
+        claimName: test-longhorn-rwo
+PERFPOD
+
+    # 等待性能测试Pod完成 (最多180秒)
+    local max_wait=180
+    local waited=0
+    while [[ $waited -lt $max_wait ]]; do
+        local phase
+        phase=$(kubectl get pod longhorn-perf-test -n "${TEST_NS}" \
+            -o jsonpath='{.status.phase}' 2>/dev/null)
+
+        if [[ "${phase}" == "Succeeded" ]]; then
+            # 获取性能输出
+            local perf_output
+            perf_output=$(kubectl logs longhorn-perf-test -n "${TEST_NS}" 2>/dev/null)
+            if echo "${perf_output}" | grep -q "性能测试完成"; then
+                log_info "性能测试输出:"
+                echo "${perf_output}" | tee -a "$LOG_FILE"
                 return 0
             fi
-            sleep 5
-            waited=$((waited + 5))
-        done
-    fi
+        elif [[ "${phase}" == "Failed" ]]; then
+            return 1
+        fi
+        sleep 5
+        waited=$((waited + 5))
+    done
     return 1
 }
 
 # ========================= 汇总报告 =========================
 show_summary() {
-    log_step "测试结果汇总"
+    echo "" | tee -a "$LOG_FILE"
+    echo -e "${BOLD}${CYAN}════════════════════════════════════════════════════════════════${NC}" | tee -a "$LOG_FILE"
+    echo -e "${BOLD}${CYAN}                     验证结果汇总报告                           ${NC}" | tee -a "$LOG_FILE"
+    echo -e "${BOLD}${CYAN}════════════════════════════════════════════════════════════════${NC}" | tee -a "$LOG_FILE"
+    echo "" | tee -a "$LOG_FILE"
 
-    local PASS_COUNT=0
-    local FAIL_COUNT=0
-
+    # 列出所有测试结果
     for result in "${RESULTS[@]}"; do
-        if [[ "${result}" == PASS:* ]]; then
-            echo -e "  ${GREEN}✓${NC} ${result#PASS: }" | tee -a "$LOG_FILE"
-            ((PASS_COUNT++)) || true
-        else
-            echo -e "  ${RED}✗${NC} ${result#FAIL: }" | tee -a "$LOG_FILE"
-            ((FAIL_COUNT++)) || true
-        fi
+        local status="${result%%:*}"
+        local name="${result#*: }"
+        case "${status}" in
+            PASS) echo -e "  ${GREEN}✓${NC} ${name}" | tee -a "$LOG_FILE" ;;
+            FAIL) echo -e "  ${RED}✗${NC} ${name}" | tee -a "$LOG_FILE" ;;
+            SKIP) echo -e "  ${YELLOW}○${NC} ${name} (可选)" | tee -a "$LOG_FILE" ;;
+        esac
     done
 
     echo "" | tee -a "$LOG_FILE"
-    local TOTAL=$((PASS_COUNT + FAIL_COUNT))
-    log_info "总计: ${TOTAL} | 通过: ${PASS_COUNT} | 失败: ${FAIL_COUNT}"
+    echo -e "  ─────────────────────────────────────────────" | tee -a "$LOG_FILE"
+    echo -e "  ${BOLD}总计:${NC} ${TOTAL_TESTS}    ${GREEN}通过:${NC} ${PASS_COUNT}    ${RED}失败:${NC} ${FAIL_COUNT}    ${YELLOW}跳过:${NC} ${SKIP_COUNT}" | tee -a "$LOG_FILE"
+    echo -e "  ─────────────────────────────────────────────" | tee -a "$LOG_FILE"
+    echo "" | tee -a "$LOG_FILE"
+
     log_info "测试日志: ${LOG_FILE}"
 
     if [[ ${FAIL_COUNT} -gt 0 ]]; then
         echo -e "${RED}╔══════════════════════════════════════════════════════╗${NC}" | tee -a "$LOG_FILE"
-        echo -e "${RED}║   结果: FAIL - 存在失败项                           ║${NC}" | tee -a "$LOG_FILE"
+        echo -e "${RED}║   结果: FAIL - 存在 ${FAIL_COUNT} 个失败项                       ║${NC}" | tee -a "$LOG_FILE"
         echo -e "${RED}╚══════════════════════════════════════════════════════╝${NC}" | tee -a "$LOG_FILE"
         return 1
     else
@@ -319,36 +501,41 @@ show_summary() {
 # ========================= 主逻辑 =========================
 main() {
     mkdir -p "$LOG_DIR"
+    banner
 
-    log_step "Longhorn 存储功能验证"
     log_info "测试命名空间: ${TEST_NS}"
     log_info "Longhorn命名空间: ${LONGHORN_NAMESPACE}"
+    echo "" | tee -a "$LOG_FILE"
 
     # 运行所有测试
-    log_step "1. Manager状态检查"
-    run_test "Longhorn Manager运行中" test_manager_running
+    log_step "1. Manager 状态检查"
+    run_test "1.1" "Longhorn Manager 运行中" test_manager_running
 
-    log_step "2. CSI Driver状态检查"
-    run_test "CSI Plugin运行中" test_csi_plugin_running
-    run_test "CSI Provisioner运行中" test_csi_provisioner_running
+    log_step "2. CSI Driver 状态检查"
+    run_test "2.1" "CSI Plugin 运行中" test_csi_plugin_running
+    run_test "2.2" "CSI Provisioner 运行中" test_csi_provisioner_running
 
     log_step "3. 节点就绪检查"
-    run_test "Longhorn节点已注册" test_nodes_ready
+    run_test "3.1" "Longhorn 节点已注册" test_nodes_ready
 
-    log_step "4. StorageClass检查"
-    run_test "longhorn StorageClass存在" test_storageclass_exists
+    log_step "4. StorageClass 检查"
+    run_test "4.1" "longhorn StorageClass 存在" test_storageclass_exists
 
-    log_step "5. PVC动态创建测试"
-    run_test "Longhorn PVC (RWO) 绑定" test_pvc_rwo
+    log_step "5. PVC 动态创建测试"
+    run_test "5.1" "Longhorn PVC (RWO) 绑定" test_pvc_rwo
 
-    log_step "6. Pod挂载读写测试"
-    run_test "Pod挂载Longhorn PVC读写" test_pod_mount
+    log_step "6. Pod 挂载读写测试"
+    run_test "6.1" "Pod 挂载 Longhorn PVC 读写" test_pod_mount
 
-    log_step "7. Dashboard可达性"
-    run_test "Longhorn Dashboard Service存在" test_dashboard
+    log_step "7. Dashboard 可达性"
+    run_optional_test "7.1" "Longhorn Dashboard Service 存在" test_dashboard
 
-    log_step "8. Volume快照 (可选)"
-    run_test "Volume快照功能" test_volume_snapshot
+    log_step "8. Volume 快照功能"
+    run_optional_test "8.1" "Volume 快照创建" test_volume_snapshot
+    run_optional_test "8.2" "Volume 快照恢复" test_snapshot_restore
+
+    log_step "9. 写入性能测试"
+    run_optional_test "9.1" "写入/读取性能 (100MB)" test_performance
 
     # 显示汇总
     show_summary

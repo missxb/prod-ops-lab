@@ -5,7 +5,7 @@
 # 适用系统: 需要kubectl可访问集群, Helm 3.x, ≥2个工作节点
 # 依赖条件: kubectl可用, Helm 3.x可用, open-iscsi已安装
 # 作者: 运维平台团队
-# 版本: 1.1.0
+# 版本: 1.2.0
 # 创建日期: 2026-05-10
 # 更新日期: 2026-05-10
 #
@@ -20,17 +20,18 @@
 #   LONGHORN_VERSION    - Longhorn版本 (默认: v1.6.4)
 #   LONGHORN_NAMESPACE  - Longhorn命名空间 (默认: longhorn-system)
 #   REPLICA_COUNT       - 默认副本数 (默认: 3)
+#   HELM_RETRY_MAX      - Helm安装最大重试次数 (默认: 3)
 #
 # 部署步骤:
 #   1. 检查前置条件 (kubectl, 集群, ≥2节点, open-iscsi)
 #   2. 安装open-iscsi (所有节点)
 #   3. 添加Longhorn Helm仓库
-#   4. helm install longhorn
+#   4. helm install longhorn (含重试逻辑)
 #   5. 等待所有Longhorn Pod就绪
 #   6. 创建StorageClasses (longhorn, longhorn-fast, longhorn-backup)
 #   7. 验证StorageClass
 #   8. 启用Longhorn Dashboard
-#   9. 输出状态报告
+#   9. 输出部署摘要 (Dashboard URL + StorageClass列表)
 ###############################################################################
 set -euo pipefail
 umask 077
@@ -50,7 +51,12 @@ DEPLOY_START=$(date +%s)
 LONGHORN_VERSION="${LONGHORN_VERSION:-v1.6.4}"
 LONGHORN_NAMESPACE="${LONGHORN_NAMESPACE:-longhorn-system}"
 REPLICA_COUNT="${REPLICA_COUNT:-3}"
+HELM_RETRY_MAX="${HELM_RETRY_MAX:-3}"
 ACTION="${ACTION:-deploy}"
+
+# 进度跟踪
+TOTAL_STEPS=7
+CURRENT_STEP=0
 
 # ========================= 日志函数 =========================
 log_info()    { echo -e "${GREEN}[INFO]${NC}  $(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG_FILE"; }
@@ -59,11 +65,24 @@ log_error()   { echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*" | t
 log_step()    { echo -e "${CYAN}[STEP]${NC}  $(date '+%Y-%m-%d %H:%M:%S') === $* ===" | tee -a "$LOG_FILE"; }
 log_success() { echo -e "${GREEN}[OK]${NC}    $(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG_FILE"; }
 
+# 进度指示器
+show_progress() {
+    CURRENT_STEP=$((CURRENT_STEP + 1))
+    local pct=$((CURRENT_STEP * 100 / TOTAL_STEPS))
+    local bar=""
+    local filled=$((pct / 5))
+    local empty=$((20 - filled))
+    for ((i=0; i<filled; i++)); do bar="${bar}█"; done
+    for ((i=0; i<empty; i++)); do bar="${bar}░"; done
+    echo -e "${CYAN}[${bar}] ${pct}% (${CURRENT_STEP}/${TOTAL_STEPS})${NC}" | tee -a "$LOG_FILE"
+}
+
 banner() {
     echo -e "" | tee -a "$LOG_FILE"
     echo -e "${BOLD}${BLUE}" | tee -a "$LOG_FILE"
     echo "╔══════════════════════════════════════════════════════╗" | tee -a "$LOG_FILE"
     echo "║   阶段3 - Longhorn 分布式存储部署                   ║" | tee -a "$LOG_FILE"
+    echo "║   版本: ${LONGHORN_VERSION}  命名空间: ${LONGHORN_NAMESPACE}       ║" | tee -a "$LOG_FILE"
     echo "╚══════════════════════════════════════════════════════╝" | tee -a "$LOG_FILE"
     echo -e "${NC}" | tee -a "$LOG_FILE"
 }
@@ -78,6 +97,7 @@ cleanup() {
         echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}" | tee -a "$LOG_FILE"
         echo -e "${GREEN}║   ✓ Longhorn 部署成功                               ║${NC}" | tee -a "$LOG_FILE"
         echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}" | tee -a "$LOG_FILE"
+        show_deploy_summary
         log_info "总耗时: ${elapsed}秒"
         log_info "日志文件: ${LOG_FILE}"
     else
@@ -86,6 +106,10 @@ cleanup() {
         echo -e "${RED}╚══════════════════════════════════════════════════════╝${NC}" | tee -a "$LOG_FILE"
         log_error "总耗时: ${elapsed}秒"
         log_error "请检查日志: ${LOG_FILE}"
+        log_error "常见解决方法:"
+        log_error "  1. 检查所有节点 open-iscsi 是否运行: systemctl status iscsid"
+        log_error "  2. 检查 Helm 仓库是否可达: helm repo update"
+        log_error "  3. 检查集群资源是否充足: kubectl top nodes"
     fi
     return $exit_code
 }
@@ -95,7 +119,7 @@ trap 'log_error "收到信号，正在退出..."; exit 1' SIGINT SIGTERM
 # ========================= 工具函数 =========================
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        log_error "此脚本必须以root权限运行"
+        log_error "此脚本必须以root权限运行 (请使用 sudo 或以 root 身份执行)"
         exit 1
     fi
 }
@@ -106,6 +130,7 @@ check_lock() {
         pid=$(cat "$LOCK_FILE" 2>/dev/null || true)
         if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
             log_error "另一个部署实例正在运行 (PID: $pid)"
+            log_error "如确认无其他进程运行，可手动删除锁文件: rm -f $LOCK_FILE"
             exit 1
         fi
         log_warn "发现残留锁文件，已清理"
@@ -134,6 +159,7 @@ ENVIRONMENT VARIABLES:
     LONGHORN_VERSION    Longhorn版本 (默认: v1.6.4)
     LONGHORN_NAMESPACE  命名空间 (默认: longhorn-system)
     REPLICA_COUNT       默认副本数 (默认: 3)
+    HELM_RETRY_MAX      Helm安装最大重试次数 (默认: 3)
 
 EXAMPLES:
     $(basename "$0") deploy
@@ -146,11 +172,13 @@ EOF
 
 # ========================= 前置检查 =========================
 preflight_check() {
-    log_step "前置检查"
+    log_step "1/${TOTAL_STEPS} 前置检查"
+    show_progress
 
     # 检查kubectl
     if ! command -v kubectl &>/dev/null; then
         log_error "kubectl未安装"
+        log_error "安装方法: curl -LO https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
         exit 1
     fi
 
@@ -163,7 +191,8 @@ preflight_check() {
 
     # 检查Helm
     if ! command -v helm &>/dev/null; then
-        log_error "Helm未安装，请先安装Helm 3.x"
+        log_error "Helm未安装"
+        log_error "安装方法: curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash"
         exit 1
     fi
 
@@ -176,6 +205,7 @@ preflight_check() {
     node_count=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
     if [[ "${node_count}" -lt 2 ]]; then
         log_error "Longhorn至少需要2个节点 (当前: ${node_count})"
+        log_error "请先添加足够的Worker节点"
         exit 1
     fi
     log_success "集群节点数量满足要求 (${node_count} ≥ 2)"
@@ -185,6 +215,7 @@ preflight_check() {
     not_ready=$(kubectl get nodes --no-headers 2>/dev/null | grep -cv " Ready " || echo "0")
     if [[ "${not_ready}" -gt 0 ]]; then
         log_warn "有 ${not_ready} 个节点未就绪"
+        kubectl get nodes --no-headers 2>/dev/null | grep -v " Ready " | tee -a "$LOG_FILE"
     else
         log_success "所有节点已就绪"
     fi
@@ -194,16 +225,46 @@ preflight_check() {
 
 # ========================= 部署函数 =========================
 
+# 检查所有节点的 open-iscsi 状态
+check_iscsi_on_nodes() {
+    log_step "2/${TOTAL_STEPS} 检查并安装 open-iscsi"
+    show_progress
+
+    log_info "检查所有节点的 open-iscsi 状态..."
+    local all_ok=true
+    local nodes
+    nodes=$(kubectl get nodes --no-headers -o custom-columns='NAME:.metadata.name' 2>/dev/null)
+
+    while IFS= read -r node; do
+        [[ -z "${node}" ]] && continue
+        # 通过DaemonSet检查iscsid是否运行
+        local iscsi_running
+        iscsi_running=$(kubectl debug node/"${node}" --image=busybox --quiet -- chroot /host systemctl is-active iscsid 2>/dev/null || echo "unknown")
+        if [[ "${iscsi_running}" == "active" ]]; then
+            log_success "节点 ${node}: open-iscsi 已运行"
+        else
+            log_warn "节点 ${node}: open-iscsi 状态=${iscsi_running}"
+            all_ok=false
+        fi
+    done <<< "${nodes}"
+
+    if [[ "${all_ok}" == false ]]; then
+        log_warn "部分节点 open-iscsi 未就绪，尝试自动安装..."
+        install_iscsi
+    else
+        log_success "所有节点 open-iscsi 正常"
+    fi
+}
+
 # 安装open-iscsi依赖
 install_iscsi() {
-    log_step "安装open-iscsi依赖"
+    log_info "通过DaemonSet在所有节点安装open-iscsi..."
 
     # 检查是否有install-iscsi.sh脚本
     if [[ -f "${CONFIG_DIR}/install-iscsi.sh" ]]; then
         log_info "使用install-iscsi.sh安装open-iscsi..."
         bash "${CONFIG_DIR}/install-iscsi.sh" 2>&1 | tee -a "$LOG_FILE" || true
     else
-        log_info "通过DaemonSet安装open-iscsi..."
         # 使用DaemonSet在所有节点安装open-iscsi
         cat <<'ISCSI_DS' | kubectl apply -f - 2>&1 | tee -a "$LOG_FILE" || true
 apiVersion: apps/v1
@@ -255,7 +316,8 @@ ISCSI_DS
 
 # 添加Longhorn Helm仓库
 add_helm_repo() {
-    log_step "添加Longhorn Helm仓库"
+    log_step "3/${TOTAL_STEPS} 添加Longhorn Helm仓库"
+    show_progress
 
     if helm repo list 2>/dev/null | grep -q "longhorn"; then
         log_info "Longhorn Helm仓库已存在"
@@ -265,6 +327,7 @@ add_helm_repo() {
             log_success "Longhorn Helm仓库已添加"
         else
             log_error "Longhorn Helm仓库添加失败"
+            log_error "请检查网络连接: curl -I https://charts.longhorn.io"
             return 1
         fi
     fi
@@ -274,12 +337,40 @@ add_helm_repo() {
     log_success "Helm仓库已更新"
 }
 
+# 带重试逻辑的Helm安装
+install_longhorn_with_retry() {
+    local max_retries="${HELM_RETRY_MAX}"
+    local attempt=1
+
+    while [[ ${attempt} -le ${max_retries} ]]; do
+        log_info "尝试安装/升级 Longhorn (第 ${attempt}/${max_retries} 次)..."
+        if install_longhorn; then
+            return 0
+        fi
+
+        if [[ ${attempt} -lt ${max_retries} ]]; then
+            local wait_time=$((attempt * 15))
+            log_warn "安装失败，${wait_time}秒后重试..."
+            sleep "${wait_time}"
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    log_error "Longhorn 安装失败，已尝试 ${max_retries} 次"
+    log_error "请检查:"
+    log_error "  1. Helm 仓库是否可达: helm repo update"
+    log_error "  2. 集群资源是否充足: kubectl top nodes"
+    log_error "  3. 网络代理设置是否正确"
+    return 1
+}
+
 # 使用Helm安装Longhorn
 install_longhorn() {
-    log_step "Helm安装Longhorn"
+    log_step "4/${TOTAL_STEPS} Helm安装Longhorn"
+    show_progress
 
-    # 创建命名空间
-    log_info "创建命名空间 ${LONGHORN_NAMESPACE}"
+    # 创建命名空间 (支持升级场景)
+    log_info "创建/确认命名空间 ${LONGHORN_NAMESPACE}"
     kubectl create namespace "${LONGHORN_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f - 2>&1 | tee -a "$LOG_FILE"
 
     # 准备Helm values
@@ -289,8 +380,13 @@ install_longhorn() {
         values_file=""
     fi
 
-    # 升级或安装
-    log_info "安装Longhorn ${LONGHORN_VERSION}..."
+    # 检查是否已安装 (处理升级场景)
+    local release_exists=false
+    if helm status longhorn -n "${LONGHORN_NAMESPACE}" &>/dev/null 2>&1; then
+        release_exists=true
+        log_info "检测到已存在的 Longhorn release，将执行升级..."
+    fi
+
     local helm_args=(
         install longhorn longhorn/longhorn
         --namespace "${LONGHORN_NAMESPACE}"
@@ -310,21 +406,26 @@ install_longhorn() {
     if helm "${helm_args[@]}" 2>&1 | tee -a "$LOG_FILE"; then
         log_success "Longhorn Helm安装成功"
     else
-        # 尝试升级
-        log_warn "安装失败，尝试升级..."
-        if helm upgrade longhorn longhorn/longhorn \
-            --namespace "${LONGHORN_NAMESPACE}" \
-            --version "${LONGHORN_VERSION}" \
-            --set "defaultSettings.defaultReplicaCount=${REPLICA_COUNT}" \
-            --set "defaultSettings.defaultDataPath=/var/lib/longhorn" \
-            --set "persistence.enabled=true" \
-            --set "ingress.enabled=true" \
-            --wait \
-            --timeout 600s \
-            ${values_file:+-f "${values_file}"} 2>&1 | tee -a "$LOG_FILE"; then
-            log_success "Longhorn Helm升级成功"
+        # 如果install失败且release已存在，尝试升级
+        if [[ "${release_exists}" == true ]]; then
+            log_warn "安装失败，尝试升级已有release..."
+            if helm upgrade longhorn longhorn/longhorn \
+                --namespace "${LONGHORN_NAMESPACE}" \
+                --version "${LONGHORN_VERSION}" \
+                --set "defaultSettings.defaultReplicaCount=${REPLICA_COUNT}" \
+                --set "defaultSettings.defaultDataPath=/var/lib/longhorn" \
+                --set "persistence.enabled=true" \
+                --set "ingress.enabled=true" \
+                --wait \
+                --timeout 600s \
+                ${values_file:+-f "${values_file}"} 2>&1 | tee -a "$LOG_FILE"; then
+                log_success "Longhorn Helm升级成功"
+            else
+                log_error "Longhorn Helm升级也失败"
+                return 1
+            fi
         else
-            log_error "Longhorn Helm安装/升级失败"
+            log_error "Longhorn Helm安装失败 (且非升级场景)"
             return 1
         fi
     fi
@@ -332,7 +433,8 @@ install_longhorn() {
 
 # 等待Longhorn Pod就绪
 wait_for_longhorn() {
-    log_step "等待Longhorn Pod就绪"
+    log_step "5/${TOTAL_STEPS} 等待Longhorn Pod就绪"
+    show_progress
 
     log_info "等待所有Longhorn Pod就绪 (最多300秒)..."
     local max_wait=300
@@ -357,13 +459,15 @@ wait_for_longhorn() {
     done
 
     log_error "Longhorn Pod未在 ${max_wait}秒内全部就绪"
+    log_error "当前Pod状态:"
     kubectl get pods -n "${LONGHORN_NAMESPACE}" 2>&1 | tee -a "$LOG_FILE"
     return 1
 }
 
 # 创建StorageClasses
 deploy_storageclasses() {
-    log_step "创建StorageClass"
+    log_step "6/${TOTAL_STEPS} 创建StorageClass"
+    show_progress
 
     # 应用默认StorageClass
     if [[ -f "${CONFIG_DIR}/storageclass-default.yaml" ]]; then
@@ -398,6 +502,44 @@ deploy_storageclasses() {
     # 列出StorageClass
     log_info "当前StorageClass列表:"
     kubectl get storageclass 2>&1 | tee -a "$LOG_FILE"
+}
+
+# 显示部署摘要
+show_deploy_summary() {
+    echo ""
+    log_step "7/${TOTAL_STEPS} 部署摘要"
+    show_progress
+
+    # Dashboard信息
+    local dashboard_svc
+    dashboard_svc=$(kubectl get svc -n "${LONGHORN_NAMESPACE}" longhorn-frontend \
+        -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "未就绪")
+    local dashboard_port
+    dashboard_port=$(kubectl get svc -n "${LONGHORN_NAMESPACE}" longhorn-frontend \
+        -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || echo "80")
+
+    echo ""
+    echo -e "${BOLD}${GREEN}Longhorn 部署摘要${NC}"
+    echo "════════════════════════════════════════════════════════════════"
+    echo ""
+    echo -e "  ${BOLD}版本${NC}:          ${LONGHORN_VERSION}"
+    echo -e "  ${BOLD}命名空间${NC}:      ${LONGHORN_NAMESPACE}"
+    echo -e "  ${BOLD}副本数${NC}:        ${REPLICA_COUNT}"
+    echo ""
+    echo -e "  ${BOLD}Dashboard${NC}:     http://${dashboard_svc}:${dashboard_port}"
+    echo ""
+    echo -e "  ${BOLD}StorageClass:${NC}"
+    kubectl get storageclass 2>/dev/null | grep longhorn | sed 's/^/    /' | tee -a "$LOG_FILE" || echo "    (获取中...)"
+    echo ""
+    echo -e "  ${BOLD}Pod 状态:${NC}"
+    kubectl get pods -n "${LONGHORN_NAMESPACE}" --no-headers 2>/dev/null | \
+        awk '{printf "    %-50s %s\n", $1, $3}' | tee -a "$LOG_FILE" || echo "    (获取中...)"
+    echo ""
+    echo -e "  ${BOLD}节点状态:${NC}"
+    kubectl get nodes -l longhorn-node=true --no-headers 2>/dev/null | \
+        awk '{printf "    %-30s %s\n", $1, $2}' | tee -a "$LOG_FILE" || echo "    (获取中...)"
+    echo ""
+    echo "════════════════════════════════════════════════════════════════"
 }
 
 # 显示部署状态
@@ -487,6 +629,7 @@ main() {
             ;;
         *)
             log_error "未知操作: ${ACTION}"
+            log_error "可用操作: deploy, verify, status, delete"
             usage
             exit 1
             ;;
@@ -504,14 +647,14 @@ main() {
             # 步骤1: 前置检查
             preflight_check
 
-            # 步骤2: 安装open-iscsi
-            install_iscsi
+            # 步骤2: 检查并安装open-iscsi
+            check_iscsi_on_nodes
 
             # 步骤3: 添加Helm仓库
             add_helm_repo
 
-            # 步骤4: Helm安装Longhorn
-            install_longhorn
+            # 步骤4: Helm安装Longhorn (含重试)
+            install_longhorn_with_retry
 
             # 步骤5: 等待Pod就绪
             wait_for_longhorn
@@ -519,8 +662,8 @@ main() {
             # 步骤6: 创建StorageClass
             deploy_storageclasses
 
-            # 步骤7: 显示状态
-            show_status
+            # 步骤7: 显示部署摘要
+            show_deploy_summary
 
             log_success "Longhorn部署完成"
             ;;

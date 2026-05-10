@@ -1,11 +1,91 @@
 # 阶段3：存储层配置详细文档
 
 ## 文档信息
-- 版本：v1.0
-- 更新日期：2026-05-09
+- 版本：v1.1
+- 更新日期：2026-05-10
 - 维护团队：云原生平台运维组
 
 > **📌 注意：本项目默认使用Longhorn作为存储方案。** Longhorn提供轻量级分布式块存储，支持副本复制、快照备份，部署简单，适合中小规模生产环境。如需其他方案，可参考下文的NFS和Ceph备选方案。
+
+---
+
+## 快速开始
+
+只需3条命令即可部署Longhorn分布式存储：
+
+```bash
+# 1. 安装前置依赖 (所有节点)
+apt-get install -y open-iscsi nfs-common && systemctl enable --now iscsid
+
+# 2. 部署Longhorn
+cd scripts/03-storage
+./deploy-storage.sh deploy
+
+# 3. 验证部署
+./deploy-storage.sh -t longhorn verify
+```
+
+部署完成后，访问 Longhorn Dashboard:
+```bash
+kubectl -n longhorn-system port-forward svc/longhorn-frontend 8080:80
+# 浏览器打开 http://localhost:8080
+```
+
+---
+
+## 存储选型决策树
+
+```
+你需要什么类型的存储？
+│
+├─► 需要多节点同时读写 (RWX)?
+│   │
+│   ├─► 是 → 是否已有NFS服务器？
+│   │   │
+│   │   ├─► 是 → 使用 NFS
+│   │   │       命令: ./deploy-storage.sh -t nfs -s <NFS_IP> -p /exports
+│   │   │
+│   │   └─► 否 → 使用 Longhorn NFS共享模式
+│   │           在StorageClass中设置 nfs: "true"
+│   │
+│   └─► 否 → 继续下面的判断
+│
+├─► 节点数量?
+│   │
+│   ├─► ≥3 节点 且 需要高IOPS?
+│   │   │
+│   │   ├─► 是 → 使用 Rook-Ceph (备选方案)
+│   │   │       命令: ./deploy-storage.sh -t ceph deploy
+│   │   │       注意: 需要≥3节点, 每节点≥2GB空闲内存
+│   │   │
+│   │   └─► 否 → 使用 Longhorn (推荐默认)
+│   │           命令: ./deploy-storage.sh deploy
+│   │
+│   ├─► 2 节点 → 使用 Longhorn
+│   │           命令: ./deploy-storage.sh deploy
+│   │
+│   └─► 1 节点 → 使用 local-path (内置)
+│
+├─► 是否用于数据库?
+│   │
+│   ├─► 是 → 使用 Longhorn-fast (高性能StorageClass)
+│   │       StorageClass: longhorn-fast
+│   │       配置: numberOfReplica=2, dataLocality=strict-local
+│   │
+│   └─► 否 → 使用 Longhorn (默认StorageClass)
+│
+└─► 学习/测试环境?
+    │
+    ├─► 是 → NFS (最简单) 或 Longhorn (2副本)
+    │
+    └─► 否 → Longhorn (推荐默认)
+```
+
+**快速总结：**
+- **90%的场景使用 Longhorn 即可满足需求**
+- 需要高IOPS大规模存储 → 考虑 Ceph
+- 需要最简单的共享存储 → 考虑 NFS
+- 数据库场景 → 使用 longhorn-fast StorageClass
 
 ---
 
@@ -76,7 +156,7 @@
 ## 3. 前置条件
 
 - 阶段2（K8s 集群部署）已完成
-- 至少 3 个 Worker 节点
+- 至少 2 个 Worker 节点 (Longhorn) / 3 个 (Ceph)
 - 每个节点有额外磁盘用于存储（建议 SSD，至少 100GB）
 - 节点间网络带宽 >= 1Gbps
 - 已安装 Helm（包管理器）
@@ -838,8 +918,29 @@ kubectl delete volumesnapshot test-snapshot
 
 ## 6. 常见问题
 
-### Q1: PVC 一直处于 Pending 状态
+### Q1: 如何检查 Longhorn 运行状态？
+
+```bash
+# 检查所有 Longhorn Pod 状态
+kubectl -n longhorn-system get pods
+
+# 检查 Longhorn 节点
+kubectl -n longhorn-system get nodes.longhorn.io
+
+# 检查磁盘状态
+kubectl -n longhorn-system get disks.longhorn.io
+
+# 检查卷状态
+kubectl -n longhorn-system get volumes.longhorn.io
+
+# 查看 Manager 日志
+kubectl -n longhorn-system logs -l app=longhorn-manager --tail=100
+```
+
+### Q2: PVC 一直处于 Pending 状态
+
 **原因**：StorageClass 未正确配置或没有可用磁盘
+
 **解决**：
 ```bash
 # 检查 PVC 事件
@@ -855,33 +956,61 @@ kubectl -n longhorn-system get disks.longhorn.io
 lsblk
 ```
 
-### Q2: 卷创建失败
-**原因**：磁盘空间不足或 Longhorn 组件异常
-**解决**：
+### Q3: 如何扩容 Longhorn 卷？
+
 ```bash
-# 检查 Longhorn 日志
-kubectl -n longhorn-system logs <longhorn-manager-pod>
+# 方法1: 编辑 PVC
+kubectl edit pvc <pvc-name> -n <namespace>
+# 修改 spec.resources.requests.storage: 20Gi
 
-# 检查磁盘空间
-df -h /mnt/longhorn
+# 方法2: 使用 kubectl patch
+kubectl patch pvc <pvc-name> -n <namespace> \
+    -p '{"spec":{"resources":{"requests":{"storage":"20Gi"}}}}'
 
-# 检查卷状态
-kubectl -n longhorn-system get volumes.longhorn.io
+# 验证扩容
+kubectl get pvc <pvc-name> -n <namespace>
 
-# 重启 Longhorn 组件
-kubectl -n longhorn-system rollout restart daemonset/longhorn-manager
+# 注意: Longhorn 支持在线扩容，无需停机
+# 确保 StorageClass 设置了 allowVolumeExpansion: true
 ```
 
-### Q3: 数据丢失
-**原因**：卷回收策略设置错误或误删 PVC
-**解决**：
+### Q4: 如何备份 Longhorn 卷？
+
 ```bash
-# 如果有快照，从快照恢复
+# 方法1: 手动创建快照
+kubectl apply -f - <<EOF
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: backup-$(date +%Y%m%d)
+  namespace: <namespace>
+spec:
+  volumeSnapshotClassName: longhorn
+  source:
+    persistentVolumeClaimName: <pvc-name>
+EOF
+
+# 方法2: 配置 Velero 自动备份 (推荐)
+# 安装 Velero 后创建备份计划
+velero schedule create daily-longhorn-backup \
+    --schedule="0 2 * * *" \
+    --include-namespaces <namespace> \
+    --ttl 720h
+
+# 方法3: 通过 Longhorn Dashboard 备份
+# 访问 Dashboard → Volume → 选择卷 → Create Backup
+# 可配置备份到 S3/NFS
+
+# 查看现有备份
+kubectl -n longhorn-system get backups.longhorn.io
+
+# 恢复备份
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: restored-pvc
+  namespace: <namespace>
 spec:
   accessModes:
     - ReadWriteOnce
@@ -890,52 +1019,16 @@ spec:
       storage: 10Gi
   storageClassName: longhorn
   dataSource:
-    name: <snapshot-name>
+    name: <backup-name>
     kind: VolumeSnapshot
     apiGroup: snapshot.storage.k8s.io
 EOF
-
-# 如果没有快照，检查 Longhorn 卷副本
-kubectl -n longhorn-system get volumes.longhorn.io -o yaml
 ```
 
-### Q4: 存储性能差
-**原因**：IO 调度器不当、缓存配置错误或副本过多
-**解决**：
-```bash
-# 检查 IO 调度器
-cat /sys/block/sda/queue/scheduler
+### Q5: 节点磁盘故障怎么办？
 
-# 优化 IO 调度器
-echo mq-deadline > /sys/block/sda/queue/scheduler
-
-# 检查副本数（减少副本提高性能）
-kubectl get sc longhorn-fast -o yaml | grep numberOfReplica
-
-# 使用本地存储（最高性能）
-kubectl get sc longhorn-fast -o yaml | grep dataLocality
-# 确保为 strict-local
-```
-
-### Q5: 快照创建失败
-**原因**：VolumeSnapshot CRD 未安装或配置错误
-**解决**：
-```bash
-# 检查 CRD
-kubectl get crd | grep snapshot
-
-# 检查 VolumeSnapshotClass
-kubectl get volumesnapshotclass
-
-# 检查快照控制器
-kubectl get pods -n kube-system | grep snapshot
-
-# 重新安装快照控制器
-kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/v6.3.0/deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml
-```
-
-### Q6: 节点磁盘故障
 **原因**：物理磁盘损坏
+
 **解决**：
 ```bash
 # 检查 Longhorn 磁盘状态
@@ -948,6 +1041,27 @@ kubectl -n longhorn-system patch disks.longhorn.io <disk-name> \
 # Longhorn 会自动重建副本到健康磁盘
 # 等待卷恢复健康
 kubectl -n longhorn-system get volumes.longhorn.io -w
+```
+
+### Q6: 如何提升 Longhorn 写入性能？
+
+```bash
+# 1. 使用高性能 StorageClass (减少副本，本地存储)
+# 使用 longhorn-fast: numberOfReplica=2, dataLocality=strict-local
+
+# 2. 优化 IO 调度器
+echo mq-deadline > /sys/block/sda/queue/scheduler
+
+# 3. 调整内核参数
+echo 5 > /proc/sys/vm/dirty_ratio
+echo 1 > /proc/sys/vm/dirty_background_ratio
+
+# 4. 使用 SSD 作为 Longhorn 数据目录
+# 在 Helm values 中设置:
+# defaultSettings.defaultDataPath: /mnt/ssd/longhorn
+
+# 5. 减少副本数 (测试环境)
+# --set defaultSettings.defaultReplicaCount=2
 ```
 
 ## 7. 回滚方案
@@ -1017,6 +1131,8 @@ ETCDCTL_API=3 etcdctl snapshot restore <etcd-backup> \
 
 ## 8. 备选方案: Ceph分布式存储 (Rook-Ceph)
 
+> ⚠️ **如无特殊需求，使用默认Longhorn即可。** Ceph适用于大规模生产环境或需要高IOPS的场景，但部署和维护复杂度更高。
+
 ### 8.1 方案对比
 
 | 特性 | NFS | Ceph |
@@ -1053,42 +1169,44 @@ ETCDCTL_API=3 etcdctl snapshot restore <etcd-backup> \
 
 ---
 
-## 9. 备选方案: Longhorn分布式存储
+## 9. 备选方案: NFS网络文件系统
+
+> ⚠️ **如无特殊需求，使用默认Longhorn即可。** NFS适用于学习测试环境或已有NFS基础设施的场景。
 
 ### 9.1 方案对比
 
-| 特性 | NFS | Ceph | Longhorn |
-|------|-----|------|----------|
-| 架构 | 单点 | 分布式 | 分布式 |
-| 性能 | 中等 | 高 | 中高 |
-| 高可用 | 需额外配置 | 内置 | 内置副本 |
-| 存储类型 | 文件 | 块/对象/文件 | 块 |
-| 复杂度 | 低 | 中高 | 中 |
-| 资源占用 | 低 | 高 | 中 |
-| 适用场景 | 中小规模 | 生产/大规模 | 中小规模/边缘 |
-| K8s集成 | NFS Provisioner | Rook-Ceph | Longhorn CSI |
-| 特色 | 简单 | 成熟稳定 | 轻量/快照/备份 |
+| 特性 | NFS | Longhorn |
+|------|-----|----------|
+| 架构 | 单点 | 分布式 |
+| 性能 | 中等 | 中高 |
+| 高可用 | 需额外配置 | 内置副本 |
+| 存储类型 | 文件 | 块 |
+| 复杂度 | 低 | 中 |
+| 资源占用 | 低 | 中 |
+| 适用场景 | 中小规模 | 中小规模/边缘 |
+| K8s集成 | NFS Provisioner | Longhorn CSI |
+| 特色 | 简单 | 轻量/快照/备份 |
 
 ### 9.2 部署步骤
 
-1. 所有节点安装 open-iscsi
-2. 添加 Longhorn Helm repo
-3. helm install longhorn
-4. 创建 StorageClass (longhorn-default/fast/backup)
+1. 准备NFS服务器 (导出路径)
+2. 所有节点安装 nfs-common
+3. 部署 NFS Subdir External Provisioner
+4. 创建 StorageClass
 5. 验证存储功能
 
 ### 9.3 脚本说明
 
-- 06-deploy-longhorn.sh: 部署 Longhorn (支持 deploy/delete/status)
-- 07-verify-longhorn.sh: 验证 Longhorn 存储功能
-- configs/longhorn/: Longhorn 配置文件 (Helm values/storageclass)
+- 01-nfs-provisioner.sh: 部署 NFS Provisioner
+- 02-storageclass.sh: 创建 StorageClass
+- 03-verify-storage.sh: 验证存储功能
 
 ### 9.4 注意事项
 
-- 至少需要2个节点
-- 所有节点需要安装 open-iscsi
-- 默认3副本，学习环境可以改为2副本节省空间
-- 支持 VolumeSnapshot 和备份到 S3
+- NFS服务器是单点，需要额外配置高可用
+- 性能受限于NFS服务器的磁盘IO
+- 不支持VolumeSnapshot
+- 推荐用于学习测试环境
 
 ---
 
