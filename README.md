@@ -1,6 +1,6 @@
 # 企业级云原生运维平台
 
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License   许可证](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE   许可证)
 [![Platform](https://img.shields.io/badge/platform-CentOS%207%2F8%2FRocky%20Linux-green.svg)]()
 [![Kubernetes](https://img.shields.io/badge/kubernetes-1.28%2B-blue.svg)]()
 
@@ -9,7 +9,7 @@
 ## 项目架构
 
 ```
-enterprise-cloud-native-platform/
+enterprise-cloud-native-platform/企业云原生平台/
 ├── scripts/           # 部署脚本（10阶段 × 多个子脚本）
 │   ├── 01-init/       # 基础环境初始化
 │   ├── 02-k8s/        # Kubernetes集群搭建
@@ -22,10 +22,10 @@ enterprise-cloud-native-platform/
 │   ├── 09-automation/ # 自动化运维
 │   ├── 10-security/   # 安全加固
 │   ├── lib/           # 共享函数库
-│   ├── verify-*.sh    # 验证脚本
-│   └── teardown/      # 回滚脚本
+│   ├── verify-*.sh    # 验证脚本│   ├── verify-*.sh    # Verification scripts
+│   └── teardown/      # 回滚脚本│   └── teardown/      # Rollback scripts
 ├── configs/           # 配置文件
-├── manifests/         # Kubernetes Manifests
+├── manifests/         # Kubernetes Manifests├── manifests/         # Kubernetes 部署清单
 ├── ansible/           # Ansible自动化
 ├── docs/              # 文档
 └── reports/           # 报告输出
@@ -35,8 +35,8 @@ enterprise-cloud-native-platform/
 
 | 领域 | 技术 |
 |------|------|
-| 容器运行时 | Docker CE + containerd |
-| 容器编排 | Kubernetes 1.28 + kubeadm |
+| 容器运行时 | Docker CE + containerd || Container Runtime | Docker CE containerd |
+| 容器编排 | Kubernetes 1.28 + kubeadm || Container Orchestration | Kubernetes 1.28   kubeadm |
 | CNI网络 | Calico |
 | 存储 | NFS + Longhorn |
 | CI/CD | GitLab + Jenkins + Harbor + Trivy |
@@ -46,10 +46,67 @@ enterprise-cloud-native-platform/
 | 自动化 | Ansible |
 | 安全 | cert-manager + RBAC + NetworkPolicy + OPA/Gatekeeper |
 
+## 资源清单
+    ================================================================================
+      云服务器资源清单（生产级）
+    ================================================================================
+    
+      角色              主机名           CPU   内存   系统盘   数据盘    数量
+      ─────────────────────────────────────────────────────────────────────
+      Master节点        k8s-master-01    4核   8GB    40GB     -         1Master node: k8s-master-01, 4 cores, 8GB RAM, 40GB storage, - , 1
+      Master节点        k8s-master-02    4核   8GB    40GB     -         1Master node: k8s-master-02, 4 cores, 8GB RAM, 40GB storage, - , 1
+      Master节点        k8s-master-03    4核   8GB    40GB     -         1Master node: k8s-master-03, 4 cores, 8GB RAM, 40GB storage, - , 1
+      Worker节点        k8s-worker-01    4核   16GB   40GB     100GB     1Worker node: k8s-worker-01, 4 cores, 16GB RAM, 40GB disk space, 100GB SSD, 1
+      Worker节点        k8s-worker-02    4核   16GB   40GB     100GB     1Worker node: k8s-worker-02, 4 cores, 16GB RAM, 40GB disk space, 100GB network bandwidth, 1 instance.
+      Worker节点        k8s-worker-03    4核   16GB   40GB     100GB     1Worker node: k8s-worker-03, 4 cores, 16GB RAM, 40GB disk, 100GB disk, 1
+      存储节点          storage-01       2核   8GB    40GB     500GB     1Storage node: storage-01, 2 cores, 8GB, 40GB, 500GB, 1
+    
+      合计: 7台
+      总资源: 24核CPU / 80GB内存 / 280GB系统盘 / 800GB数据盘
+    
+      各角色说明:
+    
+      Master节点 (3台)
+        运行: etcd集群、kube-apiserver、kube-controller-manager、kube-schedulerRun: etcd cluster, kube-apiserver, kube-controller-manager, kube-scheduler
+        要求: 4核8GB，etcd对磁盘IO敏感，建议SSD4 cores and 8GB of memory are required. etcd is sensitive to disk I/O, so it is recommended to use SSD.
+        端口: 6443(API)、2379-2380(etcd)、10250-10259(控制面板)Ports: 6443 (API), 2379-2380 (etcd), 10250-10259 (control panel)
+    
+      Worker节点 (3台)
+        运行: 实际业务Pod、系统组件
+        要求: 4核16GB，内存越大能跑的Pod越多
+        端口: 10250(kubelet)、30000-32767(NodePort)Port: 10250 (kubelet), 30000 - 32767 (NodePort)
+    
+      存储节点 (1台)
+        运行: NFS服务端，提供持久化存储
+        要求: 2核8GB，500GB数据盘（存日志/镜像/数据库）
+        端口: 2049(NFS)、111(rpcbind)Ports: 2049 (NFS), 111 (rpcbind)
+    
+      网络要求:
+        - 所有节点同一VPC，内网互通
+        - 所有节点可访问外网（拉取镜像）
+        - 安全组放通:
+          节点间: 全部端口互通
+          外网: 仅Master-01的6443(可选，kubectl远程用)External network: Only 6443 of Master-01 (optional, for remote kubectl use)
+          NodePort: 30000-32767对外开放NodePort: 30000 - 32767 are open to the public.
+    
+      系统要求:
+        - CentOS 7.9 或 Rocky Linux 8/9（推荐Rocky 9）
+        - 关闭SELinux和firewalld（或按脚本配置）Disable SELinux and firewalld (or configure as per the script)
+        - 每台独立主机名
+        - 时间同步（chrony）
+        - 所有节点root登录或sudo权限
+    
+      磁盘规划:
+        storage-01 数据盘挂载到 /data/nfsMount the storage-01 data disk to /data/nfs
+        Worker节点数据盘挂载到 /var/lib/containerd（容器存储）The data disk of the Worker node is mounted to /var/lib/containerd (container storage).
+
+
+
+
 ## 快速开始
 
 ### 环境要求
-- 操作系统: CentOS 7/8 或 Rocky Linux 8/9
+- 操作系统: CentOS 7/8 或 Rocky Linux 8/9- Operating System: CentOS 7/8 or Rocky Linux 8/9
 - 内存: ≥4GB
 - 磁盘: ≥40GB
 - 网络: 节点间可通信
@@ -60,47 +117,47 @@ enterprise-cloud-native-platform/
 ```bash
 # 1. 克隆项目
 git clone https://github.com/missxb/enterprise-cloud-native-platform.git
-cd enterprise-cloud-native-platform
+cd enterprise-cloud-native-platform切换到企业级云原生平台目录
 
 # 2. 阶段1: 基础环境初始化
-bash scripts/01-init/init-all.sh
+bash scripts/01-init/init-all.sh运行 bash 脚本/01-init/init-all.sh
 
 # 3. 验证部署
-bash scripts/verify-phase1.sh
+bash scripts/verify-phase1.sh运行 bash 脚本 scripts/verify-phase1.sh
 
 # 4. 继续后续阶段...
-# bash scripts/02-k8s/deploy-k8s.sh
-# bash scripts/03-storage/deploy-storage.sh
+# bash scripts/02-k8s/deploy-k8s.sh运行 `bash scripts/02-k8s/deploy-k8s.sh` 脚本。
+# bash scripts/03-storage/deploy-storage.sh运行脚本：bash scripts/03-storage/deploy-storage.sh
 # ...
 ```
 
 ### 完整部署
 
-```bash
+```bash   ”“bash
 # 部署所有阶段
-bash scripts/01-init/init-all.sh
-bash scripts/02-k8s/deploy-k8s.sh
-bash scripts/03-storage/deploy-storage.sh
-bash scripts/04-cicd/deploy-cicd.sh
-bash scripts/05-app/deploy-app.sh
-bash scripts/06-monitor/deploy-monitor.sh
-bash scripts/07-logging/deploy-logging.sh
-bash scripts/08-ha/deploy-ha.sh
-bash scripts/09-automation/deploy-automation.sh
-bash scripts/10-security/deploy-security.sh
+bash scripts/01-init/init-all.sh运行 bash 脚本/01-init/init-all.sh
+bash scripts/02-k8s/deploy-k8s.sh运行 bash 脚本/02-k8s/deploy-k8s.sh
+bash scripts/03-storage/deploy-storage.sh运行 bash 脚本：scripts/03-storage/deploy-storage.sh
+bash scripts/04-cicd/deploy-cicd.sh运行 bash 脚本：scripts/04-cicd/deploy-cicd.sh
+bash scripts/05-app/deploy-app.sh运行 bash 脚本/05-app/deploy-app.sh
+bash scripts/06-monitor/deploy-monitor.sh运行 bash 脚本 scripts/06-monitor/deploy-monitor.sh
+bash scripts/07-logging/deploy-logging.sh运行 bash 脚本：scripts/07-logging/deploy-logging.sh
+bash scripts/08-ha/deploy-ha.sh运行 bash 脚本/08-ha/deploy-ha.sh
+bash scripts/09-automation/deploy-automation.sh运行 bash 脚本：scripts/09-automation/deploy-automation.sh
+bash scripts/10-security/deploy-security.sh运行 bash 脚本：scripts/10-security/deploy-security.sh
 
 # 全局验证
-bash scripts/verify-all.sh
+bash scripts/verify-all.sh运行 bash 脚本/verify-all.sh
 ```
 
 ### 回滚
 
-```bash
+```bash   ”“bash
 # 回滚单个阶段
-bash scripts/teardown/teardown-phase1.sh
+bash scripts/teardown/teardown-phase1.sh运行 bash 脚本 scripts/teardown/teardown-phase1.sh
 
 # 回滚所有阶段
-bash scripts/teardown/teardown-all.sh
+bash scripts/teardown/teardown-all.sh运行 bash 脚本 /scripts/teardown/teardown-all.sh运行 bash 脚本 /scripts/teardown/teardown-all.sh
 ```
 
 ## 各阶段说明
