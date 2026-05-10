@@ -300,7 +300,7 @@ spec:
         accessModes:
           - ReadWriteOnce
         # 根据实际 StorageClass 调整
-        storageClassName: standard
+        storageClassName: longhorn
         resources:
           requests:
             storage: 10Gi
@@ -451,7 +451,7 @@ spec:
       spec:
         accessModes:
           - ReadWriteOnce
-        storageClassName: standard
+        storageClassName: longhorn
         resources:
           requests:
             storage: 10Gi

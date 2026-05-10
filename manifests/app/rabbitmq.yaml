@@ -570,7 +570,7 @@ spec:
       spec:
         accessModes:
           - ReadWriteOnce
-        storageClassName: standard
+        storageClassName: longhorn
         resources:
           requests:
             storage: 20Gi

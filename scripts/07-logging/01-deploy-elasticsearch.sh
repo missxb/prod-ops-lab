@@ -92,7 +92,7 @@ spec:
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: elasticsearch-storage
+  storageClassName: longhorn
   hostPath:
     path: /data/elasticsearch/data-0
     type: DirectoryOrCreate
@@ -107,7 +107,7 @@ spec:
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: elasticsearch-storage
+  storageClassName: longhorn
   hostPath:
     path: /data/elasticsearch/data-1
     type: DirectoryOrCreate
@@ -122,7 +122,7 @@ spec:
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: elasticsearch-storage
+  storageClassName: longhorn
   hostPath:
     path: /data/elasticsearch/data-2
     type: DirectoryOrCreate
@@ -308,7 +308,7 @@ spec:
       name: es-data
     spec:
       accessModes: ["ReadWriteOnce"]
-      storageClassName: elasticsearch-storage
+      storageClassName: longhorn
       resources:
         requests:
           storage: 50Gi

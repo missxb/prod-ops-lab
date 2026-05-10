@@ -308,7 +308,7 @@ spec:
       spec:
         accessModes:
           - ReadWriteOnce
-        storageClassName: standard
+        storageClassName: longhorn
         resources:
           requests:
             # 每个节点至少 100GB

@@ -70,7 +70,7 @@ helm upgrade --install "$RELEASE_NAME" "$CHART" \
   --namespace "$NAMESPACE" \
   --values "$VALUES_FILE" \
   --set prometheus.prometheusSpec.retention=30d \
-  --set prometheus.prometheusSpec.storageSpec.volumeClaimTemplate.spec.storageClassName=local-path \
+  --set prometheus.prometheusSpec.storageSpec.volumeClaimTemplate.spec.storageClassName=longhorn \
   --set prometheus.prometheusSpec.storageSpec.volumeClaimTemplate.spec.resources.requests.storage=50Gi \
   --set grafana.adminPassword=admin123 \
   --timeout 10m \

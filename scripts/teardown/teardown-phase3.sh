@@ -61,7 +61,7 @@ rollback_storageclass() {
     log_step "步骤1/4: 删除StorageClass"
     if command -v kubectl &>/dev/null && kubectl cluster-info &>/dev/null 2>&1; then
         kubectl delete storageclass nfs-client 2>/dev/null || log_warn "nfs-client StorageClass不存在"
-        kubectl delete storageclass managed-nfs 2>/dev/null || log_warn "managed-nfs StorageClass不存在"
+        kubectl delete storageclass longhorn 2>/dev/null || log_warn "longhorn StorageClass不存在"
         kubectl delete pvc --all -n default 2>/dev/null || true
         log_success "StorageClass已删除"
     else

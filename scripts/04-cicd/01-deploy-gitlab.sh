@@ -148,31 +148,17 @@ create_secrets() {
 }
 
 # setup_storage - 检查并配置存储类
-# 如果 standard 存储类不存在，则创建一个本地存储的 StorageClass
+# 如果 Longhorn 存储类不存在，等待 Longhorn 部署完成
 setup_storage() {
-    log_info "Setting up storage..."
+    log_info "检查存储类..."
     
-    # 检查是否已有 default storage class
-    if ! kubectl get storageclass standard &>/dev/null; then
-        log_warn "No 'standard' storage class found. Creating one..."
-        cat <<'EOF' | kubectl apply -f -
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: standard
-  annotations:
-    storageclass.kubernetes.io/is-default-class: "true"
-provisioner: kubernetes.io/no-provisioner
-volumeBindingMode: WaitForFirstConsumer
-EOF
-        # 验证 StorageClass 创建成功
-        if kubectl get storageclass standard &>/dev/null; then
-            log_info "StorageClass 'standard' created successfully"
-        else
-            log_warn "Failed to create StorageClass, continuing with existing storage"
-        fi
+    # 检查是否已有 default storage class (优先使用 Longhorn)
+    if kubectl get storageclass longhorn &>/dev/null; then
+        log_info "检测到 Longhorn StorageClass，使用默认存储"
     else
-        log_info "StorageClass 'standard' already exists"
+        log_warn "未检测到 Longhorn StorageClass，请先部署阶段3存储层"
+        log_warn "运行: bash scripts/03-storage/deploy-storage.sh"
+        # 允许继续，使用任意可用的 StorageClass
     fi
     
     log_info "Storage configured"
